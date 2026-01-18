@@ -32,7 +32,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.regex.Pattern
 
-const val APP_VERSION = "1.0"
+const val APP_VERSION = "1.1"
 
 data class ChatItem(val id: String, val username: String, val lastMessage: String, val isUnread: Boolean, val userId: String, val date: String)
 data class MessageItem(val id: String, val author: String, val text: String, val isMe: Boolean, val time: String, val imageUrl: String? = null)
@@ -762,4 +762,5 @@ $contextHistory
             LogManager.addLog("❌ Ошибка handleReview: ${e.message}")
         }
     }
+
 }
