@@ -1,6 +1,7 @@
 package ru.allisighs.funpaytools
 
-import okhttp3.OkHttpClient
+import okhttp3.MultipartBody
+import okhttp3.RequestBody
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.Retrofit
@@ -14,6 +15,14 @@ interface FunPayApi {
     suspend fun getMainPage(
         @Header("Cookie") cookie: String,
         @Header("User-Agent") userAgent: String
+    ): Response<ResponseBody>
+
+    @GET
+    suspend fun getChatHistory(
+        @Url url: String,
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String,
+        @Header("X-Requested-With") xRequestedWith: String
     ): Response<ResponseBody>
 
     @GET("users/{id}/")
@@ -66,16 +75,6 @@ interface FunPayApi {
         @Field("node_ids[]") nodeIds: List<Int>
     ): Response<ResponseBody>
 
-    @GET("chat/history")
-    suspend fun getChatHistory(
-        @Header("Cookie") cookie: String,
-        @Header("User-Agent") userAgent: String,
-        @Header("X-Requested-With") xReq: String = "XMLHttpRequest",
-        @Query("node") nodeId: String,
-        @Query("last_message") lastMessageId: String = ""
-    ): Response<ResponseBody>
-
-    // --- НОВЫЕ МЕТОДЫ ДЛЯ ОТЗЫВОВ ---
 
     @GET("orders/{id}/")
     suspend fun getOrder(
@@ -96,10 +95,28 @@ interface FunPayApi {
         @Field("rating") rating: Int = 5,
         @Field("authorId") authorId: String
     ): Response<ResponseBody>
+
+    @Multipart
+    @POST("file/addChatImage")
+    suspend fun uploadChatImage(
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String,
+        @Header("X-Requested-With") xReq: String = "XMLHttpRequest",
+        @Part file: MultipartBody.Part,
+        @Part("file_id") fileId: RequestBody
+    ): Response<ResponseBody>
+
+    @POST
+    suspend fun rewriteText(
+        @Url url: String = "https://fptools.onrender.com/api/ai",
+        @Header("Content-Type") contentType: String = "application/json",
+        @Header("Authorization") auth: String,
+        @Body body: RequestBody
+    ): Response<ResponseBody>
 }
 
 object RetrofitInstance {
-    private val client = OkHttpClient.Builder()
+    private val client = okhttp3.OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)

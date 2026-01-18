@@ -2,26 +2,40 @@ package ru.allisighs.funpaytools
 
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import com.google.gson.Gson
+import java.util.concurrent.TimeUnit
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import org.json.JSONArray
 import org.jsoup.Jsoup
 import retrofit2.Response
 import okhttp3.ResponseBody
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.regex.Pattern
 
+const val APP_VERSION = "1.0"
+
 data class ChatItem(val id: String, val username: String, val lastMessage: String, val isUnread: Boolean, val userId: String, val date: String)
-data class MessageItem(val id: String, val author: String, val text: String, val isMe: Boolean, val time: String)
+data class MessageItem(val id: String, val author: String, val text: String, val isMe: Boolean, val time: String, val imageUrl: String? = null)
 data class AutoResponseCommand(val trigger: String, val response: String, val exactMatch: Boolean)
 data class ReviewReplyTemplate(val star: Int, val text: String, val enabled: Boolean)
 data class GreetingSettings(
@@ -30,9 +44,10 @@ data class GreetingSettings(
     val cooldownHours: Int,
     val ignoreSystemMessages: Boolean
 )
+data class UpdateInfo(val hasUpdate: Boolean, val newVersion: String, val htmlUrl: String)
 
 object LogManager {
-    private val _logs = MutableStateFlow<List<String>>(listOf("Система готова."))
+    private val _logs = MutableStateFlow<List<String>>(listOf("Система готова. v$APP_VERSION"))
     val logs = _logs.asStateFlow()
 
     fun addLog(msg: String) {
@@ -72,12 +87,42 @@ object LogManager {
     }
 }
 
-class FunPayRepository(context: Context) {
+class FunPayRepository(private val context: Context) {
     private val prefs = context.getSharedPreferences("fp_prefs", Context.MODE_PRIVATE)
     private val gson = Gson()
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
     private var phpsessid: String = ""
     private val nodeToGameMap = mutableMapOf<Int, Int>()
+
+    var lastOutgoingMessage: String = ""
+
+    suspend fun checkForUpdates(): UpdateInfo? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val client = OkHttpClient()
+                val request = Request.Builder()
+                    .url("https://api.github.com/repos/XaviersDev/FunPay-Tools-Android/releases/latest")
+                    .header("User-Agent", "FunPayToolsApp")
+                    .build()
+
+                val response = client.newCall(request).execute()
+                val jsonStr = response.body?.string() ?: return@withContext null
+                val json = JSONObject(jsonStr)
+
+                val tagName = json.getString("tag_name").replace("v", "")
+                val htmlUrl = json.getString("html_url")
+
+                if (tagName != APP_VERSION) {
+                    UpdateInfo(true, tagName, htmlUrl)
+                } else {
+                    UpdateInfo(false, tagName, htmlUrl)
+                }
+            } catch (e: Exception) {
+                LogManager.addLog("⚠️ Ошибка проверки обновлений: ${e.message}")
+                null
+            }
+        }
+    }
 
     fun saveGoldenKey(key: String) = prefs.edit().putString("golden_key", key).apply()
     fun getGoldenKey(): String? = prefs.getString("golden_key", null)
@@ -186,17 +231,60 @@ class FunPayRepository(context: Context) {
         } catch (e: Exception) { null }
     }
 
-    suspend fun sendMessage(nodeId: String, text: String): Boolean {
+    suspend fun uploadImage(uri: Uri): String? {
+        return try {
+            val contentResolver = context.contentResolver
+            val mimeType = contentResolver.getType(uri) ?: "image/jpeg"
+            val inputStream = contentResolver.openInputStream(uri) ?: return null
+            val file = File(context.cacheDir, "upload_image.jpg")
+            val outputStream = FileOutputStream(file)
+            inputStream.copyTo(outputStream)
+            inputStream.close()
+            outputStream.close()
+
+            val requestFile = file.asRequestBody(mimeType.toMediaTypeOrNull())
+            val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
+            val fileIdBody = "0".toRequestBody("text/plain".toMediaTypeOrNull())
+
+            val response = RetrofitInstance.api.uploadChatImage(
+                cookie = getCookieString(),
+                userAgent = userAgent,
+                file = body,
+                fileId = fileIdBody
+            )
+            updateSession(response)
+            val jsonStr = readBodySilent(response)
+            val json = JSONObject(jsonStr)
+
+            if (json.has("fileId")) {
+                json.getString("fileId")
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Ошибка загрузки фото: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun sendMessage(nodeId: String, text: String, imageId: String? = null): Boolean {
         val appData = getCsrfAndId() ?: return false
         val (csrf, _) = appData
         return try {
-            LogManager.addLog("📤 Отправка ($nodeId): '$text'")
+            LogManager.addLog("📤 Отправка ($nodeId): '${if(imageId != null) "IMAGE $imageId" else text}'")
             val requestJson = JSONObject()
             requestJson.put("action", "chat_message")
             val dataJson = JSONObject()
             dataJson.put("node", nodeId)
             dataJson.put("last_message", -1)
-            dataJson.put("content", text)
+
+            if (imageId != null) {
+                dataJson.put("image_id", imageId)
+                dataJson.put("content", "")
+            } else {
+                dataJson.put("content", text)
+            }
+
             requestJson.put("data", dataJson)
 
             val resp = RetrofitInstance.api.runnerSend(
@@ -205,10 +293,76 @@ class FunPayRepository(context: Context) {
             updateSession(resp)
             val body = readBodySilent(resp)
             val json = JSONObject(body)
-            !json.optBoolean("error", false)
+
+            val success = !json.optBoolean("error", false)
+            if (success && text.isNotEmpty()) {
+                lastOutgoingMessage = text
+            }
+            success
         } catch (e: Exception) {
             LogManager.addLog("❌ Ошибка отправки: ${e.message}")
             false
+        }
+    }
+
+    suspend fun rewriteMessage(text: String, contextHistory: String): String? {
+        return try {
+            // МЕНЯЕМ ПОДХОД: Инструкции отправляем не в System (сервер его может игнорировать),
+            // а заворачиваем прямо в User Message, как это сделано в расширении FunPay Tools.
+
+            val systemPrompt = "You are a text editing model. Follow user instructions precisely."
+
+            val combinedUserPrompt = """
+Ты — ИИ-ассистент, который помогает продавцу на FunPay. Твоя задача — переписать его черновик сообщения, сохранив основной смысл, но сделав его вежливым, профессиональным и четким.
+
+--- ОСНОВНЫЕ ПРАВИЛА ---
+1.  СОХРАНЯЙ СМЫСЛ: Твой ответ должен передавать ТОТ ЖЕ САМЫЙ смысл, что и черновик продавца. Не добавляй новые идеи, вопросы или предложения от себя.
+2.  БУДЬ КРАТОК: Ответ должен быть настолько же коротким, насколько позволяет исходное сообщение. Не пиши длинные тексты, если черновик короткий.
+3.  ДЕЙСТВУЙ ОТ ЛИЦА ПРОДАВЦА: Всегда пиши от имени продавца.
+4.  УЧИТЫВАЙ КОНТЕКСТ: Изучи историю переписки, чтобы твой ответ был уместен.
+5.  СТИЛЬ: Используй вежливый, но уверенный тон.
+6.  НИКАКИХ ЛИШНИХ СЛОВ: Не добавляй стандартные фразы вроде "Здравствуйте", если их не было в исходном черновике или они неуместны.
+7.  ТОЛЬКО ТЕКСТ: Твой итоговый ответ — это ТОЛЬКО готовый текст сообщения. Без кавычек, заголовков (типа "Вот ваш текст") или объяснений.
+
+--- ИСТОРИЯ ПЕРЕПИСКИ ---
+$contextHistory
+--- КОНЕЦ ИСТОРИИ ---
+
+ЧЕРНОВИК МОЕГО СООБЩЕНИЯ (от продавца): "$text"
+
+ПЕРЕПИШИ МОЙ ЧЕРНОВИК, СТРОГО СЛЕДУЯ ВСЕМ ПРАВИЛАМ.
+ГОТОВЫЙ ТЕКСТ:
+            """.trimIndent()
+
+            val messages = JSONArray()
+            val sysMsg = JSONObject().put("role", "system").put("content", systemPrompt)
+            val userMsg = JSONObject().put("role", "user").put("content", combinedUserPrompt)
+            messages.put(sysMsg)
+            messages.put(userMsg)
+
+            val payload = JSONObject()
+            payload.put("messages", messages)
+            payload.put("modelName", "ChatGPT 4o")
+            payload.put("currentPagePath", "/chatgpt-4o")
+
+            val body = payload.toString().toRequestBody("application/json".toMediaTypeOrNull())
+
+            val response = RetrofitInstance.api.rewriteText(
+                auth = "Bearer fptoolsdim",
+                body = body
+            )
+
+            if (response.isSuccessful) {
+                val jsonStr = response.body()?.string() ?: return null
+                val json = JSONObject(jsonStr)
+                return json.optString("response").trim()
+            } else {
+                LogManager.addLog("❌ Ошибка AI: ${response.code()}")
+                null
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Ошибка AI запроса: ${e.message}")
+            null
         }
     }
 
@@ -313,36 +467,104 @@ class FunPayRepository(context: Context) {
         } catch (e: Exception) { emptyList() }
     }
 
-    suspend fun getChatHistory(nodeId: String): List<MessageItem> {
-        return try {
-            val (_, userId) = getCsrfAndId() ?: return emptyList()
-            val response = RetrofitInstance.api.getChatHistory(cookie = getCookieString(), userAgent = userAgent, nodeId = nodeId)
+    suspend fun getChatHistory(chatId: String): List<MessageItem> {
+        val (csrf, userId) = getCsrfAndId() ?: return emptyList()
+
+        var nodeName = chatId
+        if (!chatId.startsWith("users-")) {
+            try {
+                val url = "https://funpay.com/chat/history?node=$chatId&last_message=0"
+                val resp = RetrofitInstance.api.getChatHistory(url, getCookieString(), userAgent, "XMLHttpRequest")
+                val json = JSONObject(readBodySilent(resp))
+                val correctName = json.optJSONObject("chat")?.optJSONObject("node")?.optString("name")
+
+                if (!correctName.isNullOrEmpty() && correctName.startsWith("users-")) {
+                    nodeName = correctName
+                }
+            } catch (e: Exception) {
+                LogManager.addLog("⚠️ Не удалось определить nodeName для $chatId")
+            }
+        }
+
+        try {
+            val objectsPayload = """
+                [
+                    {
+                        "type": "chat_node",
+                        "id": "$nodeName",
+                        "tag": "00000000",
+                        "data": {
+                            "node": "$nodeName",
+                            "last_message": -1,
+                            "content": ""
+                        }
+                    }
+                ]
+            """.trimIndent()
+
+            val response = RetrofitInstance.api.runnerGet(
+                cookie = getCookieString(),
+                userAgent = userAgent,
+                objects = objectsPayload,
+                request = "false",
+                csrfToken = csrf
+            )
+
             updateSession(response)
             val jsonStr = readBodySilent(response)
-            if (jsonStr.isEmpty()) return emptyList()
             val json = JSONObject(jsonStr)
-            if (!json.has("chat")) return emptyList()
-            val messagesArray = json.getJSONObject("chat").getJSONArray("messages")
-            val messages = mutableListOf<MessageItem>()
-            for (i in 0 until messagesArray.length()) {
-                val msgObj = messagesArray.getJSONObject(i)
-                val html = msgObj.getString("html")
-                val doc = Jsoup.parse(html)
-                val msgNode = doc.select(".chat-msg-item").first()
-                if (msgNode != null) {
-                    val id = msgNode.attr("id")
-                    val authorNode = msgNode.select(".media-user-name a")
-                    val author = if (authorNode.isNotEmpty()) authorNode.text() else "FunPay"
-                    val text = msgNode.select(".chat-msg-text").text()
-                    val time = msgNode.select(".chat-msg-date").text()
-                    val isMe = if (author.isEmpty() || author == "FunPay") false else {
-                        msgNode.hasClass("message-own") || msgNode.hasClass("chat-msg-out")
+
+            val objectsArr = json.optJSONArray("objects") ?: return emptyList()
+
+            for (i in 0 until objectsArr.length()) {
+                val obj = objectsArr.getJSONObject(i)
+                if (obj.optString("type") == "chat_node" && obj.optString("id") == nodeName) {
+                    val data = obj.optJSONObject("data") ?: continue
+                    val messagesArray = data.optJSONArray("messages") ?: continue
+
+                    val messages = mutableListOf<MessageItem>()
+                    for (j in 0 until messagesArray.length()) {
+                        try {
+                            val msgObj = messagesArray.getJSONObject(j)
+                            val html = msgObj.optString("html", "")
+                            val doc = Jsoup.parse(html.replace("<br>", "\n"))
+
+                            val id = msgObj.optString("id", "0")
+                            val authorId = msgObj.optString("author", "0")
+
+                            val authorElement = doc.select("div.media-user-name a").first()
+                            val author = authorElement?.text() ?: "Unknown"
+
+                            val textElement = doc.select("div.chat-msg-text").first()
+                            var text = textElement?.text() ?: ""
+
+                            var imageUrl: String? = null
+                            val imgLink = doc.select("a.chat-img-link").first()
+                            if (imgLink != null) {
+                                imageUrl = imgLink.attr("href")
+                                if (imageUrl.isNotEmpty() && !imageUrl.startsWith("http")) {
+                                    imageUrl = "https://funpay.com$imageUrl"
+                                }
+                                if (text.isEmpty()) text = "Фотография"
+                            }
+
+                            val timeElement = doc.select("div.chat-msg-date").first()
+                            val time = timeElement?.text() ?: ""
+                            val isMe = authorId == userId
+
+                            if (text.isNotEmpty() || imageUrl != null) {
+                                messages.add(MessageItem(id, author, text, isMe, time, imageUrl))
+                            }
+                        } catch (e: Exception) { }
                     }
-                    messages.add(MessageItem(id, author, text, isMe, time))
+                    return messages
                 }
             }
-            messages
-        } catch (e: Exception) { emptyList() }
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Ошибка Runner: ${e.message}")
+        }
+
+        return emptyList()
     }
 
     suspend fun checkAutoResponse(cachedChats: List<ChatItem>? = null) {
@@ -463,9 +685,22 @@ class FunPayRepository(context: Context) {
             var lotName = "Товар"
             val paramItems = doc.select(".param-item")
             for (item in paramItems) {
-                val header = item.select("h5").text().lowercase()
-                if (header.contains("краткое описание") || header.contains("short description")) {
-                    lotName = item.select("div").text()
+                val headerObj = item.select("h5")
+                if (headerObj.isEmpty()) continue
+
+                val headerText = headerObj.text()
+                val headerTextLower = headerText.lowercase()
+
+                if (headerTextLower.contains("краткое описание") || headerTextLower.contains("short description")) {
+                    val fullText = item.text()
+
+                    if (fullText.startsWith(headerText, ignoreCase = true)) {
+                        val temp = fullText.substring(headerText.length).trim()
+                        if (temp.isNotEmpty()) lotName = temp
+                    } else {
+                        val temp = fullText.replace(headerText, "", ignoreCase = true).trim()
+                        if (temp.isNotEmpty()) lotName = temp
+                    }
                     break
                 }
             }
@@ -474,9 +709,13 @@ class FunPayRepository(context: Context) {
                 if (!headerName.isNullOrEmpty()) lotName = headerName
             }
 
-            lotName = lotName.replace("Краткое описание ", "", ignoreCase = true)
-                .replace("Short description ", "", ignoreCase = true)
-                .trim()
+            if (lotName.startsWith(":") || lotName.startsWith("-")) {
+                lotName = lotName.substring(1).trim()
+            }
+
+            if (lotName.length > 100) {
+                lotName = lotName.take(100) + "..."
+            }
 
             LogManager.addLog("⭐ Оценка: $stars, Лот: '$lotName'")
 
@@ -488,6 +727,8 @@ class FunPayRepository(context: Context) {
                     .replace("\$username", buyerName)
                     .replace("\$order_id", orderId)
                     .replace("\$lot_name", lotName)
+
+                LogManager.addLog("📤 Ответ на отзыв: '$replyText'")
 
                 val replyResponse = RetrofitInstance.api.replyToReview(
                     cookie = getCookieString(),

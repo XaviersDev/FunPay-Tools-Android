@@ -5,18 +5,23 @@ import android.annotation.SuppressLint
 import androidx.compose.ui.draw.scale
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.Settings
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -32,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -54,8 +61,12 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
@@ -95,7 +106,7 @@ fun FunPayToolsApp(startDestination: String, repository: FunPayRepository) {
                 NavHost(navController = navController, startDestination = startDestination) {
                     composable("welcome") { WelcomeScreen(navController) }
                     composable("permissions") {
-                        AppScaffold("Доступы", navController) { PermissionsScreen(navController) }
+                        AppScaffold("Доступы", navController) { PermissionsScreen(navController, repository) }
                     }
                     composable("auth_method") {
                         AppScaffold("Вход", navController) { AuthMethodScreen(navController) }
@@ -160,6 +171,7 @@ fun WelcomeScreen(navController: NavController) {
                     }
                     Spacer(modifier = Modifier.height(32.dp))
                     Text("FunPay Tools", fontSize = 36.sp, fontWeight = FontWeight.Black, color = TextPrimary)
+                    Text("v$APP_VERSION", fontSize = 14.sp, color = TextSecondary)
                 }
             }
             Spacer(modifier = Modifier.height(64.dp))
@@ -171,35 +183,96 @@ fun WelcomeScreen(navController: NavController) {
 }
 
 @Composable
-fun PermissionsScreen(navController: NavController) {
+fun PermissionsScreen(navController: NavController, repository: FunPayRepository) {
     val context = LocalContext.current
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     var isIgnoringBattery by remember { mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName)) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val hasAuth = remember { repository.hasAuth() }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) isIgnoringBattery = pm.isIgnoringBatteryOptimizations(context.packageName) }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Text("Фоновая работа", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+        Text("Чтобы бот не засыпал, нужно выдать разрешения.", fontSize = 14.sp, color = TextSecondary)
         Spacer(modifier = Modifier.height(24.dp))
-        Box(modifier = Modifier.liquidGlass().padding(16.dp)) {
+
+        Box(modifier = Modifier.liquidGlass().clickable {
+            if (!isIgnoringBattery) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                intent.data = Uri.parse("package:${context.packageName}")
+                try { context.startActivity(intent) } catch (_: Exception) {}
+            }
+        }.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (isIgnoringBattery) Icons.Default.CheckCircle else Icons.Default.BatteryAlert, null, tint = if (isIgnoringBattery) Color(0xFF00E676) else PurpleAccent)
+                Icon(if (isIgnoringBattery) Icons.Default.CheckCircle else Icons.Default.BatteryAlert, null, tint = if (isIgnoringBattery) Color(0xFF00E676) else Color.Red)
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
-                    Text("Оптимизация батареи", color = TextPrimary, fontWeight = FontWeight.Bold)
-                    Text(if (isIgnoringBattery) "Отключена" else "Нужно отключить", color = TextSecondary, fontSize = 12.sp)
+                    Text("Без ограничений", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text(if (isIgnoringBattery) "Разрешено" else "Нажмите, чтобы разрешить", color = TextSecondary, fontSize = 12.sp)
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Box(modifier = Modifier.liquidGlass().clickable {
+            openAutoStartSettings(context)
+        }.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.SettingsPower, null, tint = PurpleAccent)
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text("Автозапуск", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text("Нажмите для настройки (Xiaomi, Vivo...)", color = TextSecondary, fontSize = 12.sp)
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.weight(1f))
-        Button(onClick = { navController.navigate("auth_method") }, colors = ButtonDefaults.buttonColors(containerColor = if (isIgnoringBattery) PurpleAccent else Color.Gray), modifier = Modifier.fillMaxWidth().height(50.dp)) {
-            Text("Продолжить")
+
+        Button(
+            onClick = {
+                if (hasAuth) {
+                    navController.popBackStack()
+                } else {
+                    navController.navigate("auth_method")
+                }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = if (isIgnoringBattery) PurpleAccent else Color.Gray),
+            modifier = Modifier.fillMaxWidth().height(50.dp)
+        ) {
+            Text(if (hasAuth) "Готово" else "Продолжить")
         }
     }
+}
+
+fun openAutoStartSettings(context: Context) {
+    val intents = listOf(
+        Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")),
+        Intent().setComponent(ComponentName("com.letv.android.letvsafe", "com.letv.android.letvsafe.AutobootManageActivity")),
+        Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")),
+        Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity")),
+        Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")),
+        Intent().setComponent(ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity")),
+        Intent().setComponent(ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity")),
+        Intent().setComponent(ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager")),
+        Intent().setComponent(ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")),
+        Intent().setComponent(ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity")),
+        Intent(Settings.ACTION_SETTINGS)
+    )
+
+    for (intent in intents) {
+        try {
+            context.startActivity(intent)
+            return
+        } catch (_: Exception) { }
+    }
+    Toast.makeText(context, "Настройки не найдены автоматически", Toast.LENGTH_SHORT).show()
 }
 
 @Composable
@@ -238,22 +311,27 @@ fun ManualLoginScreen(navController: NavController, repository: FunPayRepository
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
-    AndroidView(factory = { ctx ->
-        WebView(ctx).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    val cookies = CookieManager.getInstance().getCookie(url)
-                    if (cookies?.contains("golden_key") == true) {
-                        val key = cookies.split(";").find { it.trim().startsWith("golden_key") }?.split("=")?.get(1)
-                        if (key != null) { repository.saveGoldenKey(key); navController.navigate("dashboard") { popUpTo("welcome") { inclusive = true } } }
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxWidth().background(Color(0xFFB00020)).padding(8.dp)) {
+            Text("Вход через Google не работает в приложении! Используйте другие методы.", color = Color.White, fontSize = 12.sp, modifier = Modifier.align(Alignment.Center))
+        }
+        AndroidView(factory = { ctx ->
+            WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        val cookies = CookieManager.getInstance().getCookie(url)
+                        if (cookies?.contains("golden_key") == true) {
+                            val key = cookies.split(";").find { it.trim().startsWith("golden_key") }?.split("=")?.get(1)
+                            if (key != null) { repository.saveGoldenKey(key); navController.navigate("dashboard") { popUpTo("welcome") { inclusive = true } } }
+                        }
                     }
                 }
+                loadUrl("https://funpay.com/account/login")
             }
-            loadUrl("https://funpay.com/account/login")
-        }
-    }, modifier = Modifier.fillMaxSize())
+        }, modifier = Modifier.fillMaxSize())
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -263,11 +341,20 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository) 
     var selectedTab by remember { mutableIntStateOf(0) }
     val logs by LogManager.logs.collectAsState()
     var chats by remember { mutableStateOf<List<ChatItem>>(emptyList()) }
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(Intent(context, FunPayService::class.java))
         }
+
+        launch {
+            val info = repository.checkForUpdates()
+            if (info != null && info.hasUpdate) {
+                updateInfo = info
+            }
+        }
+
         while (true) {
             chats = repository.getChats()
             delay(5000)
@@ -285,7 +372,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository) 
                         context.startActivity(intent)
                     }) {
                         Icon(
-                            imageVector = Icons.Default.Send,
+                            imageVector = Icons.AutoMirrored.Filled.Send,
                             contentDescription = "Telegram",
                             tint = TextPrimary
                         )
@@ -305,11 +392,32 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository) 
             }
         }
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            when (selectedTab) {
-                0 -> ChatsList(chats, navController, repository)
-                1 -> ControlScreen(repository)
-                2 -> ConsoleView(logs)
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (updateInfo != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(PurpleAccent)
+                        .clickable {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo!!.htmlUrl))
+                            context.startActivity(intent)
+                        }
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Download, null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Доступна новая версия: ${updateInfo!!.newVersion}!", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                when (selectedTab) {
+                    0 -> ChatsList(chats, navController, repository)
+                    1 -> ControlScreen(repository)
+                    2 -> ConsoleView(logs)
+                }
             }
         }
     }
@@ -320,6 +428,7 @@ fun ControlScreen(repository: FunPayRepository) {
     var autoRaise by remember { mutableStateOf(repository.getSetting("auto_raise")) }
     var autoResponse by remember { mutableStateOf(repository.getSetting("auto_response")) }
     var autoReviewReply by remember { mutableStateOf(repository.getSetting("auto_review_reply")) }
+    var pushNotifications by remember { mutableStateOf(repository.getSetting("push_notifications")) }
 
     var showCommandsDialog by remember { mutableStateOf(false) }
     var showReviewDialog by remember { mutableStateOf(false) }
@@ -328,6 +437,13 @@ fun ControlScreen(repository: FunPayRepository) {
     var showGreetingDialog by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
+        Column(modifier = Modifier.liquidGlass().padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column { Text("Push уведомления", color = TextPrimary, fontWeight = FontWeight.Bold); Text("Отдельные уведомления о сообщениях", color = TextSecondary, fontSize = 12.sp) }
+                Switch(checked = pushNotifications, onCheckedChange = { pushNotifications = it; repository.setSetting("push_notifications", it) })
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
         Column(modifier = Modifier.liquidGlass().padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column { Text("Автоподнятие", color = TextPrimary, fontWeight = FontWeight.Bold); Text("Поднимает лоты", color = TextSecondary, fontSize = 12.sp) }
@@ -521,49 +637,6 @@ fun GreetingDialog(repository: FunPayRepository, currentSettings: GreetingSettin
 
 @Composable
 fun ChatsList(chats: List<ChatItem>, navController: NavController, repository: FunPayRepository) {
-    val context = LocalContext.current
-    var showReplyDialog by remember { mutableStateOf(false) }
-    var selectedChat by remember { mutableStateOf<ChatItem?>(null) }
-    var replyText by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
-
-    if (showReplyDialog && selectedChat != null) {
-        AlertDialog(
-            onDismissRequest = { showReplyDialog = false },
-            containerColor = Color(0xFF1A1A1A),
-            title = { Text("Ответ: ${selectedChat?.username}", color = TextPrimary) },
-            text = {
-                OutlinedTextField(
-                    value = replyText,
-                    onValueChange = { replyText = it },
-                    label = { Text("Сообщение") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            val success = repository.sendMessage(selectedChat!!.id, replyText)
-                            Toast.makeText(context, if (success) "Отправлено" else "Ошибка", Toast.LENGTH_SHORT).show()
-                            if (success) {
-                                showReplyDialog = false
-                                replyText = ""
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent)
-                ) { Text("Отправить") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showReplyDialog = false }) { Text("Отмена", color = TextSecondary) }
-            }
-        )
-    }
-
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         items(chats) { chat ->
             Box(modifier = Modifier.liquidGlass().padding(16.dp)) {
@@ -575,8 +648,7 @@ fun ChatsList(chats: List<ChatItem>, navController: NavController, repository: F
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f).clickable {
-                            selectedChat = chat
-                            showReplyDialog = true
+                            navController.navigate("chat/${chat.id}/${chat.username}")
                         }
                     ) {
                         if (chat.isUnread) {
@@ -585,14 +657,14 @@ fun ChatsList(chats: List<ChatItem>, navController: NavController, repository: F
                         }
                         Column {
                             Text(chat.username, fontWeight = FontWeight.Bold, color = TextPrimary)
-                            Text(chat.lastMessage, maxLines = 1, color = if (chat.isUnread) TextPrimary else TextSecondary, fontSize = 14.sp)
+                            Text(chat.lastMessage, color = if (chat.isUnread) TextPrimary else TextSecondary, fontSize = 14.sp)
                             if (chat.date.isNotEmpty()) Text(chat.date, fontSize = 12.sp, color = TextSecondary.copy(alpha = 0.7f))
                         }
                     }
                     IconButton(onClick = {
                         navController.navigate("chat/${chat.id}/${chat.username}")
                     }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open History", tint = PurpleAccent)
+                        Icon(Icons.Default.Chat, contentDescription = "Open History", tint = PurpleAccent)
                     }
                 }
             }
@@ -605,22 +677,166 @@ fun ChatDetailScreen(chatId: String, repository: FunPayRepository) {
     var messages by remember { mutableStateOf<List<MessageItem>>(emptyList()) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    LaunchedEffect(chatId) {
-        while (true) {
-            messages = repository.getChatHistory(chatId)
-            if (messages.isNotEmpty()) scope.launch { listState.scrollToItem(messages.lastIndex) }
-            delay(3000)
-        }
-    }
-    LazyColumn(state = listState, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
-        items(messages) { msg ->
-            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = if (msg.isMe) Alignment.End else Alignment.Start) {
-                Box(modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(if (msg.isMe) PurpleAccent else GlassWhite).padding(12.dp)) {
-                    Column {
-                        if (!msg.isMe) Text(msg.author, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
-                        Text(msg.text, color = TextPrimary)
+    var inputText by remember { mutableStateOf("") }
+    var isAiProcessing by remember { mutableStateOf(false) }
+
+    val photoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = { uri ->
+            if (uri != null) {
+                scope.launch {
+                    val imageId = repository.uploadImage(uri)
+                    if (imageId != null) {
+                        repository.sendMessage(chatId, "", imageId)
                     }
                 }
+            }
+        }
+    )
+
+    LaunchedEffect(chatId) {
+        while (true) {
+            val newMessages = repository.getChatHistory(chatId)
+
+            if (newMessages.size != messages.size) {
+                messages = newMessages
+                if (messages.isNotEmpty()) scope.launch { listState.scrollToItem(messages.lastIndex) }
+            }
+            delay(6400)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            items(messages) { msg ->
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = if (msg.isMe) Alignment.End else Alignment.Start
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (msg.isMe) PurpleAccent else GlassWhite)
+                            .padding(8.dp)
+                    ) {
+                        Column {
+                            if (!msg.isMe) Text(
+                                msg.author,
+                                fontSize = 10.sp,
+                                color = TextSecondary,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            if (msg.imageUrl != null) {
+                                AsyncImage(
+                                    model = msg.imageUrl,
+                                    contentDescription = "Image",
+                                    modifier = Modifier.size(200.dp).clip(RoundedCornerShape(8.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+
+                            if (msg.text.isNotEmpty() && msg.text != "Фотография") {
+                                Text(msg.text, color = TextPrimary)
+                            }
+
+                            Text(msg.time, fontSize = 9.sp, color = TextSecondary.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.End))
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1A1A1A))
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = {
+                photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }) {
+                Icon(Icons.Default.Add, contentDescription = "Attach", tint = TextPrimary)
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Сообщение...", color = TextSecondary) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+
+                        focusedBorderColor = PurpleAccent,
+                        unfocusedBorderColor = Color.Transparent,
+
+                        focusedContainerColor = Color.Black.copy(alpha = 0.3f),
+                        unfocusedContainerColor = Color.Black.copy(alpha = 0.3f),
+
+                        cursorColor = PurpleAccent,
+                        selectionColors = androidx.compose.foundation.text.selection.TextSelectionColors(
+                            handleColor = PurpleAccent,
+                            backgroundColor = PurpleAccent.copy(alpha = 0.4f)
+                        )
+                    ),
+                    shape = RoundedCornerShape(24.dp),
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            if (inputText.isNotBlank() && !isAiProcessing) {
+                                isAiProcessing = true
+                                scope.launch {
+                                    val contextHistory = messages.takeLast(10).joinToString("\n") {
+                                        "${if(it.isMe) "Продавец" else "Покупатель"}: ${it.text}"
+                                    }
+                                    val rewrited = repository.rewriteMessage(inputText, contextHistory)
+                                    if (!rewrited.isNullOrEmpty()) {
+                                        inputText = rewrited
+                                    }
+                                    isAiProcessing = false
+                                }
+                            }
+                        }) {
+                            if (isAiProcessing) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = PurpleAccent)
+                            } else {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = "AI Rewrite", tint = PurpleAccent)
+                            }
+                        }
+                    }
+                )
+            }
+
+            IconButton(onClick = {
+                if (inputText.isNotBlank()) {
+                    val textToSend = inputText
+                    inputText = ""
+
+                    // Optimistic update
+                    val newMessage = MessageItem(
+                        id = System.currentTimeMillis().toString(),
+                        author = "Вы",
+                        text = textToSend,
+                        isMe = true,
+                        time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                        imageUrl = null
+                    )
+                    messages = messages + newMessage
+                    scope.launch { listState.scrollToItem(messages.lastIndex) }
+
+                    scope.launch {
+                        repository.sendMessage(chatId, textToSend)
+                    }
+                }
+            }) {
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = PurpleAccent)
             }
         }
     }
@@ -630,6 +846,8 @@ fun ChatDetailScreen(chatId: String, repository: FunPayRepository) {
 fun SettingsScreen(navController: NavController, repository: FunPayRepository) {
     Column(modifier = Modifier.padding(16.dp)) {
         Button(onClick = { navController.navigate("auth_method") }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = GlassWhite)) { Text("Сменить Golden Key", color = TextPrimary) }
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = { navController.navigate("permissions") }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = GlassWhite)) { Text("Настройки доступа", color = TextPrimary) }
     }
 }
 
@@ -641,7 +859,7 @@ fun ConsoleView(logs: List<String>) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         LazyColumn(modifier = Modifier.weight(1f).liquidGlass().padding(12.dp), reverseLayout = false) {
             items(logs) { log ->
-                Text(log, color = Color(0xFF00E676), fontSize = 10.sp, lineHeight = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                Text(log, color = Color(0xFFB01818), fontSize = 10.sp, lineHeight = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                 HorizontalDivider(color = Color.White.copy(alpha = 0.1f), thickness = 0.5.dp)
             }
         }
