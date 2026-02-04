@@ -2,7 +2,7 @@
 
 ### FunPay Tools (Android)
 
-![Version](https://img.shields.io/badge/version-1.1-purple) ![Platform](https://img.shields.io/badge/platform-Android-green) ![License](https://img.shields.io/badge/license-MIT-blue)
+![Version](https://img.shields.io/badge/version-1.1-purple) ![Platform](https://img.shields.io/badge/platform-Android-green) ![License](https://img.shields.io/badge/license-Proprietary-red)
 
 **FunPay Tools** - это мощный мобильный клиент и инструмент автоматизации для продавцов на площадке FunPay.
 Забудьте о необходимости держать включенным компьютер или арендовать серверы. Ваш смартфон теперь - полноценная станция продаж, работающая на вашем Wi-Fi или мобильном интернете.
@@ -84,5 +84,14 @@
 
 ---
 
+## ⚠️ License / Лицензия
+**Proprietary Software. All Rights Reserved.**
+Копирование, модификация, распространение и создание производных продуктов (форков) **СТРОГО ЗАПРЕЩЕНО**.
+Нарушение авторских прав приведет к DMCA-блокировке вашего репозитория и аккаунта.
+
+Copying, modification, distribution, and creating derivative works are **STRICTLY PROHIBITED**.
+Violators will face DMCA takedown requests.
+
 ### ⚖️ Отказ от ответственности
 *Приложение не является официальным клиентом FunPay. Использование средств автоматизации может теоретически нарушать правила площадки, хотя данный инструмент эмулирует поведение реального пользователя. Используйте на свой страх и риск.*
+
