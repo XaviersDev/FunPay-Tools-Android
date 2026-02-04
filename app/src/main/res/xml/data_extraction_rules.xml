@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?><!--
+<!--
+  ~ Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
+  ~
+  ~ This code is proprietary. Modification and redistribution are prohibited.
+  -->
    Sample data extraction rules file; uncomment and customize as necessary.
    See https://developer.android.com/about/versions/12/backup-restore#xml-changes
    for details.

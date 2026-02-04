@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?><!--
+<!--
+  ~ Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
+  ~
+  ~ This code is proprietary. Modification and redistribution are prohibited.
+  -->
    Sample backup rules file; uncomment and customize as necessary.
    See https://developer.android.com/guide/topics/data/autobackup
    for details.

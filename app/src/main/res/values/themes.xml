@@ -1,3 +1,8 @@
+<!--
+  ~ Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
+  ~
+  ~ This code is proprietary. Modification and redistribution are prohibited.
+  -->
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Theme.FunPayTools" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
