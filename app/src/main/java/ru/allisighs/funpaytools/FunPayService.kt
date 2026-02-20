@@ -1,12 +1,11 @@
 /*
- * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
  *
- * This code is proprietary and confidential.
- * Modification, distribution, or use of this source code
- * without express written permission from the author is strictly prohibited.
+ *  * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
+ *  *
+ *  * This code is proprietary. Modification, distribution, or use
+ *  * of this file without express written permission is strictly prohibited.
+ *  * Unauthorized use will be prosecuted.
  *
- * Decompiling, reverse engineering, or creating derivative works
- * based on this software is a violation of copyright law.
  */
 
 package ru.allisighs.funpaytools
@@ -27,7 +26,7 @@ import android.os.PowerManager
 import kotlinx.coroutines.*
 
 class FunPayService : Service() {
-    private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var repository: FunPayRepository
     private var wakeLock: PowerManager.WakeLock? = null
     private val processedMessagesCache = mutableMapOf<String, String>()
@@ -40,7 +39,10 @@ class FunPayService : Service() {
 
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FunPayTools::ServiceWakeLock")
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "FunPayTools::ServiceWakeLock"
+            )
             wakeLock?.acquire(24 * 60 * 60 * 1000L)
             LogManager.addLog("🔋 WakeLock активирован")
         } catch (e: Exception) {
@@ -53,24 +55,48 @@ class FunPayService : Service() {
         startWorkLoop()
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY
+    }
+
     private fun startWorkLoop() {
         serviceScope.launch {
             LogManager.addLog("🛠️ SERVICE: Цикл started")
+
+            var lastCleanup = 0L
+
             while (isActive) {
                 if (repository.hasAuth()) {
                     try {
                         val chats = repository.getChats()
+                        val busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
 
-                        repository.checkAutoResponse(chats)
-                        repository.checkGreetings(chats)
-                        repository.raiseAllLots()
+                        if (busySettings.enabled) {
+                            repository.checkBusyModeReplies(chats, busySettings)
+                            if (busySettings.keepRaise) repository.raiseAllLots()
+                            if (busySettings.keepAutoResponse) repository.checkAutoResponse(chats)
+                            if (busySettings.keepGreeting) repository.checkGreetings(chats)
+                        } else {
+                            repository.checkAutoResponse(chats)
+                            repository.checkGreetings(chats)
+                            repository.raiseAllLots()
+                            repository.checkOrderConfirmations(chats)
+                            repository.checkAutoRefund(chats)
+                            repository.checkReviewReplies(chats)
+                            repository.runDumperCycle()
+                        }
 
                         if (repository.getSetting("push_notifications")) {
                             checkPushNotifications(chats)
                         }
 
+                        if (System.currentTimeMillis() - lastCleanup > 24 * 60 * 60 * 1000L) {
+                            repository.cleanupOldProcessedEvents()
+                            lastCleanup = System.currentTimeMillis()
+                        }
+
                         val unread = chats.count { it.isUnread }
-                        val status = if (unread > 0) "Непрочитанных: $unread" else "Ожидание..."
+                        val status = if (unread > 0) "Непрочитанных: $unread" else "Работает"
                         updateNotification(status)
 
                     } catch (e: Exception) {
@@ -78,7 +104,7 @@ class FunPayService : Service() {
                         e.printStackTrace()
                     }
                 }
-                delay(15000)
+                delay(6513)
             }
         }
     }
@@ -88,8 +114,23 @@ class FunPayService : Service() {
             if (chat.isUnread) {
                 val lastMsg = chat.lastMessage
 
-                if (lastMsg == repository.lastOutgoingMessage) {
-                    continue
+
+                val lastSelf = FunPayRepository.lastOutgoingMessages[chat.id]
+
+                if (lastSelf != null) {
+
+                    if (lastSelf == "__image__") {
+                        FunPayRepository.lastOutgoingMessages.remove(chat.id)
+                        continue
+                    }
+
+                    val cleanIncoming = lastMsg.replace("...", "").trim().lowercase()
+                    val cleanSelf = lastSelf.trim().lowercase()
+
+
+                    if (cleanSelf.contains(cleanIncoming) || cleanIncoming.contains(cleanSelf)) {
+                        continue
+                    }
                 }
 
                 val cachedMsg = processedMessagesCache[chat.id]
@@ -199,6 +240,7 @@ class FunPayService : Service() {
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentIntent(pendingIntent)
+            .setOngoing(true)
             .build()
     }
 
@@ -216,6 +258,41 @@ class FunPayService : Service() {
             }
         } catch (e: Exception) { }
         LogManager.addLog("🛑 SERVICE: Остановлен")
+
+        if (repository.getSetting("auto_start_on_boot")) {
+            val restartIntent = Intent(this, FunPayService::class.java)
+            val restartPendingIntent = PendingIntent.getService(
+                this, 1, restartIntent,
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            alarmManager.set(
+                android.app.AlarmManager.ELAPSED_REALTIME,
+                android.os.SystemClock.elapsedRealtime() + 5000,
+                restartPendingIntent
+            )
+        }
+
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        LogManager.addLog("⚠️ SERVICE: Task removed")
+
+        if (repository.getSetting("auto_start_on_boot")) {
+            val restartIntent = Intent(applicationContext, FunPayService::class.java)
+            val restartPendingIntent = PendingIntent.getService(
+                this, 1, restartIntent,
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarmManager = applicationContext.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            alarmManager.set(
+                android.app.AlarmManager.ELAPSED_REALTIME,
+                android.os.SystemClock.elapsedRealtime() + 5000,
+                restartPendingIntent
+            )
+        }
+
+        super.onTaskRemoved(rootIntent)
     }
 }

@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  ~ Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
-  ~
-  ~ This code is proprietary. Modification and redistribution are prohibited.
+  ~ /*
+  ~  * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
+  ~  *
+  ~  * This code is proprietary. Modification, distribution, or use
+  ~  * of this file without express written permission is strictly prohibited.
+  ~  * Unauthorized use will be prosecuted.
+  ~  */
   -->
+
 <resources>
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>

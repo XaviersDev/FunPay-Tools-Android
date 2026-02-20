@@ -1,12 +1,11 @@
 /*
- * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
  *
- * This code is proprietary and confidential.
- * Modification, distribution, or use of this source code
- * without express written permission from the author is strictly prohibited.
+ *  * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
+ *  *
+ *  * This code is proprietary. Modification, distribution, or use
+ *  * of this file without express written permission is strictly prohibited.
+ *  * Unauthorized use will be prosecuted.
  *
- * Decompiling, reverse engineering, or creating derivative works
- * based on this software is a violation of copyright law.
  */
 
 package ru.allisighs.funpaytools
@@ -34,6 +33,13 @@ interface FunPayApi {
         @Header("Cookie") cookie: String,
         @Header("User-Agent") userAgent: String,
         @Header("X-Requested-With") xRequestedWith: String
+    ): Response<ResponseBody>
+
+    @GET
+    suspend fun getChatPage(
+        @Url url: String,
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String
     ): Response<ResponseBody>
 
     @GET("users/{id}/")
@@ -95,6 +101,16 @@ interface FunPayApi {
     ): Response<ResponseBody>
 
     @FormUrlEncoded
+    @POST("orders/refund")
+    suspend fun refundOrder(
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String,
+        @Header("X-Requested-With") xReq: String = "XMLHttpRequest",
+        @Field("csrf_token") csrfToken: String,
+        @Field("id") orderId: String
+    ): Response<ResponseBody>
+
+    @FormUrlEncoded
     @POST("orders/review")
     suspend fun replyToReview(
         @Header("Cookie") cookie: String,
@@ -104,6 +120,17 @@ interface FunPayApi {
         @Field("orderId") orderId: String,
         @Field("text") text: String,
         @Field("rating") rating: Int = 5,
+        @Field("authorId") authorId: String
+    ): Response<ResponseBody>
+
+    @FormUrlEncoded
+    @POST("orders/reviewDelete")
+    suspend fun deleteReviewReply(
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String,
+        @Header("X-Requested-With") xReq: String = "XMLHttpRequest",
+        @Field("csrf_token") csrfToken: String,
+        @Field("orderId") orderId: String,
         @Field("authorId") authorId: String
     ): Response<ResponseBody>
 

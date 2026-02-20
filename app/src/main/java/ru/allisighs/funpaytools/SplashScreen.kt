@@ -1,83 +1,107 @@
-/*
- * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
- *
- * This code is proprietary and confidential.
- * Modification, distribution, or use of this source code
- * without express written permission from the author is strictly prohibited.
- *
- * Decompiling, reverse engineering, or creating derivative works
- * based on this software is a violation of copyright law.
- */
-
 package ru.allisighs.funpaytools
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
 @Composable
-fun SplashScreen(onTimeout: () -> Unit) {
+fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
     var startAnimation by remember { mutableStateOf(false) }
+    var showTitle by remember { mutableStateOf(false) }
+    var showSubtitle by remember { mutableStateOf(false) }
 
-    val alphaAnim = animateFloatAsState(
-        targetValue = if (startAnimation) 1f else 0f,
-        animationSpec = tween(durationMillis = 1000),
-        label = "alpha"
-    )
-
-    val scaleAnim = animateFloatAsState(
-        targetValue = if (startAnimation) 1f else 0.5f,
+    val iconScale = animateFloatAsState(
+        targetValue = if (startAnimation) 1f else 0.3f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessLow
         ),
-        label = "scale"
+        label = "iconScale"
     )
 
-    val infiniteTransition = rememberInfiniteTransition(label = "rotation")
-    val rotation by infiniteTransition.animateFloat(
+    val iconAlpha = animateFloatAsState(
+        targetValue = if (startAnimation) 1f else 0f,
+        animationSpec = tween(600),
+        label = "iconAlpha"
+    )
+
+    val glowAlpha = animateFloatAsState(
+        targetValue = if (startAnimation) 0.6f else 0f,
+        animationSpec = tween(1200),
+        label = "glowAlpha"
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "infinite")
+
+    val ringRotation by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = LinearEasing),
+            animation = tween(3000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "rotation"
+        label = "ringRotation"
+    )
+
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
     )
 
     LaunchedEffect(Unit) {
         startAnimation = true
-        delay(1200)
+        delay(400)
+        showTitle = true
+        delay(300)
+        showSubtitle = true
+        delay(1000)
         onTimeout()
     }
+
+    val accentColor = ThemeManager.parseColor(theme.accentColor)
+    val bgColor = ThemeManager.parseColor(theme.backgroundColor)
+    val textColor = ThemeManager.parseColor(theme.textPrimaryColor)
+    val secondaryTextColor = ThemeManager.parseColor(theme.textSecondaryColor)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
-                Brush.verticalGradient(
+                Brush.radialGradient(
                     colors = listOf(
-                        Color(0xFF0A0014),
-                        Color(0xFF1A0028),
-                        Color(0xFF0A0014)
-                    )
+                        accentColor.copy(alpha = 0.15f),
+                        bgColor,
+                        bgColor
+                    ),
+                    center = Offset(500f, 500f),
+                    radius = 1200f
                 )
             ),
         contentAlignment = Alignment.Center
@@ -87,35 +111,54 @@ fun SplashScreen(onTimeout: () -> Unit) {
             verticalArrangement = Arrangement.Center
         ) {
             Box(
-                modifier = Modifier
-                    .size(180.dp)
-                    .scale(scaleAnim.value)
-                    .alpha(alphaAnim.value),
+                modifier = Modifier.size(240.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Box(
+                Canvas(
                     modifier = Modifier
                         .fillMaxSize()
+                        .rotate(ringRotation)
+                ) {
+                    val radius = size.minDimension / 2.5f
+                    drawCircle(
+                        brush = Brush.sweepGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                accentColor.copy(alpha = 0.3f),
+                                accentColor.copy(alpha = 0.7f),
+                                Color.Transparent
+                            )
+                        ),
+                        radius = radius,
+                        style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(180.dp * pulseScale)
+                        .alpha(glowAlpha.value * 0.3f)
                         .background(
-                            brush = Brush.sweepGradient(
+                            brush = Brush.radialGradient(
                                 colors = listOf(
-                                    Color.Transparent,
-                                    PurpleAccent.copy(alpha = 0.3f),
-                                    PurpleAccent.copy(alpha = 0.6f),
+                                    accentColor.copy(alpha = 0.6f),
                                     Color.Transparent
                                 )
                             ),
                             shape = CircleShape
                         )
                 )
+
                 Box(
                     modifier = Modifier
-                        .size(140.dp)
+                        .size(160.dp)
+                        .scale(iconScale.value)
+                        .alpha(iconAlpha.value)
                         .background(
-                            brush = Brush.radialGradient(
+                            brush = Brush.linearGradient(
                                 colors = listOf(
-                                    PurpleAccent.copy(alpha = 0.4f),
-                                    Color(0xFF1A1A1A)
+                                    accentColor.copy(alpha = 0.4f),
+                                    accentColor.copy(alpha = 0.2f)
                                 )
                             ),
                             shape = CircleShape
@@ -123,10 +166,10 @@ fun SplashScreen(onTimeout: () -> Unit) {
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.ShoppingCart,
+                        imageVector = Icons.Default.ShoppingBag,
                         contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = PurpleAccent
+                        modifier = Modifier.size(80.dp),
+                        tint = accentColor
                     )
                 }
             }
@@ -134,64 +177,82 @@ fun SplashScreen(onTimeout: () -> Unit) {
             Spacer(modifier = Modifier.height(48.dp))
 
             AnimatedVisibility(
-                visible = startAnimation,
-                enter = fadeIn(animationSpec = tween(1000)) +
-                        slideInVertically(animationSpec = tween(1000))
+                visible = showTitle,
+                enter = fadeIn(animationSpec = tween(600)) +
+                        slideInVertically(
+                            initialOffsetY = { 30 },
+                            animationSpec = tween(600)
+                        )
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "",
-                        fontSize = 32.sp,
+                        text = "FunPay Tools",
+                        fontSize = 36.sp,
                         fontWeight = FontWeight.Black,
-                        color = TextPrimary
+                        color = textColor,
+                        letterSpacing = 2.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            AnimatedVisibility(
+                visible = showSubtitle,
+                enter = fadeIn(animationSpec = tween(600)) +
+                        slideInVertically(
+                            initialOffsetY = { 20 },
+                            animationSpec = tween(600)
+                        )
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "Автоматизация продаж",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = accentColor,
+                        modifier = Modifier.alpha(0.9f)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "",
-                        fontSize = 14.sp,
-                        color = TextSecondary,
+                        text = "v1.2 • by AlliSighs",
+                        fontSize = 12.sp,
+                        color = secondaryTextColor,
+                        modifier = Modifier.alpha(0.6f)
+                    )
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 48.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            AnimatedVisibility(
+                visible = showSubtitle,
+                enter = fadeIn(animationSpec = tween(800))
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .scale(pulseScale)
+                            .background(accentColor, CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "Загрузка...",
+                        fontSize = 13.sp,
+                        color = secondaryTextColor,
                         modifier = Modifier.alpha(0.7f)
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.height(48.dp))
-
-            // Анимированные точки загрузки
-            AnimatedVisibility(
-                visible = startAnimation,
-                enter = fadeIn(animationSpec = tween(1500))
-            ) {
-                LoadingDots()
-            }
-        }
-    }
-}
-
-@Composable
-fun LoadingDots() {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        repeat(3) { index ->
-            val infiniteTransition = rememberInfiniteTransition(label = "dot$index")
-            val scale by infiniteTransition.animateFloat(
-                initialValue = 0.5f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(600, delayMillis = index * 200),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "dot$index"
-            )
-
-            Box(
-                modifier = Modifier
-                    .size(12.dp)
-                    .scale(scale)
-                    .background(PurpleAccent, CircleShape)
-            )
         }
     }
 }

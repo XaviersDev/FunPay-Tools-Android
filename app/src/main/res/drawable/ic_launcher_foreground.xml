@@ -1,8 +1,13 @@
 <!--
-  ~ Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
-  ~
-  ~ This code is proprietary. Modification and redistribution are prohibited.
+  ~ /*
+  ~  * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
+  ~  *
+  ~  * This code is proprietary. Modification, distribution, or use
+  ~  * of this file without express written permission is strictly prohibited.
+  ~  * Unauthorized use will be prosecuted.
+  ~  */
   -->
+
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
