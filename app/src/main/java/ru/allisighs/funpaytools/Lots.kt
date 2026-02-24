@@ -2,20 +2,27 @@ package ru.allisighs.funpaytools
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import coil.compose.AsyncImage
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -26,6 +33,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.NavController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -36,8 +46,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -65,11 +78,27 @@ data class LotField(
     val locale: String? = null
 )
 
+data class LotImage(
+    val fileId: String,
+    val thumbnailUrl: String,
+    val fullUrl: String
+)
+
+data class BuyerPriceRow(
+    val method: String,
+    val ratio: Double,
+    val currencySymbol: String
+)
+
 data class LotFieldsData(
     val fields: Map<String, LotField>,
     val currency: String,
     val csrfToken: String,
-    val activeCookies: String
+    val activeCookies: String,
+    val imageUrls: List<String> = emptyList(),
+    val images: List<LotImage> = emptyList(),
+    val buyerPriceRows: List<BuyerPriceRow> = emptyList(),
+    val initialSellerPrice: Double = 0.0
 )
 
 sealed class LotsUiState {
@@ -150,11 +179,16 @@ class LotsViewModel(
     private val _selectedIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedIds: StateFlow<Set<String>> = _selectedIds.asStateFlow()
 
+    // ID аккаунта, для которого загружены лоты
+    var loadedForAccountId: String? = null
+        private set
+
     init {
         loadLots()
     }
 
     fun loadLots() {
+        loadedForAccountId = repository.getActiveAccount()?.id
         viewModelScope.launch {
             _uiState.value = LotsUiState.Loading
             try {
@@ -464,9 +498,75 @@ suspend fun FunPayRepository.getLotFields(lotId: String): LotFieldsData {
             fields[name] = LotField(name, "select", value, label, options, locale)
         }
 
+        // Если node_id не нашли в hidden inputs — вытаскиваем из ссылки "Назад" на странице
+        if (!fields.containsKey("node_id") || fields["node_id"]?.value.isNullOrEmpty()) {
+            val backLink = doc.select("a.js-back-link, a[href*='/lots/'][href$='/trade']").firstOrNull()
+                ?: doc.select("a[href*='/lots/']").firstOrNull { it.attr("href").matches(Regex(".*/lots/\\d+/.*")) }
+            val nodeIdFromUrl = backLink?.attr("href")?.let {
+                Regex("""/(?:lots|chips)/(\d+)/""").find(it)?.groupValues?.get(1)
+            }
+            if (!nodeIdFromUrl.isNullOrEmpty()) {
+                fields["node_id"] = LotField("node_id", "hidden", nodeIdFromUrl, locale = null)
+            }
+        }
+
+        // Если game не нашли — вытаскиваем из data-game атрибута showcase на странице
+        if (!fields.containsKey("game") || fields["game"]?.value.isNullOrEmpty()) {
+            val gameId = doc.select("[data-game]").firstOrNull()?.attr("data-game")
+            if (!gameId.isNullOrEmpty()) {
+                fields["game"] = LotField("game", "hidden", gameId, locale = null)
+            }
+        }
+
         val currency = doc.select(".form-control-feedback").text()
 
-        LotFieldsData(fields, currency, csrfToken, freshCookies)
+        val initialSellerPrice = doc.select("input[name='price']").attr("value").toDoubleOrNull() ?: 0.0
+        val buyerPriceRows = mutableListOf<BuyerPriceRow>()
+        if (initialSellerPrice > 0.0) {
+            doc.select(".js-calc-table-body tr").forEach { row ->
+                val method = row.select("th").text().trim()
+                val priceText = row.select("td").text().trim()
+                val currencySymbol = priceText.replace(Regex("[\\d.,\\s]"), "").trim()
+                val buyerPrice = priceText.replace(Regex("[^\\d.,]"), "").replace(",", ".").toDoubleOrNull()
+                if (method.isNotEmpty() && buyerPrice != null && buyerPrice > 0.0) {
+                    buyerPriceRows.add(BuyerPriceRow(method, buyerPrice / initialSellerPrice, currencySymbol))
+                }
+            }
+        }
+
+        val imageUrls = mutableListOf<String>()
+        val images = mutableListOf<LotImage>()
+
+        doc.select("li.attachments-item[data-file-id]").forEach { li ->
+            val fileId = li.attr("data-file-id")
+            if (fileId.isEmpty()) return@forEach
+            val aThumb = li.selectFirst("a.attachments-thumb") ?: return@forEach
+            val fullUrl = aThumb.attr("href")
+            val styleAttr = aThumb.attr("style")
+            val thumbUrl = Regex("""url\(([^)]+)\)""").find(styleAttr)?.groupValues?.get(1)?.trim() ?: fullUrl
+            if (fullUrl.isNotEmpty()) {
+                images.add(LotImage(fileId, thumbUrl, fullUrl))
+                imageUrls.add(fullUrl)
+            }
+        }
+
+        if (images.isEmpty()) {
+            doc.select("a.field-image-thumb, a.attachments-thumb").forEach { a ->
+                val href = a.attr("href")
+                if (href.isNotEmpty()) imageUrls.add(href)
+            }
+        }
+
+        if (imageUrls.isEmpty()) {
+            doc.select(".field-images img, .offer-images img").forEach { img ->
+                val src = img.attr("src")
+                if (src.isNotEmpty()) imageUrls.add(
+                    if (src.startsWith("http")) src else "https://funpay.com$src"
+                )
+            }
+        }
+
+        LotFieldsData(fields, currency, csrfToken, freshCookies, imageUrls, images, buyerPriceRows, initialSellerPrice)
     }
 }
 
@@ -539,8 +639,10 @@ suspend fun FunPayRepository.saveLot(
 suspend fun FunPayRepository.deleteLot(lotId: String): Boolean {
     return withContext(Dispatchers.IO) {
         try {
-            val (csrf, _) = getCsrfAndId() ?: return@withContext false
-            val cookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
+            // Берём CSRF из формы редактирования лота — как Cardinal
+            val fieldsData = getLotFields(lotId)
+            val csrf = fieldsData.csrfToken
+            val cookie = fieldsData.activeCookies
 
             val formBody = FormBody.Builder()
                 .add("csrf_token", csrf)
@@ -552,22 +654,95 @@ suspend fun FunPayRepository.deleteLot(lotId: String): Boolean {
                 .url("https://funpay.com/lots/offerSave")
                 .post(formBody)
                 .header("Cookie", cookie)
-                .header("User-Agent", "Mozilla/5.0")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
                 .header("X-Requested-With", "XMLHttpRequest")
+                .header("Referer", "https://funpay.com/lots/offerEdit?offer=$lotId")
                 .build()
 
             val response = OkHttpClient().newCall(request).execute()
             val body = response.body?.string()
 
-            if (body?.contains("\"done\":true") == true || body?.contains("\"done\": true") == true) {
-                return@withContext true
-            }
-
-            response.isSuccessful
+            body?.contains("\"done\":true") == true || body?.contains("\"done\": true") == true
+                    || response.isSuccessful
         } catch (e: Exception) {
             false
         }
     }
+}
+
+suspend fun FunPayRepository.uploadImageToFunPay(
+    imageBytes: ByteArray,
+    mimeType: String,
+    csrfToken: String,
+    cookies: String
+): String? {
+    return withContext(Dispatchers.IO) {
+        try {
+            val processedBytes = resizeImageIfNeeded(imageBytes)
+
+            val fileName = if (mimeType.contains("png")) "image.png" else "image.jpg"
+            val requestBody = processedBytes.toRequestBody("image/jpeg".toMediaType())
+            val multipartBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("csrf_token", csrfToken)
+                .addFormDataPart("file", fileName, requestBody)
+                .build()
+
+            val request = Request.Builder()
+                .url("https://funpay.com/file/addOfferImage")
+                .post(multipartBody)
+                .header("Cookie", cookies)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Origin", "https://funpay.com")
+                .header("Referer", "https://funpay.com/lots/offerEdit")
+                .build()
+
+            val response = OkHttpClient().newCall(request).execute()
+            val body = response.body?.string() ?: return@withContext null
+            val json = JSONObject(body)
+            if (json.has("error") && json.optInt("error") == 1) {
+                throw Exception(json.optString("msg", "Ошибка загрузки изображения"))
+            }
+            json.optString("fileId").takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            throw e
+        }
+    }
+}
+
+fun resizeImageIfNeeded(imageBytes: ByteArray): ByteArray {
+    val bitmap = android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        ?: return imageBytes
+
+    val maxSize = 4100
+    val minSize = 10
+
+    val w = bitmap.width
+    val h = bitmap.height
+
+    if (w in minSize..maxSize && h in minSize..maxSize) {
+        val out = java.io.ByteArrayOutputStream()
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+        return out.toByteArray()
+    }
+
+    val scale = if (w > maxSize || h > maxSize) {
+        minOf(maxSize.toFloat() / w, maxSize.toFloat() / h)
+    } else {
+        maxOf(minSize.toFloat() / w, minSize.toFloat() / h)
+    }
+
+    val newW = (w * scale).toInt().coerceIn(minSize, maxSize)
+    val newH = (h * scale).toInt().coerceIn(minSize, maxSize)
+
+    val resized = android.graphics.Bitmap.createScaledBitmap(bitmap, newW, newH, true)
+    val out = java.io.ByteArrayOutputStream()
+    resized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+    bitmap.recycle()
+    resized.recycle()
+    return out.toByteArray()
 }
 
 suspend fun FunPayRepository.toggleLotStatus(lotId: String, forceState: Boolean? = null): Pair<Boolean, String?> {
@@ -584,6 +759,12 @@ suspend fun FunPayRepository.toggleLotStatus(lotId: String, forceState: Boolean?
                 updatedFields["active"] = "on"
             } else {
                 updatedFields.remove("active")
+            }
+
+            // Если node_id не вытащился из формы — берём из getMyLots() как надёжный fallback
+            if (updatedFields["node_id"].isNullOrEmpty()) {
+                val lot = getMyLots().find { it.id == lotId }
+                if (lot != null) updatedFields["node_id"] = lot.nodeId
             }
 
             saveLot(lotId, updatedFields, fieldsData.csrfToken, fieldsData.activeCookies)
@@ -605,7 +786,12 @@ suspend fun FunPayRepository.copyLot(
             var currentCookie = originalData.activeCookies
             var currentCsrf = originalData.csrfToken
 
-            val nodeId = targetNodeId ?: originalFields["node_id"] ?: return@withContext Pair(false, "Не удалось определить категорию")
+            // Берём node_id из полей формы; если нет — из getMyLots() как fallback
+            val nodeIdFromForm = originalFields["node_id"]?.takeIf { it.isNotEmpty() }
+            val nodeId = targetNodeId
+                ?: nodeIdFromForm
+                ?: getMyLots().find { it.id == lotId }?.nodeId
+                ?: return@withContext Pair(false, "Не удалось определить категорию")
 
             val finalFields = if (targetNodeId != null && targetNodeId != originalFields["node_id"]) {
                 val newCategoryResponse = RetrofitInstance.api.getChatPage(
@@ -672,6 +858,17 @@ fun LotsScreen(navController: NavController, repository: FunPayRepository, theme
     val searchQuery by viewModel.searchQuery.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
     val selectedIds by viewModel.selectedIds.collectAsState()
+
+    // Перезагружаем лоты при возврате на экран если аккаунт сменился
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            val currentAccountId = repository.getActiveAccount()?.id
+            if (viewModel.loadedForAccountId != currentAccountId) {
+                viewModel.loadLots()
+            }
+        }
+    }
 
     var showDeleteDialog by remember { mutableStateOf<Lot?>(null) }
     var showCopyDialog by remember { mutableStateOf<Lot?>(null) }
@@ -1007,7 +1204,9 @@ fun LotCard(
                         Column(horizontalAlignment = Alignment.End) {
                             Text("$price ${lot.currency ?: ""}", fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.accentColor))
-                            lot.amount?.let { Text("× $it", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                            if (!lot.hasAutoDelivery) {
+                                lot.amount?.let { Text("× $it", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                            }
                         }
                     }
                 }
@@ -1290,12 +1489,41 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
     var isSaving by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var selectedTab by remember { mutableStateOf(0) }
+    var currentImages by remember { mutableStateOf<List<LotImage>>(emptyList()) }
+    var isUploadingImage by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                isUploadingImage = true
+                errorMessage = null
+                try {
+                    val data = (uiState as? LotEditUiState.Success)?.fieldsData ?: return@launch
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val mimeType = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    val bytes = inputStream?.readBytes() ?: return@launch
+                    inputStream.close()
+                    val fileId = repository.uploadImageToFunPay(bytes, mimeType, data.csrfToken, data.activeCookies)
+                        ?: throw Exception("Не удалось получить ID файла")
+                    val newImage = LotImage(fileId, uri.toString(), uri.toString())
+                    currentImages = currentImages + newImage
+                    fieldValues = fieldValues + ("fields[images]" to currentImages.joinToString(",") { it.fileId })
+                } catch (e: Exception) {
+                    errorMessage = e.message ?: "Ошибка загрузки фото"
+                } finally {
+                    isUploadingImage = false
+                }
+            }
+        }
+    }
 
     LaunchedEffect(lotId) {
         uiState = LotEditUiState.Loading
         try {
             val data = repository.getLotFields(lotId)
             fieldValues = data.fields.mapValues { it.value.value }
+            currentImages = data.images
             uiState = LotEditUiState.Success(data)
         } catch (e: Exception) {
             uiState = LotEditUiState.Error(e.message ?: "Ошибка загрузки")
@@ -1371,6 +1599,7 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                             try {
                                 val data = repository.getLotFields(lotId)
                                 fieldValues = data.fields.mapValues { it.value.value }
+                                currentImages = data.images
                                 uiState = LotEditUiState.Success(data)
                             } catch (e: Exception) {
                                 uiState = LotEditUiState.Error(e.message ?: "Ошибка")
@@ -1404,6 +1633,61 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                         val hasMultiLang = ruFields.isNotEmpty() || enFields.isNotEmpty()
 
                         if (hasMultiLang) {
+
+                            LazyRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(currentImages, key = { it.fileId }) { image ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(100.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.3f), RoundedCornerShape(8.dp))
+                                    ) {
+                                        AsyncImage(
+                                            model = image.thumbnailUrl,
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                        IconButton(
+                                            onClick = {
+                                                currentImages = currentImages.filter { it.fileId != image.fileId }
+                                                fieldValues = fieldValues + ("fields[images]" to currentImages.joinToString(",") { it.fileId })
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(28.dp)
+                                                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(topEnd = 8.dp, bottomStart = 8.dp))
+                                        ) {
+                                            Icon(Icons.Default.Close, "Удалить", tint = Color.White, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                }
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(100.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.5f), RoundedCornerShape(8.dp))
+                                            .clickable(enabled = !isUploadingImage) { imagePickerLauncher.launch("image/*") },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (isUploadingImage) {
+                                            CircularProgressIndicator(Modifier.size(32.dp), color = ThemeManager.parseColor(theme.accentColor), strokeWidth = 2.dp)
+                                        } else {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                Icon(Icons.Default.CameraAlt, "Добавить фото", tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
+                                                Text("Добавить", fontSize = 10.sp, color = ThemeManager.parseColor(theme.accentColor), textAlign = TextAlign.Center)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             TabRow(
                                 selectedTabIndex = selectedTab,
                                 containerColor = ThemeManager.parseColor(theme.surfaceColor),
@@ -1415,6 +1699,62 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                 }
                                 if (enFields.isNotEmpty()) {
                                     Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("🇬🇧 English") })
+                                }
+                            }
+                        }
+
+                        if (!hasMultiLang) {
+                            LazyRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(currentImages, key = { it.fileId }) { image ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(100.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.3f), RoundedCornerShape(8.dp))
+                                    ) {
+                                        AsyncImage(
+                                            model = image.thumbnailUrl,
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                        IconButton(
+                                            onClick = {
+                                                currentImages = currentImages.filter { it.fileId != image.fileId }
+                                                fieldValues = fieldValues + ("fields[images]" to currentImages.joinToString(",") { it.fileId })
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(28.dp)
+                                                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(topEnd = 8.dp, bottomStart = 8.dp))
+                                        ) {
+                                            Icon(Icons.Default.Close, "Удалить", tint = Color.White, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                }
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(100.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.5f), RoundedCornerShape(8.dp))
+                                            .clickable(enabled = !isUploadingImage) { imagePickerLauncher.launch("image/*") },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (isUploadingImage) {
+                                            CircularProgressIndicator(Modifier.size(32.dp), color = ThemeManager.parseColor(theme.accentColor), strokeWidth = 2.dp)
+                                        } else {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                Icon(Icons.Default.CameraAlt, "Добавить фото", tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
+                                                Text("Добавить", fontSize = 10.sp, color = ThemeManager.parseColor(theme.accentColor), textAlign = TextAlign.Center)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1436,8 +1776,77 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                         fieldValues = fieldValues + (name to newValue)
                                     }
                                 }
+                                if (name == "price" && state.fieldsData.buyerPriceRows.isNotEmpty()) {
+                                    item(key = "buyer_prices") {
+                                        BuyerPriceTable(
+                                            sellerPriceText = fieldValues["price"] ?: "",
+                                            rows = state.fieldsData.buyerPriceRows,
+                                            theme = theme
+                                        )
+                                    }
+                                }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun BuyerPriceTable(sellerPriceText: String, rows: List<BuyerPriceRow>, theme: AppTheme) {
+    val sellerPrice = sellerPriceText.replace(",", ".").toDoubleOrNull()
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(theme.borderRadius.dp),
+        color = ThemeManager.parseColor(theme.surfaceColor),
+        border = BorderStroke(1.dp, ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.2f))
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+            Text(
+                "Цена для покупателей",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            if (sellerPrice == null || sellerPrice <= 0.0) {
+                Text(
+                    "Введите цену для расчёта",
+                    fontSize = 13.sp,
+                    color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.6f)
+                )
+            } else {
+                rows.forEachIndexed { index, row ->
+                    val buyerPrice = sellerPrice * row.ratio
+                    val formatted = "%.2f %s".format(buyerPrice, row.currencySymbol)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            row.method,
+                            fontSize = 13.sp,
+                            color = ThemeManager.parseColor(theme.textPrimaryColor),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            formatted,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = ThemeManager.parseColor(theme.accentColor)
+                        )
+                    }
+                    if (index < rows.lastIndex) {
+                        HorizontalDivider(
+                            color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.1f),
+                            thickness = 0.5.dp
+                        )
                     }
                 }
             }

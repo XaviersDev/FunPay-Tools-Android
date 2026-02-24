@@ -23,24 +23,37 @@ class BootReceiver : BroadcastReceiver() {
             if (!userManager.isUserUnlocked) return
         }
 
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED ||
-            intent.action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
-            intent.action == "android.intent.action.QUICKBOOT_POWERON" ||
-            intent.action == "com.htc.intent.action.QUICKBOOT_POWERON") {
+        val action = intent.action ?: return
 
+        
+        if (action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
+            action == "android.intent.action.QUICKBOOT_POWERON" ||
+            action == "com.htc.intent.action.QUICKBOOT_POWERON" ||
+            action == Intent.ACTION_USER_PRESENT || 
+            action == Intent.ACTION_POWER_CONNECTED || 
+            action == Intent.ACTION_POWER_DISCONNECTED 
+        ) {
             try {
                 val repository = FunPayRepository(context)
 
                 if (repository.hasAuth() && repository.getSetting("auto_start_on_boot")) {
-                    LogManager.addLog("🔄 Автозапуск после перезагрузки")
 
-                    val serviceIntent = Intent(context, FunPayService::class.java)
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        context.startForegroundService(serviceIntent)
+                    
+                    if (action.contains("BOOT")) {
+                        LogManager.addLog("🔄 Автозапуск после перезагрузки")
                     } else {
-                        context.startService(serviceIntent)
+                        LogManager.addLogDebug("⚡ Системный триггер ($action) разбудил сервис")
                     }
+
+                    
+                    try {
+                        context.startService(Intent(context, WatchdogDaemon::class.java))
+                    } catch (e: Exception) {}
+
+                    
+                    
+                    ServiceStarter.startSafely(context)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()

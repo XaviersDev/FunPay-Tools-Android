@@ -197,7 +197,7 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
                     onTicketClick = { ticket ->
                         scope.launch {
                             val details = support.getTicketDetails(ticket.id)
-                            // Используем название из списка, т.к. оно уже корректно распарсено
+                            
                             selectedTicket = details?.copy(title = ticket.title)
                         }
                     }
@@ -514,7 +514,7 @@ fun TicketDetailsView(
                 .fillMaxSize()
                 .padding(16.dp)
         ) {
-            // Шапка тикета
+            
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -609,7 +609,7 @@ fun TicketDetailsView(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Комментарии
+            
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -619,7 +619,7 @@ fun TicketDetailsView(
                 }
             }
 
-            // Форма ответа
+            
             if (ticket.status == "Открыт") {
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -675,7 +675,7 @@ fun TicketDetailsView(
             }
         }
 
-        // Компактное всплывающее окно с инфо
+        
         if (showInfoPanel) {
             Box(
                 modifier = Modifier
@@ -688,7 +688,7 @@ fun TicketDetailsView(
                         .align(Alignment.TopEnd)
                         .padding(16.dp)
                         .width(280.dp)
-                        .clickable(enabled = false) { }, // Предотвращаем закрытие при клике на карту
+                        .clickable(enabled = false) { }, 
                     colors = CardDefaults.cardColors(
                         containerColor = ThemeManager.parseColor(theme.surfaceColor)
                     ),
@@ -728,7 +728,7 @@ fun TicketDetailsView(
                             color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.2f)
                         )
 
-                        // ID заявки
+                        
                         CompactInfoRow(
                             label = "ID",
                             value = "#${ticket.id}",
@@ -736,14 +736,14 @@ fun TicketDetailsView(
                             highlighted = true
                         )
 
-                        // Комментарии
+                        
                         CompactInfoRow(
                             label = "Комментариев",
                             value = ticket.comments.size.toString(),
                             theme = theme
                         )
 
-                        // Дополнительные поля
+                        
                         if (ticket.additionalFields.isNotEmpty()) {
                             HorizontalDivider(
                                 color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.2f)
@@ -916,8 +916,10 @@ fun CreateTicketDialog(
     LaunchedEffect(selectedCategory) {
         if (selectedCategory != null) {
             isLoadingFields = true
-            categoryFields = support.getCategoryFields(selectedCategory!!.id)
-            fieldValues = categoryFields.associate { it.id to "" }
+            val fields = support.getCategoryFields(selectedCategory!!.id)
+            categoryFields = fields
+            
+            fieldValues = fields.associate { it.id to it.defaultValue }
             isLoadingFields = false
         }
     }
@@ -935,7 +937,7 @@ fun CreateTicketDialog(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Показываем ошибку вверху диалога
+                
                 errorMessage?.let { error ->
                     Card(
                         modifier = Modifier.fillMaxWidth(),

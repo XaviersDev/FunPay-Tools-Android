@@ -56,11 +56,14 @@ data class DumperLotConfig(
     @SerializedName("priceMax") val priceMax: Double = 99999.0,
     @SerializedName("priceStep") val priceStep: Double = 5.0,
     @SerializedName("priceDivider") val priceDivider: Double = 0.0,
-    @SerializedName("ratingMin") val ratingMin: Int = 5,
+    @SerializedName("ratingMin") val ratingMin: Int = 0,
     @SerializedName("ignoreZeroRating") val ignoreZeroRating: Boolean = false,
     @SerializedName("positionMax") val positionMax: Int = 50,
     @SerializedName("fastPriceCheck") val fastPriceCheck: Boolean = false,
-    @SerializedName("updateInterval") val updateInterval: Int = 60 // в сек
+    @SerializedName("autoRaise") val autoRaise: Boolean = true,
+    @SerializedName("aggressiveMode") val aggressiveMode: Boolean = false,
+    @SerializedName("updateInterval") val updateInterval: Int = 60,
+    @SerializedName("matchAllMethods") val matchAllMethods: Boolean = true
 )
 
 data class DumperSettings(

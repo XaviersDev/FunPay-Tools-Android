@@ -16,6 +16,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.RemoteInput
 import android.app.Service
+import android.app.AlarmManager
+import android.content.ContentResolver
+import android.os.SystemClock
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
@@ -36,6 +39,10 @@ class FunPayService : Service() {
     override fun onCreate() {
         super.onCreate()
         repository = FunPayRepository(this)
+        WatchdogWorker.start(this)
+        try {
+            startService(Intent(this, WatchdogDaemon::class.java))
+        } catch (e: Exception) {}
 
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -62,10 +69,15 @@ class FunPayService : Service() {
     private fun startWorkLoop() {
         serviceScope.launch {
             LogManager.addLog("🛠️ SERVICE: Цикл started")
-
             var lastCleanup = 0L
-
+            var lastWidgetUpdate = 0L
             while (isActive) {
+                if (!isNetworkAvailable(this@FunPayService)) {
+                    LogManager.addLogDebug("📶 Нет интернета. Сплю...")
+                    updateNotification("Ожидание сети...")
+                    delay(25000)
+                    continue
+                }
                 if (repository.hasAuth()) {
                     try {
                         val chats = repository.getChats()
@@ -77,6 +89,7 @@ class FunPayService : Service() {
                             if (busySettings.keepAutoResponse) repository.checkAutoResponse(chats)
                             if (busySettings.keepGreeting) repository.checkGreetings(chats)
                         } else {
+                            resolveNewUnreadChats(chats)
                             repository.checkAutoResponse(chats)
                             repository.checkGreetings(chats)
                             repository.raiseAllLots()
@@ -95,6 +108,20 @@ class FunPayService : Service() {
                             lastCleanup = System.currentTimeMillis()
                         }
 
+                        
+                        if (System.currentTimeMillis() - lastWidgetUpdate > 5 * 60 * 1000L) {
+                            try {
+                                val profile = repository.getSelfProfile()
+                                if (profile != null) {
+                                    WidgetManager.saveProfileCache(this@FunPayService, profile)
+                                }
+                                WidgetManager.updateAllWidgets(this@FunPayService)
+                            } catch (e: Exception) {
+                                LogManager.addLogDebug("⚠️ Widget update error: ${e.message}")
+                            }
+                            lastWidgetUpdate = System.currentTimeMillis()
+                        }
+
                         val unread = chats.count { it.isUnread }
                         val status = if (unread > 0) "Непрочитанных: $unread" else "Работает"
                         updateNotification(status)
@@ -104,9 +131,50 @@ class FunPayService : Service() {
                         e.printStackTrace()
                     }
                 }
-                delay(6513)
+                val calendar = java.util.Calendar.getInstance()
+                val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
+                val isNight = hour in 2..6
+
+                val delayTime = if (isNight) {
+                    15000L
+                } else {
+                    6513L
+                }
+
+                delay(delayTime)
             }
         }
+    }
+
+    private suspend fun resolveNewUnreadChats(chats: List<ChatItem>) {
+        val (_, userId) = repository.getCsrfAndId() ?: return
+
+        val newlyUnread = chats.filter { chat ->
+            chat.isUnread &&
+                    !FunPayRepository.lastOutgoingMessages.containsKey(chat.id) &&
+                    !repository.knownUnreadChats.contains(chat.id)
+        }
+
+        for (chat in newlyUnread) {
+            try {
+                val messages = repository.getChatHistory(chat.id)
+                val lastMsg = messages.lastOrNull() ?: continue
+
+                if (lastMsg.isMe) {
+
+                    FunPayRepository.lastOutgoingMessages[chat.id] = lastMsg.text
+                } else {
+
+                    repository.knownUnreadChats.add(chat.id)
+                }
+            } catch (e: Exception) {
+
+            }
+        }
+
+
+        val unreadIds = chats.filter { it.isUnread }.map { it.id }.toSet()
+        repository.knownUnreadChats.retainAll(unreadIds)
     }
 
     private fun checkPushNotifications(chats: List<ChatItem>) {
@@ -126,9 +194,10 @@ class FunPayService : Service() {
 
                     val cleanIncoming = lastMsg.replace("...", "").trim().lowercase()
                     val cleanSelf = lastSelf.trim().lowercase()
-
-
-                    if (cleanSelf.contains(cleanIncoming) || cleanIncoming.contains(cleanSelf)) {
+                    if (cleanSelf.contains(cleanIncoming) ||
+                        cleanIncoming.contains(cleanSelf) ||
+                        cleanSelf.startsWith(cleanIncoming) ||
+                        cleanIncoming.startsWith(cleanSelf)) {
                         continue
                     }
                 }
@@ -147,7 +216,7 @@ class FunPayService : Service() {
 
     private fun sendChatNotification(chat: ChatItem) {
         val notificationId = chat.id.hashCode()
-        val channelId = "fp_push_channel_v2"
+        val channelId = "fp_push_channel_v4"
 
         val replyLabel = "Ответить"
         val remoteInput = RemoteInput.Builder("key_text_reply")
@@ -186,7 +255,7 @@ class FunPayService : Service() {
         }
 
         val notification = builder
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.mipmap.ic_launcher_foreground)
             .setContentTitle(chat.username)
             .setContentText(chat.lastMessage)
             .setStyle(Notification.BigTextStyle().bigText(chat.lastMessage))
@@ -202,22 +271,33 @@ class FunPayService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
 
-            val serviceChannel = NotificationChannel("fp_service", "FunPay Tools Core", NotificationManager.IMPORTANCE_LOW)
+            val serviceChannel = NotificationChannel(
+                "fp_service",
+                "FunPay Tools Core",
+                NotificationManager.IMPORTANCE_LOW
+            )
             manager.createNotificationChannel(serviceChannel)
 
-            val pushChannelId = "fp_push_channel_v2"
-            val pushChannel = NotificationChannel(pushChannelId, "Сообщения", NotificationManager.IMPORTANCE_HIGH)
-
-            val soundUri = Uri.parse("android.resource://" + packageName + "/" + R.raw.funpay_push)
+            val soundUri = Uri.parse(
+                ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + packageName + "/raw/funpay_push"
+            )
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                 .build()
 
-            pushChannel.setSound(soundUri, audioAttributes)
-            pushChannel.enableLights(true)
-            pushChannel.enableVibration(true)
+            val pushChannel = NotificationChannel(
+                "fp_push_channel_v4",
+                "Сообщения",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                setSound(soundUri, audioAttributes)
+                enableLights(true)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 150, 250)
+            }
 
+            manager.deleteNotificationChannel("fp_push_channel_v4")
             manager.createNotificationChannel(pushChannel)
         }
     }
@@ -235,13 +315,16 @@ class FunPayService : Service() {
             Notification.Builder(this)
         }
 
-        return builder
+        val notification = builder
             .setContentTitle("FunPay Tools")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setSmallIcon(R.mipmap.ic_launcher_foreground)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
+        notification.flags = notification.flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+
+        return notification
     }
 
     private fun updateNotification(text: String) {
@@ -249,50 +332,69 @@ class FunPayService : Service() {
         manager.notify(1, createNotification(text))
     }
 
+
     override fun onDestroy() {
         serviceScope.cancel()
         try {
             if (wakeLock?.isHeld == true) {
                 wakeLock?.release()
-                LogManager.addLog("🔋 WakeLock освобожден")
             }
         } catch (e: Exception) { }
-        LogManager.addLog("🛑 SERVICE: Остановлен")
 
+        LogManager.addLog("🛑 SERVICE: Убит системой, запускаю дефибриллятор")
         if (repository.getSetting("auto_start_on_boot")) {
-            val restartIntent = Intent(this, FunPayService::class.java)
-            val restartPendingIntent = PendingIntent.getService(
-                this, 1, restartIntent,
+
+            val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {
+                action = "ru.allisighs.funpaytools.RESTART_SERVICE"
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, 2, restartIntent,
                 PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
             )
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            alarmManager.set(
-                android.app.AlarmManager.ELAPSED_REALTIME,
-                android.os.SystemClock.elapsedRealtime() + 5000,
-                restartPendingIntent
+            alarmManager.setExactAndAllowWhileIdle(
+                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                android.os.SystemClock.elapsedRealtime() + 3000,
+                pendingIntent
             )
         }
-
         super.onDestroy()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        LogManager.addLog("⚠️ SERVICE: Task removed")
+        LogManager.addLog("⚠️ SERVICE: Смахнули из недавних. Воскрешаюсь!")
 
         if (repository.getSetting("auto_start_on_boot")) {
-            val restartIntent = Intent(applicationContext, FunPayService::class.java)
-            val restartPendingIntent = PendingIntent.getService(
+            val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {
+                action = "ru.allisighs.funpaytools.RESTART_SERVICE"
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
                 this, 1, restartIntent,
                 PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
             )
-            val alarmManager = applicationContext.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            alarmManager.set(
-                android.app.AlarmManager.ELAPSED_REALTIME,
-                android.os.SystemClock.elapsedRealtime() + 5000,
-                restartPendingIntent
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+
+            alarmManager.setExactAndAllowWhileIdle(
+                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                android.os.SystemClock.elapsedRealtime() + 3000,
+                pendingIntent
             )
         }
-
         super.onTaskRemoved(rootIntent)
     }
+
+    private fun isNetworkAvailable(context: Context): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = connectivityManager.activeNetwork ?: return false
+            val activeNetwork = connectivityManager.getNetworkCapabilities(network) ?: return false
+            return activeNetwork.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } else {
+            @Suppress("DEPRECATION")
+            val networkInfo = connectivityManager.activeNetworkInfo ?: return false
+            @Suppress("DEPRECATION")
+            return networkInfo.isConnected
+        }
+    }
+
 }

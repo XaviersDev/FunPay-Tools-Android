@@ -54,7 +54,8 @@ data class TicketField(
     val type: String,
     val required: Boolean,
     val options: List<TicketFieldOption> = emptyList(),
-    val condition: String? = null
+    val condition: String? = null,
+    val defaultValue: String = ""
 )
 
 data class TicketFieldOption(
@@ -76,12 +77,34 @@ class FunPaySupport(private val repository: FunPayRepository) {
     private var userId: String? = null
     private var allCookies = mutableMapOf<String, String>()
 
+    /** Возвращает username активного аккаунта или пустую строку */
+    fun getMyUsername(): String = repository.getActiveAccount()?.username ?: ""
+
+    /**
+     * Возвращает Map<fieldName, value> для авто-подстановки при создании тикета.
+     * Ищет поле с заголовком "Ваш ник (логин) на FunPay" и подставляет ник
+     * активного аккаунта.
+     */
+    fun autoFillKnownFields(fields: List<TicketField>): Map<String, String> {
+        val username = getMyUsername().ifEmpty { return emptyMap() }
+        val result = mutableMapOf<String, String>()
+        for (field in fields) {
+            val label = field.name.lowercase().trim()
+            if (label.contains("ваш ник") || label.contains("логин на funpay") ||
+                label.contains("ник на funpay") || label.contains("your nickname") ||
+                label.contains("your login on funpay")) {
+                result[field.id] = username
+            }
+        }
+        return result
+    }
+
     private fun updateCookies(response: Response) {
         response.headers("Set-Cookie").forEach { cookie ->
             val parts = cookie.split(";")[0].split("=", limit = 2)
             if (parts.size == 2) {
                 allCookies[parts[0]] = parts[1]
-                
+
             }
         }
     }
@@ -101,7 +124,7 @@ class FunPaySupport(private val repository: FunPayRepository) {
         }
 
         val result = cookieMap.map { "${it.key}=${it.value}" }.joinToString("; ")
-        
+
         return result
     }
 
@@ -114,7 +137,7 @@ class FunPaySupport(private val repository: FunPayRepository) {
             response?.close()
             response = client.newCall(request).execute()
 
-            
+
             updateCookies(response)
 
             if (response.code !in 300..399) {
@@ -123,12 +146,12 @@ class FunPaySupport(private val repository: FunPayRepository) {
 
             val location = response.header("Location")
             if (location == null) {
-                
+
                 return response
             }
 
             redirectCount++
-            
+
 
             val newUrl = when {
                 location.startsWith("http") -> location
@@ -143,13 +166,13 @@ class FunPaySupport(private val repository: FunPayRepository) {
                 .build()
         }
 
-        
+
         return response ?: throw Exception("No response after redirects")
     }
 
     suspend fun init(): Boolean = withContext(Dispatchers.IO) {
         try {
-            
+
 
             allCookies.clear()
 
@@ -159,15 +182,15 @@ class FunPaySupport(private val repository: FunPayRepository) {
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .build()
 
-            
+
 
             val response = followRedirects(request, maxRedirects = 10)
 
             val html = response.body?.string() ?: ""
-            
+
 
             if (response.code == 429) {
-                
+
                 return@withContext false
             }
 
@@ -180,23 +203,23 @@ class FunPaySupport(private val repository: FunPayRepository) {
                     csrfToken = json.optString("csrfToken")
                     userId = json.optString("userId")
 
-                    
-                    
-                    
+
+
+
 
                     response.close()
                     return@withContext true
                 }
             }
 
-            
+
             response.close()
             false
         } catch (e: Exception) {
-            
-            
+
+
             e.stackTrace.take(5).forEach {
-                
+
             }
             false
         }
@@ -204,7 +227,7 @@ class FunPaySupport(private val repository: FunPayRepository) {
 
     suspend fun getCategories(): List<TicketCategory> = withContext(Dispatchers.IO) {
         try {
-            
+
 
             val request = Request.Builder()
                 .url("$baseUrl/tickets/new")
@@ -224,23 +247,21 @@ class FunPaySupport(private val repository: FunPayRepository) {
 
                 if (value.isNotEmpty() && text != "Выберите вариант...") {
                     categories.add(TicketCategory(value, text))
-                    
+
                 }
             }
 
-            
+
             response.close()
             categories
         } catch (e: Exception) {
-            
+
             emptyList()
         }
     }
 
     suspend fun getCategoryFields(categoryId: String): List<TicketField> = withContext(Dispatchers.IO) {
         try {
-            
-
             val request = Request.Builder()
                 .url("$baseUrl/tickets/new/$categoryId")
                 .header("Cookie", getCookieString())
@@ -253,19 +274,15 @@ class FunPaySupport(private val repository: FunPayRepository) {
             val doc = Jsoup.parse(html)
             val fields = mutableListOf<TicketField>()
 
-            // Парсим все input/select/textarea поля
             doc.select("input[name^='ticket[fields]'], select[name^='ticket[fields]'], textarea[name^='ticket[comment]']").forEach { element ->
                 val fieldName = element.attr("name")
 
-                // Пропускаем скрытые поля и attachment
                 if (fieldName.contains("_token") || fieldName.contains("attachments")) {
                     return@forEach
                 }
 
-                // Находим родительский контейнер
                 val container = element.closest(".mb-3") ?: element.closest("fieldset") ?: return@forEach
 
-                // Получаем label
                 val labelElem = container.select("label[for='${element.attr("id")}']").firstOrNull()
                     ?: container.select("label").firstOrNull()
                     ?: container.select("legend").firstOrNull()
@@ -273,9 +290,19 @@ class FunPaySupport(private val repository: FunPayRepository) {
                 val labelText = labelElem?.text()?.replace("*", "")?.trim() ?: ""
                 val isRequired = labelElem?.hasClass("required") ?: false || labelText.contains("*")
 
-                // Проверяем условие отображения
                 val condition = container.attr("data-condition")
                 val hasCondition = condition.isNotEmpty()
+
+                
+                
+                
+                val lowerLabel = labelText.lowercase()
+                val isUsernameField = lowerLabel.contains("ник") ||
+                        lowerLabel.contains("логин") ||
+                        lowerLabel.contains("nickname")
+
+                
+                val defaultVal = if (isUsernameField) getMyUsername() else ""
 
                 when {
                     element.tagName() == "select" -> {
@@ -288,18 +315,12 @@ class FunPaySupport(private val repository: FunPayRepository) {
                         }
 
                         fields.add(TicketField(
-                            fieldName,
-                            labelText,
-                            "select",
-                            isRequired,
-                            options,
-                            if (hasCondition) condition else null
+                            fieldName, labelText, "select", isRequired, options,
+                            if (hasCondition) condition else null, defaultVal
                         ))
-                        
                     }
 
                     element.attr("type") == "radio" -> {
-                        // Проверяем, не добавили ли мы уже эту radio группу
                         if (fields.none { it.id == fieldName }) {
                             val fieldset = element.closest("fieldset")
                             val legend = fieldset?.select("legend")?.first()?.text()?.replace("*", "")?.trim() ?: labelText
@@ -316,63 +337,44 @@ class FunPaySupport(private val repository: FunPayRepository) {
                             }
 
                             fields.add(TicketField(
-                                fieldName,
-                                legend,
-                                "radio",
-                                isRequired,
-                                options,
-                                if (hasCondition) condition else null
+                                fieldName, legend, "radio", isRequired, options,
+                                if (hasCondition) condition else null, defaultVal
                             ))
-                            
                         }
                     }
 
                     element.tagName() == "textarea" -> {
-                        // Пропускаем summernote редактор
                         if (element.hasAttr("data-controller")) {
                             return@forEach
                         }
-
                         val name = if (fieldName.contains("comment")) "Сообщение" else labelText
                         fields.add(TicketField(
-                            fieldName,
-                            name,
-                            "textarea",
-                            false, // Сообщение необязательно
-                            emptyList(),
-                            if (hasCondition) condition else null
+                            fieldName, name, "textarea", false, emptyList(),
+                            if (hasCondition) condition else null, defaultVal
                         ))
-                        
                     }
 
                     else -> {
-                        // Обычный input
-                        fields.add(TicketField(
-                            fieldName,
-                            labelText,
-                            "text",
-                            isRequired,
-                            emptyList(),
-                            if (hasCondition) condition else null
-                        ))
                         
+                        fields.add(TicketField(
+                            fieldName, labelText, "text", isRequired, emptyList(),
+                            if (hasCondition) condition else null, defaultVal
+                        ))
                     }
                 }
             }
 
-            
             response.close()
             fields
         } catch (e: Exception) {
-            
             e.printStackTrace()
             emptyList()
         }
     }
-
+    
     suspend fun getTicketsList(): List<SupportTicket> = withContext(Dispatchers.IO) {
         try {
-            
+
 
             val request = Request.Builder()
                 .url("$baseUrl/tickets")
@@ -383,10 +385,10 @@ class FunPaySupport(private val repository: FunPayRepository) {
             val response = followRedirects(request)
             val html = response.body?.string() ?: ""
 
-            
+
 
             if (response.code == 429) {
-                
+
                 response.close()
                 return@withContext emptyList()
             }
@@ -408,21 +410,21 @@ class FunPaySupport(private val repository: FunPayRepository) {
                 }
 
                 tickets.add(SupportTicket(id, titleText, status, dateText, 0))
-                
+
             }
 
-            
+
             response.close()
             tickets
         } catch (e: Exception) {
-            
+
             emptyList()
         }
     }
 
     suspend fun getTicketDetails(ticketId: String): TicketDetails? = withContext(Dispatchers.IO) {
         try {
-            
+
 
             val request = Request.Builder()
                 .url("$baseUrl/tickets/$ticketId")
@@ -435,7 +437,7 @@ class FunPaySupport(private val repository: FunPayRepository) {
 
             val doc = Jsoup.parse(html)
 
-            // Парсим тему заявки из breadcrumb
+            
             val breadcrumbActive = doc.select(".breadcrumb-item.active").text()
             val title = breadcrumbActive.replace("Заявка #$ticketId", "").trim()
 
@@ -458,19 +460,19 @@ class FunPaySupport(private val repository: FunPayRepository) {
                 val value = row.select(".col-xl-8, .col-sm-8").first()?.text()?.trim()
 
                 if (key != null && value != null && key.isNotEmpty() && value.isNotEmpty()) {
-                    // Фильтруем стандартные поля
+                    
                     if (key !in listOf("Статус", "Создана", "Ответственный")) {
                         additionalFields[key] = value
-                        
+
                     }
                 }
             }
 
-            
+
             response.close()
             TicketDetails(ticketId, title, status, comments, additionalFields)
         } catch (e: Exception) {
-            
+
             null
         }
     }
@@ -481,9 +483,9 @@ class FunPaySupport(private val repository: FunPayRepository) {
         message: String
     ): String? = withContext(Dispatchers.IO) {
         try {
-            
 
-            // Получаем CSRF токен со страницы формы
+
+            
             val detailsRequest = Request.Builder()
                 .url("$baseUrl/tickets/new/$categoryId")
                 .header("Cookie", getCookieString())
@@ -501,18 +503,18 @@ class FunPaySupport(private val repository: FunPayRepository) {
 
             val formBuilder = FormBody.Builder()
 
-            // Добавляем значения полей
+            
             fieldValues.forEach { (key, value) ->
                 if (value.isNotEmpty()) {
                     formBuilder.add(key, value)
-                    
+
                 }
             }
 
-            // Добавляем комментарий
+            
             if (message.isNotBlank()) {
                 formBuilder.add("ticket[comment][body_html]", "<p>$message</p>")
-                
+
             }
 
             formBuilder.add("ticket[comment][attachments]", "")
@@ -531,7 +533,7 @@ class FunPaySupport(private val repository: FunPayRepository) {
             val response = followRedirects(request)
             val body = response.body?.string() ?: ""
 
-            
+
 
             val result = when {
                 response.code == 200 && body.contains("action") -> {
@@ -539,11 +541,11 @@ class FunPaySupport(private val repository: FunPayRepository) {
                         val json = JSONObject(body)
                         val ticketId = json.optJSONObject("action")?.optString("url")?.split("/")?.last()
                         if (ticketId != null) {
-                            
+
                         }
                         ticketId
                     } catch (e: Exception) {
-                        
+
                         null
                     }
                 }
@@ -551,22 +553,22 @@ class FunPaySupport(private val repository: FunPayRepository) {
                     try {
                         val json = JSONObject(body)
                         val errorMsg = json.optString("error", "Ошибка клиента")
-                        
+
                         throw Exception(errorMsg)
                     } catch (e: Exception) {
                         if (e.message?.startsWith("Запросы") == true || e.message?.contains("Ошибка") == true) {
                             throw e
                         }
-                        
+
                         throw Exception("Ошибка при создании заявки. Код: ${response.code}")
                     }
                 }
                 response.code == 500 -> {
-                    
+
                     throw Exception("Ошибка сервера. Попробуйте позже.")
                 }
                 else -> {
-                    
+
                     throw Exception("Неожиданный ответ сервера. Код: ${response.code}")
                 }
             }
@@ -574,14 +576,14 @@ class FunPaySupport(private val repository: FunPayRepository) {
             response.close()
             result
         } catch (e: Exception) {
-            
+
             throw e
         }
     }
 
     suspend fun addComment(ticketId: String, message: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            
+
 
             val detailsRequest = Request.Builder()
                 .url("$baseUrl/tickets/$ticketId")
@@ -617,20 +619,20 @@ class FunPaySupport(private val repository: FunPayRepository) {
                 .build()
 
             val response = followRedirects(request)
-            
+
 
             val success = response.isSuccessful
             response.close()
             success
         } catch (e: Exception) {
-            
+
             false
         }
     }
 
     suspend fun closeTicket(ticketId: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            
+
 
             val detailsRequest = Request.Builder()
                 .url("$baseUrl/tickets/$ticketId")
@@ -643,11 +645,11 @@ class FunPaySupport(private val repository: FunPayRepository) {
 
             val doc = Jsoup.parse(html)
 
-            // Ищем правильный CSRF токен из модального окна закрытия
+            
             val closeModal = doc.select("#close-ticket-modal")
             val confirmButton = closeModal.select("button.confirm-button[data-controller='ajax-form']")
 
-            // Получаем токен из общего app-config
+            
             val appConfig = doc.select("body[data-app-config]").first()?.attr("data-app-config")
             var token: String? = null
 
@@ -655,27 +657,27 @@ class FunPaySupport(private val repository: FunPayRepository) {
                 try {
                     val json = JSONObject(appConfig)
                     token = json.optString("csrfToken")
-                    
+
                 } catch (e: Exception) {
-                    
+
                 }
             }
 
-            // Fallback: пробуем найти токен в форме
+            
             if (token == null) {
                 val tokenInput = doc.select("input[name='close_ticket[_token]']").first()
                 token = tokenInput?.attr("value")
-                
+
             }
 
             detailsResponse.close()
 
             if (token == null) {
-                
+
                 return@withContext false
             }
 
-            
+
 
             val formBody = FormBody.Builder()
                 .add("csrf_token", token)
@@ -694,23 +696,23 @@ class FunPaySupport(private val repository: FunPayRepository) {
             val response = followRedirects(request)
             val responseBody = response.body?.string() ?: ""
 
-            
+
             if (responseBody.isNotEmpty()) {
-                
+
             }
 
             val success = response.isSuccessful
             response.close()
 
             if (success) {
-                
+
             } else {
-                
+
             }
 
             success
         } catch (e: Exception) {
-            
+
             e.printStackTrace()
             false
         }

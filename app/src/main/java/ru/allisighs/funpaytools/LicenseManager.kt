@@ -247,21 +247,20 @@ object LicenseManager {
                 val response = connection.inputStream.bufferedReader().readText()
                 val json = org.json.JSONObject(response)
 
-                val isRevoked   = json.optBoolean("isRevoked", false)
-                val expiresAt   = json.optLong("expiresAt", 0L)
-                val deviceId    = json.optString("deviceId", "")
+                val isRevoked = json.optBoolean("isRevoked", false)
+                val expiresAt = json.optLong("expiresAt", 0L)
+                val deviceId  = json.optString("deviceId", "")
 
-                withContext(Dispatchers.Main) {
-                    when {
-                        isRevoked ->
-                            onResult(Result.failure(Exception("Ключ заблокирован")))
-                        expiresAt > 0 && System.currentTimeMillis() > expiresAt ->
-                            onResult(Result.failure(Exception("Срок ключа истёк")))
-                        deviceId.isNotEmpty() && deviceId != deviceId() ->
-                            onResult(Result.failure(Exception("Ключ привязан к другому устройству")))
-                        else -> {
-                            // Записываем deviceId через PATCH
-                            patchDeviceId(key)
+                when {
+                    isRevoked ->
+                        withContext(Dispatchers.Main) { onResult(Result.failure(Exception("Ключ заблокирован"))) }
+                    expiresAt > 0 && System.currentTimeMillis() > expiresAt ->
+                        withContext(Dispatchers.Main) { onResult(Result.failure(Exception("Срок ключа истёк"))) }
+                    deviceId.isNotEmpty() && deviceId != deviceId() ->
+                        withContext(Dispatchers.Main) { onResult(Result.failure(Exception("Ключ привязан к другому устройству"))) }
+                    else -> {
+                        patchDeviceId(key)
+                        withContext(Dispatchers.Main) {
                             saveCache(key, expiresAt, false)
                             licenseState = LicenseState.Active(expiresAt, key)
                             currentKey   = key
@@ -310,6 +309,11 @@ object LicenseManager {
                     licenseState = LicenseState.Revoked
                     return@addOnSuccessListener
                 }
+
+                if (d.deviceId.isBlank()) {
+                    CoroutineScope(Dispatchers.IO).launch { patchDeviceId(saved) }
+                }
+
                 saveCache(saved, d.expiresAt, false)
                 licenseState = if (d.expiresAt == 0L || System.currentTimeMillis() < d.expiresAt)
                     LicenseState.Active(d.expiresAt, saved) else LicenseState.None

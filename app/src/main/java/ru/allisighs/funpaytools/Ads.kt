@@ -13,9 +13,8 @@ import com.startapp.sdk.adsbase.StartAppSDK
 import java.util.UUID
 
 object Ads {
-    
-    private const val START_IO_APP_ID = "201738917"
 
+    private const val START_IO_APP_ID = "201738917"
     fun init(context: Context) {
         
         

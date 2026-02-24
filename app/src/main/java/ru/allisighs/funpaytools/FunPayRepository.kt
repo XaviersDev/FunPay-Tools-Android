@@ -48,22 +48,27 @@ import java.util.regex.Pattern
 import kotlin.apply
 import kotlin.compareTo
 
-const val APP_VERSION = "1.2"
+const val APP_VERSION = "1.2.4"
 
 data class AutoRefundSettings(
     val enabled: Boolean = false,
     val maxPrice: Double = 10.0,
     val triggerStars: List<Int> = listOf(1, 2, 3),
     val sendMessage: Boolean = true,
-    val messageText: String = "Мне жаль, что у Вас возникли проблемы. Обращайтесь ещё 🤝"
+    val messageText: String = "Мне жаль, что у Вас возникли проблемы. Обращайтесь ещё 🤝",
+    val imageUri: String? = null,
+    val imageFirst: Boolean = true
 )
 
 data class OrderConfirmSettings(
     val enabled: Boolean = false,
-    val text: String = "Спасибо за заказ, \$username! 🤝\nБуду очень благодарен, если оставите отзыв. Это очень поможет мне! 😊"
+    val text: String = "Спасибо за заказ, \$username! 🤝\nБуду очень благодарен, если оставите отзыв. Это очень поможет мне! 😊",
+    val imageUri: String? = null,
+    val imageFirst: Boolean = true
 )
 
 data class ChatItem(val id: String, val username: String, val lastMessage: String, val isUnread: Boolean, val avatarUrl: String, val date: String, val activeLot: String? = null)
+
 data class MessageItem(
     val id: String,
     val author: String,
@@ -73,20 +78,26 @@ data class MessageItem(
     val imageUrl: String? = null,
     val badge: String? = null
 )
-data class AutoResponseCommand(val trigger: String, val response: String, val exactMatch: Boolean)
 
+data class AutoResponseCommand(
+    val trigger: String,
+    val response: String,
+    val exactMatch: Boolean,
+    val imageUri: String? = null,
+    val imageFirst: Boolean = true
+)
 
 data class MessageTemplate(
     val id: String = java.util.UUID.randomUUID().toString(),
     val name: String,
-    val text: String
+    val text: String,
+    val imageUri: String? = null,
+    val imageFirst: Boolean = true
 )
-
 
 data class TemplateSettings(
     val sendImmediately: Boolean = false
 )
-
 
 data class ReviewReplySettings(
     val enabled: Boolean = false,
@@ -94,15 +105,20 @@ data class ReviewReplySettings(
     val aiLength: Int = 5,
     val aiFallbackText: String = "Спасибо за отзыв! 🤝",
     val manualTemplates: Map<Int, String> = (1..5).associateWith { "Спасибо за отзыв!" },
-    val disabledStars: List<Int> = emptyList()
+    val disabledStars: List<Int> = emptyList(),
+    val imageUri: String? = null,
+    val imageFirst: Boolean = true
 )
 
 data class GreetingSettings(
     val enabled: Boolean,
     val text: String,
     val cooldownHours: Int,
-    val ignoreSystemMessages: Boolean
+    val ignoreSystemMessages: Boolean,
+    val imageUri: String? = null,
+    val imageFirst: Boolean = true
 )
+
 data class UpdateInfo(val hasUpdate: Boolean, val newVersion: String, val htmlUrl: String)
 
 data class OrderDetails(
@@ -125,14 +141,16 @@ data class ChatInfo(
     val lookingAtLink: String?,
     val lookingAtName: String?,
     val registrationDate: String?,
-    val language: String?
+    val language: String?,
+    val avatarUrl: String? = null,
+    val userStatus: String? = null
 )
 
 object LogManager {
     private val _logs = MutableStateFlow<List<Pair<String, Boolean>>>(listOf(Pair("Система готова. v$APP_VERSION", false)))
     val logs = _logs.asStateFlow()
 
-    var debugEnabled: Boolean = false
+    var debugEnabled: Boolean = true
 
     fun addLog(msg: String) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
@@ -198,7 +216,8 @@ class FunPayRepository(private val context: Context) {
     val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
 
     private val extraCookies = mutableMapOf<String, String>()
-
+    private val recentCommandKeys = mutableSetOf<String>()
+    private var lastCommandKeyCleanup = 0L
     private val gson = Gson()
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
     private var phpsessid: String = ""
@@ -206,16 +225,18 @@ class FunPayRepository(private val context: Context) {
     private var lastCsrfFetchTime = 0L
     private var cachedCsrf: Pair<String, String>? = null
     private val CSRF_CACHE_DURATION = 30_000L
+    private var lastBusyInitAt = 0L
+    internal val knownUnreadChats = mutableSetOf<String>()
 
-    
+
     class FunPayCookieJar : okhttp3.CookieJar {
         private val cookieStore = HashMap<String, List<okhttp3.Cookie>>()
 
         override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) {
-            
+
             cookieStore[url.host] = cookies
 
-            
+
             cookies.forEach {
                 if (it.name == "PHPSESSID") {
                     android.util.Log.d("COOKIE_JAR", "Поймана сессия: ${it.value}")
@@ -227,7 +248,7 @@ class FunPayRepository(private val context: Context) {
             return cookieStore[url.host] ?: ArrayList()
         }
 
-        
+
         fun addManualCookie(url: String, name: String, value: String) {
             val httpUrl = url.toHttpUrlOrNull() ?: return
             val cookie = okhttp3.Cookie.Builder()
@@ -240,14 +261,14 @@ class FunPayRepository(private val context: Context) {
                 .build()
 
             val current = cookieStore[httpUrl.host]?.toMutableList() ?: mutableListOf()
-            
+
             current.removeAll { it.name == name }
             current.add(cookie)
             cookieStore[httpUrl.host] = current
         }
 
         fun getCookieValue(name: String): String? {
-            
+
             return cookieStore.values.flatten().find { it.name == name }?.value
         }
     }
@@ -264,7 +285,7 @@ class FunPayRepository(private val context: Context) {
 
     val cookieJar = FunPayCookieJar()
     val repoClient = OkHttpClient.Builder()
-        .cookieJar(cookieJar) 
+        .cookieJar(cookieJar)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -273,7 +294,7 @@ class FunPayRepository(private val context: Context) {
         .build()
 
     init {
-        
+
         val savedGk = prefs.getString("golden_key", "") ?: ""
         val savedSess = prefs.getString("phpsessid", "") ?: ""
 
@@ -282,6 +303,15 @@ class FunPayRepository(private val context: Context) {
         }
         if (savedSess.isNotEmpty()) {
             cookieJar.addManualCookie("https://funpay.com", "PHPSESSID", savedSess)
+            phpsessid = savedSess
+        }
+
+
+        val activeAcc = getActiveAccount()
+        if (activeAcc != null && activeAcc.phpSessionId.isNotEmpty()) {
+            if (phpsessid.isEmpty()) phpsessid = activeAcc.phpSessionId
+            cookieJar.addManualCookie("https://funpay.com", "golden_key", activeAcc.goldenKey)
+            cookieJar.addManualCookie("https://funpay.com", "PHPSESSID", activeAcc.phpSessionId)
         }
     }
 
@@ -644,7 +674,7 @@ class FunPayRepository(private val context: Context) {
                 val jsonStr = response.body?.string() ?: return@withContext null
                 val json = JSONObject(jsonStr)
 
-                
+
                 if (!json.has("tag_name")) return@withContext null
 
                 val tagName = json.getString("tag_name").trim().lowercase().removePrefix("v")
@@ -752,13 +782,25 @@ class FunPayRepository(private val context: Context) {
         }
     }
 
-    private fun saveGreetedCache(cache: Map<String, Long>) =
-        prefs.edit().putString("greeted_cache", gson.toJson(cache)).apply()
+    private fun getGreetedCacheKey(): String {
+        val accountId = getActiveAccount()?.id ?: "default"
+        return "greeted_cache_$accountId"
+    }
 
     private fun getGreetedCache(): MutableMap<String, Long> {
-        val json = prefs.getString("greeted_cache", "{}")
-        val type = object : TypeToken<MutableMap<String, Long>>() {}.type
-        return gson.fromJson(json, type)
+        return try {
+            val json = prefs.getString(getGreetedCacheKey(), "{}") ?: "{}"
+            val type = object : TypeToken<MutableMap<String, Long>>() {}.type
+            gson.fromJson<MutableMap<String, Long>>(json, type) ?: mutableMapOf()
+        } catch (e: Exception) {
+            mutableMapOf()
+        }
+    }
+
+    private fun saveGreetedCache(cache: Map<String, Long>) {
+        val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000L
+        val cleaned = cache.filter { it.value > cutoff }
+        prefs.edit().putString(getGreetedCacheKey(), gson.toJson(cleaned)).apply()
     }
 
 
@@ -801,7 +843,7 @@ class FunPayRepository(private val context: Context) {
                 val orderIdMatch = Regex("#([a-zA-Z0-9]+)").find(chat.lastMessage)
                 val orderId = orderIdMatch?.groupValues?.get(1) ?: continue
 
-                
+
                 val messageHash = "${chat.lastMessage.hashCode()}"
                 if (wasEventProcessed(chat.id, messageHash, "refund_check")) {
                     LogManager.addLogDebug("⏭️ Сообщение уже обработано")
@@ -852,7 +894,7 @@ class FunPayRepository(private val context: Context) {
                         markEventAsProcessed(chat.id, refundCacheKey, "refund_done")
 
                         if (settings.sendMessage) {
-                            sendMessage(chat.id, settings.messageText)
+                            sendWithOptionalImage(chat.id, settings.messageText, settings.imageUri, settings.imageFirst)
                         }
                     } else {
                         LogManager.addLog("❌ Ошибка при выполнении возврата")
@@ -862,7 +904,7 @@ class FunPayRepository(private val context: Context) {
                     markEventAsProcessed(chat.id, refundCacheKey, "refund_done")
                 }
 
-                
+
                 markEventAsProcessed(chat.id, messageHash, "refund_check")
 
                 kotlinx.coroutines.delay(1000)
@@ -916,12 +958,15 @@ class FunPayRepository(private val context: Context) {
 
                 val doc = Jsoup.parse(html)
 
-                val sellerReply = doc.select(".review-reply").text()
-                if (sellerReply.isNotEmpty() && !sellerReply.contains("textarea")) {
-                    LogManager.addLog("ℹ️ На отзыв #$orderId уже есть ответ")
+                val reviewAuthorId = doc.select(".review-item-row[data-row='review']").attr("data-author")
+                val activeProfile = getActiveAccount()
+                if (activeProfile != null && reviewAuthorId == activeProfile.userId) {
+                    LogManager.addLogDebug("⏭️ Отзыв #$orderId — ты покупатель, пропускаем")
                     markEventAsProcessed(chat.id, reviewEventKey, "review_reply")
                     continue
                 }
+
+                val sellerReply = doc.select(".review-reply").text()
 
                 val ratingElement = doc.select(".rating div").first()
                 val stars = if (ratingElement != null) {
@@ -1179,19 +1224,19 @@ class FunPayRepository(private val context: Context) {
     fun getCookieString(): String {
         val sb = StringBuilder()
 
-        
+
         val gk = getGoldenKey() ?: ""
         sb.append("golden_key=$gk")
 
-        
+
         if (phpsessid.isNotEmpty()) {
             sb.append("; PHPSESSID=$phpsessid")
         }
 
-        
+
         synchronized(extraCookies) {
             for ((k, v) in extraCookies) {
-                
+
                 if (k != "golden_key" && k != "PHPSESSID") {
                     sb.append("; $k=$v")
                 }
@@ -1213,7 +1258,7 @@ class FunPayRepository(private val context: Context) {
 
         for (cookie in cookies) {
             try {
-                
+
                 val parts = cookie.split(";")[0].split("=", limit = 2)
                 if (parts.size == 2) {
                     val key = parts[0].trim()
@@ -1226,7 +1271,7 @@ class FunPayRepository(private val context: Context) {
                             LogManager.addLogDebug("🍪 Сессия обновлена: $phpsessid")
                         }
                     } else if (key != "golden_key") {
-                        
+
                         extraCookies[key] = value
                     }
                 }
@@ -1282,7 +1327,7 @@ class FunPayRepository(private val context: Context) {
                 val html = readBodySilent(response)
 
                 if (isCloudflare(html)) {
-                    LogManager.addLog("⛔ CF BLOCK (Auth) - попытка ${attempt + 1}")
+                    LogManager.addLogDebug("⛔ CF BLOCK (Auth) - попытка ${attempt + 1}")
                     if (attempt < 2) {
                         delay(2000L * (attempt + 1))
                         return@repeat
@@ -1294,7 +1339,7 @@ class FunPayRepository(private val context: Context) {
                 val appDataStr = doc.select("body").attr("data-app-data")
 
                 if (appDataStr.isEmpty()) {
-                    LogManager.addLog("❌ Ошибка Auth: нет data-app-data - попытка ${attempt + 1}")
+                    LogManager.addLogDebug("❌ Ошибка Auth: нет data-app-data - попытка ${attempt + 1}")
                     if (attempt < 2) {
                         delay(2000L * (attempt + 1))
                         return@repeat
@@ -1313,12 +1358,20 @@ class FunPayRepository(private val context: Context) {
                 return result
 
             } catch (e: java.net.SocketTimeoutException) {
-                LogManager.addLog("⏱️ Timeout на попытке ${attempt + 1}")
+
+                LogManager.addLogDebug("⏱️ Timeout на попытке ${attempt + 1}")
                 if (attempt < 2) {
                     delay(3000L * (attempt + 1))
                 }
             } catch (e: Exception) {
-                LogManager.addLog("❌ getCsrfAndId exception (попытка ${attempt + 1}): ${e.message}")
+
+                val isNetworkError = e is java.net.UnknownHostException || e is java.net.ConnectException
+                if (isNetworkError) {
+                    if (attempt == 0) LogManager.addLogDebug("📶 Ожидание сети (ошибка DNS)...")
+                } else {
+                    LogManager.addLogDebug("❌ Ошибка сети: ${e.message}")
+                }
+
                 if (attempt < 2) {
                     delay(2000L * (attempt + 1))
                 }
@@ -1448,9 +1501,18 @@ class FunPayRepository(private val context: Context) {
                     continue
                 }
 
+                val activeAccount = getActiveAccount()
+                if (activeAccount != null) {
+                    val buyerPrefix = "покупатель ${activeAccount.username.lowercase()}"
+                    if (lastMsgLower.contains(buyerPrefix)) {
+                        LogManager.addLogDebug("⏭️ Подтверждение заказа #$orderId — ты покупатель, пропускаем")
+                        markEventAsProcessed(chat.id, orderId, "confirm")
+                        continue
+                    }
+                }
+
                 LogManager.addLog("✅ Обнаружено подтверждение заказа #$orderId от ${chat.username}")
 
-                
                 var hasReviewInChat = false
                 try {
                     val history = getChatHistory(chat.id)
@@ -1473,12 +1535,10 @@ class FunPayRepository(private val context: Context) {
                 }
 
                 if (hasReviewInChat) {
-                    
                     LogManager.addLog("📝 Отзыв оставлен, отправляем ответ...")
                     val (csrf, userId) = getCsrfAndId() ?: continue
                     handleReview(orderId, chat.username, csrf, userId)
                 } else {
-                    
                     LogManager.addLog("💬 Отзыва нет, отправляем просьбу оставить отзыв...")
 
                     val finalText = settings.text
@@ -1486,12 +1546,50 @@ class FunPayRepository(private val context: Context) {
                         .replace("\$order_id", orderId)
                         .replace("\$chat_name", chat.username)
 
-                    sendMessage(chat.id, finalText)
+                    sendWithOptionalImage(chat.id, finalText, settings.imageUri, settings.imageFirst)
                 }
 
                 markEventAsProcessed(chat.id, orderId, "confirm")
                 kotlinx.coroutines.delay(1500)
             }
+        }
+    }
+
+    /**
+     * Отправляет сообщение с опциональной картинкой.
+     * Если imageUri != null — загружает картинку и отправляет в нужном порядке.
+     * Возвращает true если хотя бы одна часть ушла успешно.
+     *
+     * FIX: сразу помечаем nodeId как "__image__" в lastOutgoingMessages ДО upload,
+     * чтобы сервис не выбросил оптимистичный MessageItem при первой отправке.
+     */
+    suspend fun sendWithOptionalImage(
+        nodeId: String,
+        text: String,
+        imageUri: String?,
+        imageFirst: Boolean
+    ): Boolean {
+        if (imageUri == null) {
+            return if (text.isNotBlank()) sendMessage(nodeId, text) else false
+        }
+
+        lastOutgoingMessages[nodeId] = "__image__"
+        val imgId = try {
+            uploadImage(android.net.Uri.parse(imageUri))
+        } catch (e: Exception) {
+            LogManager.addLog("⚠️ sendWithOptionalImage: не удалось загрузить картинку: ${e.message}")
+            null
+        }
+        return if (imageFirst) {
+            var ok = false
+            if (imgId != null) ok = sendMessage(nodeId, "", imgId)
+            if (text.isNotBlank()) { kotlinx.coroutines.delay(600); ok = sendMessage(nodeId, text) || ok }
+            ok
+        } else {
+            var ok = false
+            if (text.isNotBlank()) ok = sendMessage(nodeId, text)
+            if (imgId != null) { kotlinx.coroutines.delay(600); ok = sendMessage(nodeId, "", imgId) || ok }
+            ok
         }
     }
 
@@ -1754,9 +1852,12 @@ $contextHistory
 
                                 val lastSent = lastOutgoingMessages[chatId]
                                 if (lastSent != null) {
-                                    val cleanMsg = lastMsgText.replace("...", "").trim()
-                                    val cleanSent = lastSent.trim()
-                                    if (cleanSent.contains(cleanMsg) || cleanSent == cleanMsg) {
+                                    val cleanMsg = lastMsgText.replace("...", "").trim().lowercase()
+                                    val cleanSent = lastSent.trim().lowercase()
+                                    if (cleanSent.contains(cleanMsg) ||
+                                        cleanMsg.contains(cleanSent) ||
+                                        cleanSent.startsWith(cleanMsg) ||
+                                        cleanMsg.startsWith(cleanSent)) {
                                         isUnread = false
                                     }
                                 }
@@ -1975,7 +2076,13 @@ $contextHistory
                     language = langParam.text().trim()
                 }
 
-                ChatInfo(lookingAtLink, lookingAtName, registrationDate, language)
+                val avatarUrl = doc.select(".chat-header .media-left img").firstOrNull()?.attr("src")?.let {
+                    if (it.startsWith("http")) it else "https://funpay.com$it"
+                }
+
+                val userStatus = doc.select(".chat-header .media-user-status").text().trim().ifEmpty { null }
+
+                ChatInfo(lookingAtLink, lookingAtName, registrationDate, language, avatarUrl, userStatus)
             } catch (e: Exception) {
                 null
             }
@@ -2022,11 +2129,11 @@ $contextHistory
 
                 val canRefund = doc.select("button.btn-refund").isNotEmpty()
 
-                
-                val reviewItem = doc.select(".review-item").first()
-                val reviewText = doc.select(".review-item-text").text() 
 
-                
+                val reviewItem = doc.select(".review-item").first()
+                val reviewText = doc.select(".review-item-text").text()
+
+
                 val hasReview = reviewItem != null && reviewText.isNotEmpty()
 
                 var reviewRating = 0
@@ -2035,10 +2142,10 @@ $contextHistory
                 if (hasReview) {
                     reviewRating = doc.select(".review-item-rating .rating div").attr("class").filter { it.isDigit() }.toIntOrNull() ?: 0
 
-                    
+
                     val replyDiv = doc.select(".review-item-answer").first()
                     if (replyDiv != null) {
-                        
+
                         replyDiv.select(".review-controls")?.remove()
                         sellerReply = replyDiv.text().trim()
                     }
@@ -2135,13 +2242,14 @@ $contextHistory
                 if (cleanSelf.contains(cleanIncoming) || cleanIncoming.contains(cleanSelf)) continue
             }
 
-            
-            if (enabledAt > 0L) {
-                if (!wasEventProcessed(chat.id, enabledAt.toString(), "busy_new_after_enable")) {
-                    
-                    markEventAsProcessed(chat.id, enabledAt.toString(), "busy_new_after_enable")
-                    continue
+
+            if (enabledAt > 0L && lastBusyInitAt != enabledAt) {
+                chats.forEach { chat ->
+                    if (!cache.containsKey(chat.id)) cache[chat.id] = enabledAt
                 }
+                saveBusyCache(cache)
+                lastBusyInitAt = enabledAt
+                return
             }
 
             val isNewOrder = lastMsgLower.contains("оплатил заказ") ||
@@ -2155,7 +2263,7 @@ $contextHistory
                     LogManager.addLog("🛑 Авто-отмена заказа $orderId")
                     val success = refundOrder(orderId)
                     if (success && settings.autoRefundMessage && settings.message.isNotBlank()) {
-                        sendMessage(chat.id, settings.message)
+                        sendWithOptionalImage(chat.id, settings.message, settings.imageUri, settings.imageFirst)
                     }
                     markEventAsProcessed(chat.id, orderId, "busy_refund")
                     continue
@@ -2167,9 +2275,9 @@ $contextHistory
             val lastReplyTime = cache[chat.id] ?: 0L
             if (settings.cooldownMinutes > 0 && (currentTime - lastReplyTime < cooldownMs)) continue
 
-            if (settings.message.isNotBlank()) {
+            if (settings.message.isNotBlank() || settings.imageUri != null) {
                 LogManager.addLog("🛑 Режим занятости: ответ для ${chat.username}")
-                val success = sendMessage(chat.id, settings.message)
+                val success = sendWithOptionalImage(chat.id, settings.message, settings.imageUri, settings.imageFirst)
                 if (success) {
                     cache[chat.id] = currentTime
                     cacheChanged = true
@@ -2180,7 +2288,7 @@ $contextHistory
 
         if (cacheChanged) saveBusyCache(cache)
     }
-    
+
     private fun saveBusyCache(cache: Map<String, Long>) =
         prefs.edit().putString("busy_cache", gson.toJson(cache)).apply()
 
@@ -2206,14 +2314,14 @@ $contextHistory
 
                 val lowerText = lastMessageText.lowercase(Locale.getDefault())
 
-                
+
                 val lastSelf = FunPayRepository.lastOutgoingMessages[chat.id]
                 var isSelfMessage = false
                 if (lastSelf != null) {
                     val cleanIncoming = lastMessageText.replace("...", "").trim()
                     val cleanSelf = lastSelf.trim()
-                    
-                    
+
+
                     if (cleanIncoming.equals(cleanSelf, ignoreCase = true)) {
                         isSelfMessage = true
                     }
@@ -2221,7 +2329,7 @@ $contextHistory
 
                 if (isSelfMessage) continue
 
-                
+
                 if (getSetting("auto_review_reply") &&
                     (lowerText.contains("написал отзыв к заказу") ||
                             lowerText.contains("изменил отзыв к заказу") ||
@@ -2268,7 +2376,7 @@ $contextHistory
                                     }
                                 }
                             } catch (e: Exception) {
-                                
+
                             }
 
                             if (!isNewAfterDelete) {
@@ -2283,9 +2391,9 @@ $contextHistory
                     }
                 }
 
-                
+
                 if (getSetting("auto_response")) {
-                    
+
                     val systemPhrases = listOf(
                         "оплатил заказ", "paid for order", "сплатив замовлення",
                         "подтвердил успешное", "confirmed that order", "підтвердив успішне",
@@ -2301,34 +2409,52 @@ $contextHistory
                         continue
                     }
 
-                    
+
                     val incomingText = lastMessageText.replace("\n", "").trim().lowercase(Locale.getDefault())
 
-                    
+
                     val cmd = commands.find { commandObj ->
                         val trigger = commandObj.trigger.trim().lowercase(Locale.getDefault())
 
                         if (commandObj.exactMatch) {
-                            
+
                             incomingText == trigger
                         } else {
-                            
+
                             incomingText == trigger || incomingText.contains(trigger)
                         }
                     }
 
                     if (cmd != null) {
-                        val commandKey = "${chat.id}_${incomingText.hashCode()}_${cmd.trigger.hashCode()}"
+                        val commandKey = "${chat.id}_${incomingText.hashCode()}"
 
-                        if (wasEventProcessed(chat.id, commandKey, "command")) {
-                            continue
+                        val now = System.currentTimeMillis()
+                        if (now - lastCommandKeyCleanup > 10 * 60 * 1000L) {
+                            recentCommandKeys.clear()
+                            lastCommandKeyCleanup = now
                         }
 
+                        if (recentCommandKeys.contains(commandKey)) continue
+
+
+                        var shouldSkip = false
+                        try {
+                            val history = getChatHistory(chat.id)
+                            val lastMsg = history.lastOrNull()
+                            if (lastMsg == null || lastMsg.isMe) {
+                                shouldSkip = true
+                            }
+                        } catch (e: Exception) {
+                            shouldSkip = true
+                        }
+
+                        if (shouldSkip) continue
+
                         LogManager.addLog("🎯 Команда '${cmd.trigger}' от ${chat.username}")
-                        val success = sendMessage(chat.id, cmd.response)
+                        val success = sendWithOptionalImage(chat.id, cmd.response, cmd.imageUri, cmd.imageFirst)
 
                         if (success) {
-                            markEventAsProcessed(chat.id, commandKey, "command")
+                            recentCommandKeys.add(commandKey)
                             kotlinx.coroutines.delay(1500)
                         }
                     }
@@ -2348,6 +2474,15 @@ $contextHistory
         val cooldownMs = settings.cooldownHours * 60 * 60 * 1000L
         var cacheChanged = false
 
+
+
+        if (cache.isEmpty() && chats.isNotEmpty()) {
+            LogManager.addLog("👋 Автоприветствие: первый запуск, инициализируем кэш (${chats.size} чатов)")
+            chats.forEach { cache[it.id] = currentTime }
+            saveGreetedCache(cache)
+            return
+        }
+
         val systemPhrases = listOf(
             "оплатил заказ", "paid for order", "сплатив замовлення",
             "подтвердил успешное выполнение", "confirmed that order", "підтвердив успішне виконання",
@@ -2358,19 +2493,14 @@ $contextHistory
             "теперь вы можете перейти", "you can switch to", "тепер ви можете перейти"
         )
 
-
         for (chat in chats) {
             val lastMsgLower = chat.lastMessage.lowercase()
-
 
             val lastSelf = FunPayRepository.lastOutgoingMessages[chat.id]
             if (lastSelf != null) {
                 val cleanIncoming = chat.lastMessage.replace("...", "").trim().lowercase()
                 val cleanSelf = lastSelf.trim().lowercase()
-
-                if (cleanSelf.contains(cleanIncoming) || cleanIncoming.contains(cleanSelf)) {
-                    continue
-                }
+                if (cleanSelf.contains(cleanIncoming) || cleanIncoming.contains(cleanSelf)) continue
             }
 
             if (settings.ignoreSystemMessages) {
@@ -2387,7 +2517,7 @@ $contextHistory
                 .replace("\$username", chat.username)
                 .replace("\$chat_name", chat.username)
 
-            val success = sendMessage(chat.id, greetingText)
+            val success = sendWithOptionalImage(chat.id, greetingText, settings.imageUri, settings.imageFirst)
 
             if (success) {
                 cache[chat.id] = currentTime
@@ -2410,6 +2540,13 @@ $contextHistory
             if (html.isEmpty()) return
 
             val doc = Jsoup.parse(html)
+
+            val reviewAuthorId = doc.select(".review-item-row[data-row='review']").attr("data-author")
+            val activeAccount = getActiveAccount()
+            if (activeAccount != null && reviewAuthorId == activeAccount.userId) {
+                LogManager.addLogDebug("⏭️ handleReview: ты покупатель, пропускаем")
+                return
+            }
 
             val ratingElement = doc.select(".rating div").first()
             if (ratingElement == null) {
@@ -2595,10 +2732,17 @@ $lengthInstruction
     }
 
 
-    // xd dumper
 
 
     private val dumperLastUpdateMap = mutableMapOf<String, Long>()
+    private val dumperCommissionCache = mutableMapOf<String, Pair<Double, Long>>()
+    private val dumperPriceCache = mutableMapOf<String, Pair<Double, Long>>()
+
+    private val dumperLotFilterCache = mutableMapOf<String, Pair<Map<String, String>, Long>>()
+
+    private val COMMISSION_CACHE_TTL = 5 * 60 * 1000L
+    private val PRICE_CACHE_TTL      = 15 * 1000L
+    private val LOT_FILTER_CACHE_TTL = 10 * 60 * 1000L
 
     fun saveDumperSettings(settings: DumperSettings) =
         prefs.edit().putString("dumper_settings", gson.toJson(settings)).apply()
@@ -2613,8 +2757,6 @@ $lengthInstruction
     suspend fun runDumperCycle() {
         val settings = getDumperSettings()
         if (!settings.enabled || settings.lots.isEmpty()) return
-
-        
         if (!LicenseManager.isProActive()) return
 
         val currentTime = System.currentTimeMillis()
@@ -2622,7 +2764,6 @@ $lengthInstruction
         for (lotConfig in settings.lots) {
             if (!lotConfig.enabled || lotConfig.lotId.isBlank() || lotConfig.categoryId.isBlank()) continue
 
-            
             val lastUpdate = dumperLastUpdateMap[lotConfig.id] ?: 0L
             if (currentTime - lastUpdate < (lotConfig.updateInterval * 1000L)) continue
 
@@ -2635,6 +2776,168 @@ $lengthInstruction
         }
     }
 
+    private suspend fun getCategoryCommission(nodeId: String): Double = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        dumperCommissionCache[nodeId]?.let { (coef, ts) ->
+            if (now - ts < COMMISSION_CACHE_TTL) return@withContext coef
+        }
+
+        return@withContext try {
+            val form = FormBody.Builder()
+                .add("nodeId", nodeId)
+                .add("price", "1000")
+                .build()
+            val req = Request.Builder()
+                .url("https://funpay.com/lots/calc")
+                .post(form)
+                .header("Cookie", getCookieString())
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("User-Agent", userAgent)
+                .build()
+
+            val rawBody = repoClient.newCall(req).execute().body?.string() ?: "{}"
+            val json = JSONObject(rawBody)
+
+            if (json.optInt("error") == 1) {
+                LogManager.addLog("XD Dumper: комиссия ошибка авторизации, не кэширую")
+                return@withContext 1.0
+            }
+
+            val methods = json.optJSONArray("methods")
+            var coef = 1.0
+            if (methods != null && methods.length() > 0) {
+                var minPrice = Double.MAX_VALUE
+                for (i in 0 until methods.length()) {
+                    val m = methods.getJSONObject(i)
+                    val unit = m.optString("unit")
+
+
+                    if (unit != "₽" && unit.lowercase() != "rub") continue
+
+                    val price = m.optString("price").replace(" ", "").replace(",", ".").toDoubleOrNull()
+                    if (price != null && price > 0 && price < minPrice) minPrice = price
+                }
+                if (minPrice != Double.MAX_VALUE) coef = minPrice / 1000.0
+            }
+            LogManager.addLog("XD Dumper: комиссия nodeId=$nodeId → ${"%.4f".format(coef)}")
+            dumperCommissionCache[nodeId] = Pair(coef, now)
+            coef
+        } catch (e: Exception) {
+            LogManager.addLog("XD Dumper: ошибка комиссии: ${e.message}")
+            1.0
+        }
+    }
+
+    private suspend fun fetchRealLotPrice(lotId: String): Double? = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        dumperPriceCache[lotId]?.let { (price, ts) ->
+            if (now - ts < PRICE_CACHE_TTL) return@withContext price
+        }
+
+        return@withContext try {
+            val req = Request.Builder()
+                .url("https://funpay.com/lots/offer?id=$lotId")
+                .header("Cookie", getCookieString())
+                .header("User-Agent", userAgent)
+                .build()
+            val html = repoClient.newCall(req).execute().body?.string() ?: return@withContext null
+            val doc = Jsoup.parse(html)
+
+            val prices = mutableListOf<Double>()
+            doc.select("select[name=method] option").forEach { opt ->
+                if (opt.attr("data-cy") == "rub") {
+                    val factors = opt.attr("data-factors").split(",")
+                    if (factors.size >= 2) {
+                        val base = factors[0].toDoubleOrNull() ?: 0.0
+                        val comm = factors[1].toDoubleOrNull() ?: 0.0
+                        if (base > 0 && comm > 0) prices.add(base * comm)
+                    }
+                }
+            }
+
+            val price = prices.minOrNull() ?: return@withContext null
+            dumperPriceCache[lotId] = Pair(price, now)
+            price
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private suspend fun getLotFilterFields(lotId: String, categoryId: String): Map<String, String> {
+        val now = System.currentTimeMillis()
+        dumperLotFilterCache[lotId]?.let { (fields, ts) ->
+            if (now - ts < LOT_FILTER_CACHE_TTL) return fields
+        }
+        return try {
+            val req = Request.Builder()
+                .url("https://funpay.com/lots/$categoryId/")
+                .header("Cookie", getCookieString())
+                .header("User-Agent", userAgent)
+                .build()
+            val html = repoClient.newCall(req).execute().body?.string() ?: return emptyMap()
+            val doc = Jsoup.parse(html)
+
+
+            val myItem = doc.select("a.tc-item").firstOrNull { item ->
+                item.attr("href").contains("id=$lotId")
+            }
+
+            if (myItem == null) {
+                LogManager.addLogDebug("XD Dumper: лот $lotId не найден на странице категории — фильтрация по f-* недоступна")
+                return emptyMap()
+            }
+
+
+            val filterFields = myItem.attributes()
+                .filter { it.key.startsWith("data-f-") }
+                .associate { attr ->
+                    val key = attr.key.removePrefix("data-")
+                    key to attr.value.trim().lowercase()
+                }
+                .filter { (_, v) -> v.isNotEmpty() }
+
+            dumperLotFilterCache[lotId] = Pair(filterFields, now)
+            LogManager.addLogDebug("XD Dumper: фильтры лота $lotId: $filterFields")
+            filterFields
+        } catch (e: Exception) {
+            LogManager.addLogDebug("XD Dumper: ошибка при загрузке фильтров лота $lotId: ${e.message}")
+            emptyMap()
+        }
+    }
+
+    private fun isMatchingCompetitor(item: org.jsoup.nodes.Element, lotFilterFields: Map<String, String>, matchAllMethods: Boolean = true): Boolean {
+        if (lotFilterFields.isEmpty()) return true
+
+        val itemQuantityRaw = item.attr("data-f-quantity").trim().lowercase()
+        val isOtherQuantity = itemQuantityRaw == "другое количество"
+
+        for ((key, lotValue) in lotFilterFields) {
+            if (key == "f-quantity2") continue
+
+            if (matchAllMethods && (key == "f-method" || key == "f-type" || key.contains("способ"))) continue
+
+            val itemValue = if (key == "f-quantity" && isOtherQuantity) {
+                item.attr("data-f-quantity2").trim().lowercase()
+            } else {
+                item.attr("data-$key").trim().lowercase()
+            }
+
+            if (itemValue.isEmpty()) continue
+
+            val lotNum = lotValue.replace(Regex("""[^0-9.]"""), "").toDoubleOrNull()
+            val itemNum = itemValue.replace(Regex("""[^0-9.]"""), "").toDoubleOrNull()
+
+            if (lotNum != null && itemNum != null) {
+                val tolerance = maxOf(lotNum * 0.01, 1.0)
+                if (kotlin.math.abs(itemNum - lotNum) > tolerance) return false
+                continue
+            }
+
+            if (itemValue != lotValue) return false
+        }
+        return true
+    }
+
     private suspend fun processDumperLot(config: DumperLotConfig) = withContext(Dispatchers.IO) {
         val myLots = getMyLots()
         val myCurrentLot = myLots.find { it.id == config.lotId }
@@ -2644,155 +2947,131 @@ $lengthInstruction
             return@withContext
         }
 
-        
-        val request = Request.Builder()
-            .url("https://funpay.com/lots/${config.categoryId}/")
-            .header("Cookie", getCookieString())
-            .header("User-Agent", userAgent)
-            .build()
+        val commission = getCategoryCommission(config.categoryId)
 
-        val response = repoClient.newCall(request).execute()
-        val html = response.body?.string() ?: return@withContext
-        val doc = Jsoup.parse(html)
 
         val activeProfile = getActiveAccount() ?: return@withContext
-
-        
-        val competitors = mutableListOf<Double>()
         val keywords = config.keywords.split("|").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
 
-        var position = 0
 
-        doc.select("a.tc-item").forEach { item ->
-            position++
-            if (position > config.positionMax) return@forEach
+        val lotFilterFields = getLotFilterFields(config.lotId, config.categoryId)
 
-            val sellerName = item.select(".media-user-name").text().trim()
-            if (sellerName == activeProfile.username) return@forEach 
+        val maxAttempts = if (config.aggressiveMode) 3 else 1
 
-            val desc = item.select(".tc-desc-text").text().trim().lowercase()
+        for (attempt in 1..maxAttempts) {
 
-            
-            if (keywords.isNotEmpty() && keywords.none { desc.contains(it) }) return@forEach
+            val req = Request.Builder()
+                .url("https://funpay.com/lots/${config.categoryId}/")
+                .header("Cookie", getCookieString())
+                .header("User-Agent", userAgent)
+                .build()
+            val html = repoClient.newCall(req).execute().body?.string() ?: return@withContext
+            val doc = Jsoup.parse(html)
 
-            val starsElements = item.select(".rating-stars i.fas")
-            val rating = starsElements.size
-            if (rating == 0 && config.ignoreZeroRating) return@forEach
-            if (rating < config.ratingMin) return@forEach
+            val competitors = mutableListOf<Double>()
+            var position = 0
 
-            val lotId = item.attr("href").substringAfter("id=").substringBefore("&")
 
-            var finalPrice = 9999999.0
+            val myLotItem = doc.select("a.tc-item").firstOrNull { it.attr("href").contains("id=${config.lotId}") }
+            val currentPriceWithComm = myLotItem?.select(".tc-price")?.attr("data-s")?.toDoubleOrNull()
+                ?: (myCurrentLot.price ?: 0.0) * commission
 
-            
-            if (config.fastPriceCheck) {
-                try {
-                    val fpReq = Request.Builder()
-                        .url("https://funpay.com/lots/offer?id=$lotId")
-                        .header("Cookie", getCookieString())
-                        .header("User-Agent", userAgent)
-                        .build()
-                    val fpResp = repoClient.newCall(fpReq).execute()
-                    val fpHtml = fpResp.body?.string() ?: ""
-                    val fpDoc = Jsoup.parse(fpHtml)
+            doc.select("a.tc-item").forEach { item ->
+                val sellerName = item.select(".media-user-name").text().trim()
+                if (sellerName == activeProfile.username) return@forEach
 
-                    val options = fpDoc.select("select[name=method] option")
-                    val prices = mutableListOf<Double>()
-                    options.forEach { opt ->
-                        if (opt.attr("data-cy") == "rub") {
-                            val factors = opt.attr("data-factors").split(",")
-                            if (factors.size >= 2) {
-                                val base = factors[0].toDoubleOrNull() ?: 0.0
-                                val comm = factors[1].toDoubleOrNull() ?: 0.0
-                                prices.add(base * comm)
-                            }
-                        }
+                if (!isMatchingCompetitor(item, lotFilterFields, config.matchAllMethods)) return@forEach
+
+
+                if (keywords.isNotEmpty()) {
+                    val desc = item.select(".tc-desc-text").text().trim().lowercase()
+
+                    val descForKeyword = if (config.matchAllMethods && desc.contains(",")) {
+                        desc.substringBeforeLast(",").trim()
+                    } else desc
+                    if (keywords.none { descForKeyword.contains(it) }) {
+                        LogManager.addLogDebug("XD Dumper: лот ${item.attr("href").substringAfter("id=").substringBefore("&")} отфильтрован keywords. desc='$desc' keywords=$keywords")
+                        return@forEach
                     }
-                    if (prices.isNotEmpty()) finalPrice = prices.minOrNull() ?: finalPrice
-                } catch (e: Exception) {}
-            } else {
-                
-                val priceAttr = item.select(".tc-price").attr("data-s")
-                finalPrice = priceAttr.toDoubleOrNull() ?: 9999999.0
+                }
+
+                val starsCount = item.select(".rating-stars i.fas").size
+                if (starsCount == 0 && config.ignoreZeroRating) return@forEach
+                if (starsCount < config.ratingMin) return@forEach
+
+
+                position++
+                if (position > config.positionMax) return@forEach
+
+                val competitorLotId = item.attr("href").substringAfter("id=").substringBefore("&")
+
+                val finalPrice: Double = if (config.fastPriceCheck) {
+                    fetchRealLotPrice(competitorLotId) ?: 9999999.0
+                } else {
+                    item.select(".tc-price").attr("data-s").toDoubleOrNull() ?: 9999999.0
+                }
+
+                if (finalPrice in config.priceMin..(config.priceMax + config.priceStep)) {
+                    competitors.add(finalPrice)
+                }
             }
 
-            if (finalPrice in config.priceMin..(config.priceMax + config.priceStep)) {
-                competitors.add(finalPrice)
+            if (competitors.isEmpty()) {
+                LogManager.addLogDebug("XD Dumper: Лот ${config.lotId} — конкурентов не найдено.")
+                return@withContext
             }
-        }
 
-        if (competitors.isEmpty()) return@withContext
+            val minCompetitorPrice = competitors.minOrNull() ?: return@withContext
 
-        val minCompetitorPrice = competitors.minOrNull() ?: return@withContext
 
-        
-        var targetPrice = minCompetitorPrice - config.priceStep
-        if (config.priceDivider > 1.0) {
-            targetPrice -= (targetPrice % config.priceDivider)
-        }
-
-        targetPrice = targetPrice.coerceIn(config.priceMin, config.priceMax)
-        if (targetPrice < 1.0) targetPrice = 1.0
-
-        val currentPriceWithComm = myCurrentLot.price ?: 0.0
-
-        
-        if (targetPrice < currentPriceWithComm - 0.01) {
-            
-            updateLotPrice(config.lotId, config.categoryId, targetPrice)
-        } else if (targetPrice > currentPriceWithComm + 0.01) {
-            
-            val diff = targetPrice - currentPriceWithComm
-            val percent = if (currentPriceWithComm > 0) (diff / currentPriceWithComm) * 100 else 100.0
-
-            if (targetPrice < minCompetitorPrice && diff <= 100.0 && percent <= 10.0) {
-                updateLotPrice(config.lotId, config.categoryId, targetPrice)
-                LogManager.addLog("📈 XD Dumper: Поднял цену лота ${config.lotId} до $targetPrice")
+            var targetPrice = minCompetitorPrice - config.priceStep
+            if (config.priceDivider > 1.0) {
+                targetPrice -= (targetPrice % config.priceDivider)
             }
+            targetPrice = targetPrice.coerceIn(config.priceMin, config.priceMax)
+            if (targetPrice < 1.0) targetPrice = 1.0
+
+            when {
+                targetPrice < currentPriceWithComm - 0.01 -> {
+
+                    updateLotPrice(config.lotId, targetPrice, commission)
+                    LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} поднят → ${"%.2f".format(targetPrice)}₽ | Мин. конкурент: ${"%.2f".format(minCompetitorPrice)}₽ | Текущая: ${"%.2f".format(currentPriceWithComm)}₽")
+
+                    if (config.aggressiveMode && attempt < maxAttempts) {
+                        delay(2000)
+                        continue
+                    }
+                }
+                targetPrice > currentPriceWithComm + 0.01 && config.autoRaise -> {
+
+                    val diff = targetPrice - currentPriceWithComm
+                    val percent = if (currentPriceWithComm > 0) (diff / currentPriceWithComm) * 100 else 100.0
+
+                    if (targetPrice < minCompetitorPrice && diff <= 100.0 && percent <= 10.0) {
+                        updateLotPrice(config.lotId, targetPrice, commission)
+                        LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} поднят → ${"%.2f".format(targetPrice)}₽")
+                    } else {
+                        LogManager.addLogDebug("XD Dumper: Лот ${config.lotId} — разрыв цен слишком большой, держим. (diff=${"%.2f".format(diff)}₽ / ${"%.1f".format(percent)}%)")
+                    }
+                }
+                else -> {
+                    LogManager.addLogDebug("XD Dumper: Лот ${config.lotId} — цена актуальна (${"%.2f".format(currentPriceWithComm)}₽).")
+                }
+            }
+            break
         }
     }
 
-    private suspend fun updateLotPrice(lotId: String, nodeId: String, targetPriceForBuyer: Double) {
-        
-        val calcReqForm = FormBody.Builder()
-            .add("nodeId", nodeId)
-            .add("price", "1000")
-            .build()
+    private suspend fun updateLotPrice(lotId: String, targetPriceForBuyer: Double, commission: Double) {
 
-        val calcReq = Request.Builder()
-            .url("https://funpay.com/lots/calc")
-            .post(calcReqForm)
-            .header("Cookie", getCookieString())
-            .header("X-Requested-With", "XMLHttpRequest")
-            .header("User-Agent", userAgent)
-            .build()
-
-        val calcResp = repoClient.newCall(calcReq).execute()
-        val calcJson = JSONObject(calcResp.body?.string() ?: "{}")
-
-        var commissionCoef = 1.0
-        val methods = calcJson.optJSONArray("methods")
-        if (methods != null) {
-            for (i in 0 until methods.length()) {
-                val m = methods.getJSONObject(i)
-                if (m.optString("unit") == "RUB") {
-                    val price = m.optString("price").replace(" ", "").toDoubleOrNull() ?: 1000.0
-                    val coef = price / 1000.0
-                    if (commissionCoef == 1.0 || coef < commissionCoef) commissionCoef = coef
-                }
-            }
-        }
-
-        var priceWithoutComm = targetPriceForBuyer / commissionCoef
+        var priceWithoutComm = targetPriceForBuyer / commission
         if (priceWithoutComm < 1.0) priceWithoutComm = 1.0
 
-        
         val fieldsData = getLotFields(lotId)
         val allFields = fieldsData.fields.mapValues { it.value.value }.toMutableMap()
         allFields["price"] = String.format(Locale.US, "%.2f", priceWithoutComm)
 
         saveLot(lotId, allFields, fieldsData.csrfToken, fieldsData.activeCookies)
-        LogManager.addLog("📉 XD Dumper: Цена лота $lotId снижена (Конкурент выебан). Цель: $targetPriceForBuyer")
     }
 }
 

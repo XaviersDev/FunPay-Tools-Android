@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -52,6 +53,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 
 object WidgetManager {
@@ -71,7 +75,10 @@ object WidgetManager {
 
     fun saveProfileCache(context: Context, profile: UserProfile) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putString("cached_profile", gson.toJson(profile)).apply()
+            .edit()
+            .putString("cached_profile", gson.toJson(profile))
+            .putLong("last_updated", System.currentTimeMillis())
+            .apply()
     }
 
     fun getProfileCache(context: Context): UserProfile? {
@@ -82,10 +89,20 @@ object WidgetManager {
         } catch (e: Exception) { null }
     }
 
+    /** Возвращает строку вида "14:32" или null если ещё не обновлялось */
+    fun getLastUpdatedString(context: Context): String? {
+        val ts = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getLong("last_updated", 0L)
+        if (ts == 0L) return null
+        return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+    }
+
     fun updateAllWidgets(context: Context) {
         val appWidgetManager = AppWidgetManager.getInstance(context)
 
-        val balanceIds = appWidgetManager.getAppWidgetIds(ComponentName(context, BalanceWidget::class.java))
+        val balanceIds = appWidgetManager.getAppWidgetIds(
+            ComponentName(context, BalanceWidget::class.java)
+        )
         if (balanceIds.isNotEmpty()) {
             context.sendBroadcast(Intent(context, BalanceWidget::class.java).apply {
                 action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
@@ -93,7 +110,9 @@ object WidgetManager {
             })
         }
 
-        val profileIds = appWidgetManager.getAppWidgetIds(ComponentName(context, ProfileWidget::class.java))
+        val profileIds = appWidgetManager.getAppWidgetIds(
+            ComponentName(context, ProfileWidget::class.java)
+        )
         if (profileIds.isNotEmpty()) {
             context.sendBroadcast(Intent(context, ProfileWidget::class.java).apply {
                 action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
@@ -112,6 +131,8 @@ fun WidgetsScreen(
 ) {
     val context = LocalContext.current
     var transparency by remember { mutableFloatStateOf(WidgetManager.getTransparency(context)) }
+    var lastUpdated by remember { mutableStateOf(WidgetManager.getLastUpdatedString(context)) }
+    var isRefreshing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     Scaffold(
@@ -147,12 +168,11 @@ fun WidgetsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+
             
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color.Black 
-                ),
+                colors = CardDefaults.cardColors(containerColor = Color.Black),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Box(
@@ -166,13 +186,13 @@ fun WidgetsScreen(
                         ),
                     contentAlignment = Alignment.Center
                 ) {
-                    
                     Card(
                         modifier = Modifier
                             .width(200.dp)
                             .height(100.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = ThemeManager.parseColor(currentTheme.surfaceColor).copy(alpha = transparency)
+                            containerColor = ThemeManager.parseColor(currentTheme.surfaceColor)
+                                .copy(alpha = transparency)
                         ),
                         shape = RoundedCornerShape(16.dp)
                     ) {
@@ -183,8 +203,9 @@ fun WidgetsScreen(
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
+                            val cachedProfile = remember { WidgetManager.getProfileCache(context) }
                             Text(
-                                "15 420 ₽",
+                                cachedProfile?.totalBalance ?: "15 420 ₽",
                                 color = ThemeManager.parseColor(currentTheme.accentColor),
                                 fontSize = 24.sp,
                                 fontWeight = FontWeight.Bold
@@ -239,6 +260,84 @@ fun WidgetsScreen(
             }
 
             
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = ThemeManager.parseColor(currentTheme.surfaceColor)
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            "Последнее обновление",
+                            color = ThemeManager.parseColor(currentTheme.textPrimaryColor),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            lastUpdated?.let { "Сегодня в $it" } ?: "Ещё не обновлялось",
+                            color = ThemeManager.parseColor(currentTheme.textSecondaryColor),
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            isRefreshing = true
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    val repository = FunPayRepository(context)
+                                    val profile = repository.getSelfProfile()
+                                    if (profile != null) {
+                                        WidgetManager.saveProfileCache(context, profile)
+                                    }
+                                    WidgetManager.updateAllWidgets(context)
+                                    withContext(Dispatchers.Main) {
+                                        lastUpdated = WidgetManager.getLastUpdatedString(context)
+                                    }
+                                } catch (e: Exception) {
+                                    
+                                } finally {
+                                    withContext(Dispatchers.Main) {
+                                        isRefreshing = false
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !isRefreshing,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ThemeManager.parseColor(currentTheme.accentColor)
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        if (isRefreshing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Обновить",
+                                modifier = Modifier.size(16.dp),
+                                tint = Color.White
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Обновить", color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+
+            
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val appWidgetManager = AppWidgetManager.getInstance(context)
 
@@ -278,11 +377,11 @@ fun WidgetsScreen(
             }
 
             Text(
-                "Совет: Виджеты обновляются автоматически раз в 30 минут или при открытии приложения. Данные берутся из кэша.",
+                "Виджеты обновляются автоматически сервисом или вручную кнопкой выше.",
                 color = ThemeManager.parseColor(currentTheme.textSecondaryColor),
                 fontSize = 12.sp,
                 lineHeight = 16.sp,
-                modifier = Modifier.padding(top = 16.dp)
+                modifier = Modifier.padding(top = 4.dp)
             )
         }
     }
@@ -324,7 +423,6 @@ fun PinWidgetButton(
 }
 
 
-
 abstract class FunPayBaseWidget : AppWidgetProvider() {
 
     override fun onUpdate(
@@ -337,37 +435,47 @@ abstract class FunPayBaseWidget : AppWidgetProvider() {
 
         scope.launch {
             
-            val profile = try {
+            val cached = WidgetManager.getProfileCache(context)
+            val theme = ThemeManager.loadTheme(context)
+            val transparency = WidgetManager.getTransparency(context)
+            val surfaceColorInt = android.graphics.Color.parseColor(theme.surfaceColor)
+            val alpha = (transparency * 255).toInt()
+            val backgroundColor = (alpha shl 24) or (surfaceColorInt and 0x00FFFFFF)
+            val accentColor = android.graphics.Color.parseColor(theme.accentColor)
+            val textColor = android.graphics.Color.parseColor(theme.textPrimaryColor)
+            val secColor = android.graphics.Color.parseColor(theme.textSecondaryColor)
+
+            if (cached != null) {
+                withContext(Dispatchers.Main) {
+                    for (id in appWidgetIds) {
+                        updateAppWidget(context, appWidgetManager, id, cached,
+                            backgroundColor, accentColor, textColor, secColor)
+                    }
+                }
+            }
+
+            
+            val freshProfile = try {
                 repository.getSelfProfile()
             } catch (e: Exception) {
                 null
             }
 
-            val theme = ThemeManager.loadTheme(context)
-            val transparency = WidgetManager.getTransparency(context)
-
-            
-            val surfaceColorInt = android.graphics.Color.parseColor(theme.surfaceColor)
-            val alpha = (transparency * 255).toInt()
-            val backgroundColor = (alpha shl 24) or (surfaceColorInt and 0x00FFFFFF)
-
-            
-            val accentColor = android.graphics.Color.parseColor(theme.accentColor)
-            val textColor = android.graphics.Color.parseColor(theme.textPrimaryColor)
-            val secColor = android.graphics.Color.parseColor(theme.textSecondaryColor)
-
-            withContext(Dispatchers.Main) {
-                for (appWidgetId in appWidgetIds) {
-                    updateAppWidget(
-                        context,
-                        appWidgetManager,
-                        appWidgetId,
-                        profile,
-                        backgroundColor,
-                        accentColor,
-                        textColor,
-                        secColor
-                    )
+            if (freshProfile != null && freshProfile != cached) {
+                WidgetManager.saveProfileCache(context, freshProfile)
+                withContext(Dispatchers.Main) {
+                    for (id in appWidgetIds) {
+                        updateAppWidget(context, appWidgetManager, id, freshProfile,
+                            backgroundColor, accentColor, textColor, secColor)
+                    }
+                }
+            } else if (cached == null) {
+                
+                withContext(Dispatchers.Main) {
+                    for (id in appWidgetIds) {
+                        updateAppWidget(context, appWidgetManager, id, null,
+                            backgroundColor, accentColor, textColor, secColor)
+                    }
                 }
             }
         }
@@ -396,17 +504,25 @@ abstract class FunPayBaseWidget : AppWidgetProvider() {
         secColor: Int
     )
 
-    protected fun getPendingIntent(context: Context): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java)
+    /**
+     * ИСПРАВЛЕНО:
+     * 1. Уникальный requestCode = appWidgetId — исключает коллизии PendingIntent
+     * 2. FLAG_ACTIVITY_NEW_TASK + FLAG_ACTIVITY_CLEAR_TOP — корректный запуск из виджета
+     * 3. Уникальный action — гарантирует создание отдельного PendingIntent для каждого виджета
+     */
+    protected fun getPendingIntent(context: Context, appWidgetId: Int): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            action = "ru.allisighs.funpaytools.WIDGET_OPEN_$appWidgetId"
+        }
         return PendingIntent.getActivity(
             context,
-            0,
+            appWidgetId,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
 
-    
     protected suspend fun loadCircularBitmap(context: Context, url: String): Bitmap? {
         return withContext(Dispatchers.IO) {
             try {
@@ -420,14 +536,13 @@ abstract class FunPayBaseWidget : AppWidgetProvider() {
                 result?.let { bitmap ->
                     val output = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
                     val canvas = Canvas(output)
-                    val color = -0xbdbdbe
                     val paint = Paint()
                     val rect = Rect(0, 0, bitmap.width, bitmap.height)
                     val rectF = RectF(rect)
 
                     paint.isAntiAlias = true
                     canvas.drawARGB(0, 0, 0, 0)
-                    paint.color = color
+                    paint.color = -0xbdbdbe
                     canvas.drawOval(rectF, paint)
 
                     paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
@@ -454,25 +569,21 @@ class BalanceWidget : FunPayBaseWidget() {
         secColor: Int
     ) {
         val views = RemoteViews(context.packageName, R.layout.widget_balance)
-
-        
-        
-        
         views.setImageViewBitmap(R.id.widget_background, createBgBitmap(bgColor, context))
 
         if (profile != null) {
             views.setTextViewText(R.id.widget_balance_text, profile.totalBalance)
             views.setTextColor(R.id.widget_balance_text, accentColor)
-
             views.setTextViewText(R.id.widget_title_text, profile.username)
             views.setTextColor(R.id.widget_title_text, secColor)
         } else {
             views.setTextViewText(R.id.widget_balance_text, "---")
             views.setTextColor(R.id.widget_balance_text, textColor)
-            views.setTextViewText(R.id.widget_title_text, "Бомж")
+            views.setTextViewText(R.id.widget_title_text, "Загрузка...")
         }
 
-        views.setOnClickPendingIntent(R.id.widget_root, getPendingIntent(context))
+        
+        views.setOnClickPendingIntent(R.id.widget_root, getPendingIntent(context, appWidgetId))
         appWidgetManager.updateAppWidget(appWidgetId, views)
     }
 }
@@ -490,20 +601,16 @@ class ProfileWidget : FunPayBaseWidget() {
         secColor: Int
     ) {
         val views = RemoteViews(context.packageName, R.layout.widget_profile)
-
         views.setImageViewBitmap(R.id.widget_background, createBgBitmap(bgColor, context))
 
         if (profile != null) {
             views.setTextViewText(R.id.widget_username, profile.username)
             views.setTextColor(R.id.widget_username, textColor)
-
             views.setTextViewText(R.id.widget_balance, profile.totalBalance)
             views.setTextColor(R.id.widget_balance, accentColor)
-
             views.setTextViewText(R.id.widget_rating, "★ ${profile.rating} (${profile.reviewCount})")
             views.setTextColor(R.id.widget_rating, secColor)
 
-            
             val avatar = loadCircularBitmap(context, profile.avatarUrl)
             if (avatar != null) {
                 views.setImageViewBitmap(R.id.widget_avatar, avatar)
@@ -515,7 +622,8 @@ class ProfileWidget : FunPayBaseWidget() {
             views.setTextViewText(R.id.widget_balance, "Загрузка...")
         }
 
-        views.setOnClickPendingIntent(R.id.widget_root, getPendingIntent(context))
+        
+        views.setOnClickPendingIntent(R.id.widget_root, getPendingIntent(context, appWidgetId))
         appWidgetManager.updateAppWidget(appWidgetId, views)
     }
 }

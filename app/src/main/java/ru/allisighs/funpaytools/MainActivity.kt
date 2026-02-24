@@ -1,4 +1,3 @@
-
 /*
  *
  *  * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
@@ -16,7 +15,8 @@ import android.app.Activity
 import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.ComponentName
+import android.app.job.JobInfo
+import android.app.job.JobScheduler
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -110,6 +110,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
+import android.content.ComponentName
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import coil.ImageLoader
@@ -138,7 +139,8 @@ data class ParsedMessage(
     val isSystem: Boolean = false,
     val isAdmin: Boolean = false,
     val badge: String? = null,
-    val links: List<MessageLink> = emptyList()
+    val links: List<MessageLink> = emptyList(),
+    val authorUserId: String? = null
 )
 
 data class MessageLink(
@@ -158,6 +160,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        
+        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        try {
+            val jobScheduler = getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
+            val componentName = ComponentName(this, ZombieJobService::class.java)
+
+            val jobInfo = JobInfo.Builder(999, componentName)
+                .setPeriodic(15 * 60 * 1000L)
+                .setPersisted(true)
+                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                .build()
+
+            jobScheduler.schedule(jobInfo)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         FirebaseDatabase.getInstance().setPersistenceEnabled(false)
         Stats.init(this)
         Stats.setOnline()
@@ -317,15 +336,24 @@ fun FunPayToolsApp(
                     composable("chat/{chatId}/{username}") { backStackEntry ->
                         val chatId = backStackEntry.arguments?.getString("chatId") ?: ""
                         val username = backStackEntry.arguments?.getString("username") ?: ""
-
-                        AppScaffold(username, navController, currentTheme) {
-                            ChatDetailScreen(chatId, username, repository, currentTheme, navController)
-                        }
+                        ChatDetailScreen(chatId, username, repository, currentTheme, navController)
                     }
 
                     composable("order/{orderId}") { backStackEntry ->
                         val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
                         AppScaffold("Заказ #$orderId", navController, currentTheme) { OrderScreen(orderId, repository, currentTheme) }
+                    }
+
+                    composable("profile/{nodeId}/{username}") { backStackEntry ->
+                        val nodeId = backStackEntry.arguments?.getString("nodeId") ?: ""
+                        val profileUsername = backStackEntry.arguments?.getString("username") ?: ""
+                        UserProfileScreen(
+                            nodeId = nodeId,
+                            username = profileUsername,
+                            navController = navController,
+                            repository = repository,
+                            theme = currentTheme
+                        )
                     }
                 }
             }
@@ -523,6 +551,18 @@ fun PermissionsScreen(navController: NavController, repository: FunPayRepository
 
         Button(
             onClick = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                        Toast.makeText(context, "ВЫ НЕ ОТКЛЮЧИЛИ ОПТИМИЗАЦИЮ БАТАРЕИ! Приложение не сможет работать в фоне 24/7.", Toast.LENGTH_LONG).show()
+                        @SuppressLint("BatteryLife")
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                        return@Button
+                    }
+                }
+
                 if (hasAuth) {
                     navController.popBackStack()
                 } else {
@@ -543,7 +583,7 @@ fun openBatterySettings(context: Context) {
     val manufacturer = Build.MANUFACTURER.lowercase()
 
     val intents = when {
-        
+
         manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") -> listOf(
             Intent().setComponent(ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsContainerManagementActivity")),
             Intent().setComponent(ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity")),
@@ -556,7 +596,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.xiaomi.smarthome", "com.xiaomi.smarthome.settings.SettingsActivity"))
         )
 
-        
+
         manufacturer.contains("oneplus") || manufacturer.contains("oplus") -> listOf(
             Intent().setComponent(ComponentName("com.oplus.battery", "com.oplus.battery.OplusBatteryOptimizeActivity")),
             Intent().setComponent(ComponentName("com.oplus.battery", "com.oplus.battery.optimizeapp.BatteryOptimizeAppListActivity")),
@@ -568,7 +608,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.android.settings", "com.android.settings.Settings\$HighPowerApplicationsActivity"))
         )
 
-        
+
         manufacturer.contains("oppo") || manufacturer.contains("realme") -> listOf(
             Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")),
             Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity")),
@@ -579,7 +619,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.realme.gamespace", "com.realme.gamespace.batterycenter.BatteryCenterActivity"))
         )
 
-        
+
         manufacturer.contains("samsung") -> listOf(
             Intent().setComponent(ComponentName("com.samsung.android.sm", "com.samsung.android.sm.ui.battery.BatteryActivity")),
             Intent().setComponent(ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity")),
@@ -592,7 +632,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.samsung.android.sm", "com.samsung.android.sm.battery.ui.BatteryActivity"))
         )
 
-        
+
         manufacturer.contains("huawei") || manufacturer.contains("honor") -> listOf(
             Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")),
             Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity")),
@@ -603,7 +643,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.huawei.systemmanager", "com.huawei.permissionmanager.ui.MainActivity"))
         )
 
-        
+
         manufacturer.contains("vivo") || manufacturer.contains("iqoo") -> listOf(
             Intent().setComponent(ComponentName("com.vivo.abe", "com.vivo.applicationbehaviorengine.ui.ExcessivePowerManagerActivity")),
             Intent().setComponent(ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")),
@@ -614,7 +654,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.iqoo.powersaving", "com.iqoo.powersaving.PowerSavingManagerActivity"))
         )
 
-        
+
         manufacturer.contains("asus") -> listOf(
             Intent().setComponent(ComponentName("com.asus.mobilemanager", "com.asus.mobilemanager.autostart.AutoStartActivity")),
             Intent().setComponent(ComponentName("com.asus.mobilemanager", "com.asus.mobilemanager.entry.FunctionActivity")),
@@ -623,7 +663,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.asus.mobilemanager", "com.asus.mobilemanager.MainActivity"))
         )
 
-        
+
         manufacturer.contains("nokia") || manufacturer.contains("hmd") -> listOf(
             Intent().setComponent(ComponentName("com.evenwell.powersaving.g3", "com.evenwell.powersaving.g3.exception.PowerSaverExceptionActivity")),
             Intent().setComponent(ComponentName("com.nokia.battery", "com.nokia.battery.BatteryActivity")),
@@ -631,7 +671,7 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.evenwell.emm", "com.evenwell.emm.ui.MainActivity"))
         )
 
-        
+
         manufacturer.contains("lenovo") || manufacturer.contains("motorola") || manufacturer.contains("moto") -> listOf(
             Intent().setComponent(ComponentName("com.motorola.batterycare", "com.motorola.batterycare.MainActivity")),
             Intent().setComponent(ComponentName("com.motorola.actions", "com.motorola.actions.backgroundapp.BackgroundAppActivity")),
@@ -639,75 +679,75 @@ fun openBatterySettings(context: Context) {
             Intent().setComponent(ComponentName("com.lenovo.powersetting", "com.lenovo.powersetting.ui.Settings\$HighPowerApplicationsActivity"))
         )
 
-        
+
         manufacturer.contains("meizu") -> listOf(
             Intent().setComponent(ComponentName("com.meizu.safe", "com.meizu.safe.security.SHOW_APPSEC")),
             Intent().setComponent(ComponentName("com.meizu.safe", "com.meizu.safe.SecurityMainActivity")),
             Intent().setComponent(ComponentName("com.meizu.safe", "com.meizu.safe.powerui.PowerAppPermissionActivity"))
         )
 
-        
+
         manufacturer.contains("lg") || manufacturer.contains("lge") -> listOf(
             Intent().setComponent(ComponentName("com.android.settings", "com.android.settings.Settings\$HighPowerApplicationsActivity")),
             Intent().setComponent(ComponentName("com.lge.systemservice", "com.lge.systemservice.BatteryActivity"))
         )
 
-        
+
         manufacturer.contains("htc") -> listOf(
             Intent().setComponent(ComponentName("com.htc.pitroad", "com.htc.pitroad.landingpage.activity.LandingPageActivity")),
             Intent().setComponent(ComponentName("com.htc.settings.power", "com.htc.settings.power.PowerSettingsActivity"))
         )
 
-        
+
         manufacturer.contains("sony") -> listOf(
             Intent().setComponent(ComponentName("com.sonymobile.cta", "com.sonymobile.cta.SomcCTAMainActivity")),
             Intent().setComponent(ComponentName("com.sonymobile.settings.stamina", "com.sonymobile.settings.stamina.StaminaActivity"))
         )
 
-        
+
         manufacturer.contains("zte") -> listOf(
             Intent().setComponent(ComponentName("com.zte.powersavemode", "com.zte.powersavemode.PowerSaveSettingsActivity")),
             Intent().setComponent(ComponentName("com.zte.heartyservice", "com.zte.heartyservice.autorun.AppAutoRunManager"))
         )
 
-        
+
         manufacturer.contains("google") -> listOf(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${context.packageName}") },
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.parse("package:${context.packageName}") }
         )
 
-        
+
         manufacturer.contains("nothing") -> listOf(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${context.packageName}") },
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         )
 
-        
+
         manufacturer.contains("tecno") || manufacturer.contains("infinix") || manufacturer.contains("itel") -> listOf(
             Intent().setComponent(ComponentName("com.transsion.systemmanager", "com.transsion.systemmanager.background.BackgroundManagerActivity")),
             Intent().setComponent(ComponentName("com.itel.powersaver", "com.itel.powersaver.PowerSaverActivity"))
         )
 
-        
+
         manufacturer.contains("blackview") -> listOf(
             Intent().setComponent(ComponentName("com.dv.powermanager", "com.dv.powermanager.PowerManagerActivity")),
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         )
 
-        
+
         manufacturer.contains("ulefone") || manufacturer.contains("doogee") || manufacturer.contains("oukitel") -> listOf(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${context.packageName}") },
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         )
 
-        
+
         manufacturer.contains("fairphone") -> listOf(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${context.packageName}") },
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         )
 
-        
+
         else -> listOf(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${context.packageName}") },
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
@@ -741,7 +781,7 @@ fun openBatterySettings(context: Context) {
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             return
         } catch (e: Exception) {
-            
+
         }
     }
 
@@ -811,7 +851,7 @@ fun openAutoStartSettings(context: Context) {
             Toast.makeText(context, "Включите переключатель для FunPay Tools", Toast.LENGTH_LONG).show()
             return
         } catch (e: Exception) {
-            
+
         }
     }
 
@@ -824,7 +864,7 @@ fun AuthMethodScreen(navController: NavController) {
     val backupManager = remember { BackupManager(context) }
     val repository = remember { FunPayRepository(context) }
 
-    
+
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -837,7 +877,7 @@ fun AuthMethodScreen(navController: NavController) {
 
                 val result = backupManager.importBackup(json)
                 result.onSuccess { backup ->
-                    
+
                     backupManager.applyBackup(
                         backup = backup,
                         repository = repository,
@@ -893,7 +933,7 @@ fun AuthMethodScreen(navController: NavController) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        
+
         AuthCard(Icons.Default.UploadFile, "Войти через файл импорта", "Если у вас есть сохраненный бэкап приложения .json") {
             importLauncher.launch(arrayOf("application/json"))
         }
@@ -934,11 +974,11 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
     var hasGoldenKey by remember { mutableStateOf(false) }
     var currentUrl by remember { mutableStateOf("") }
 
-    
+
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
 
-    
+
     LaunchedEffect(Unit) {
         val cookieManager = CookieManager.getInstance()
         cookieManager.removeAllCookies(null)
@@ -952,77 +992,77 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
                 WebView(ctx).apply {
                     webView = this
 
-                    
+
                     settings.apply {
-                        
+
                         javaScriptEnabled = true
 
-                        
+
                         domStorageEnabled = true
                         databaseEnabled = true
 
-                        
+
                         useWideViewPort = true
                         loadWithOverviewMode = true
 
-                        
+
                         javaScriptCanOpenWindowsAutomatically = true
                         setSupportMultipleWindows(false)
 
-                        
+
                         cacheMode = WebSettings.LOAD_DEFAULT
 
-                        
-                        
+
+
                         userAgentString = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
 
-                        
+
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         }
                     }
 
-                    
+
                     val cookieManager = CookieManager.getInstance()
                     cookieManager.setAcceptCookie(true)
 
-                    
+
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                         cookieManager.setAcceptThirdPartyCookies(this, true)
                     }
 
-                    
-                    
+
+
                     webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
                             currentUrl = url ?: ""
 
-                            
+
                             val cookies = CookieManager.getInstance().getCookie(url)
                             hasGoldenKey = cookies?.contains("golden_key=") == true
                         }
 
-                        
-                        
-                        
+
+
+
                     }
 
-                    
+
                     webChromeClient = object : WebChromeClient() {
                         override fun onProgressChanged(view: WebView?, newProgress: Int) {
                             super.onProgressChanged(view, newProgress)
-                            
+
                         }
                     }
 
-                    
+
                     loadUrl("https://funpay.com/account/login")
                 }
             }
         )
 
-        
+
         Card(
             modifier = Modifier
                 .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
@@ -1074,30 +1114,30 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
                                 val sessionMatch = cookies.split(";").find { it.trim().startsWith("PHPSESSID=") }
                                 val phpSessionId = sessionMatch?.substringAfter("PHPSESSID=")?.trim() ?: ""
 
-                                
+
                                 repository.addAccountFromWebLogin(goldenKey, phpSessionId)
 
-                                
+
                                 val allAccounts = repository.getAllAccounts()
 
                                 Toast.makeText(context, "Аккаунт добавлен!", Toast.LENGTH_SHORT).show()
 
-                                
+
                                 if (allAccounts.isNotEmpty()) {
-                                    
-                                    
+
+
                                     if (allAccounts.size == 1) {
                                         navController.navigate("dashboard") {
-                                            popUpTo(0) { inclusive = true } 
+                                            popUpTo(0) { inclusive = true }
                                         }
                                     } else {
-                                        
+
                                         navController.navigate("accounts") {
                                             popUpTo("accounts") { inclusive = true }
                                         }
                                     }
                                 } else {
-                                    
+
                                     Toast.makeText(context, "Ошибка сохранения!", Toast.LENGTH_LONG).show()
                                 }
                             }
@@ -1144,11 +1184,11 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var showThemeCustomization by remember { mutableStateOf(false) }
 
-    
+
     var isLoadingChats by remember { mutableStateOf(true) }
     var hasLoadedOnce by remember { mutableStateOf(false) }
 
-    
+
     val activeAccount = repository.getActiveAccount()
     val accountKey = activeAccount?.id ?: "none"
 
@@ -1168,9 +1208,9 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
         }
     }
 
-    
+
     LaunchedEffect(accountKey) {
-        
+
         isLoadingChats = true
         chats = emptyList()
 
@@ -1202,7 +1242,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                 TopAppBar(
                     title = { Text("FunPay Tools", color = ThemeManager.parseColor(currentTheme.textPrimaryColor), fontWeight = FontWeight.Bold) },
                     actions = {
-                        
+
                         IconButton(onClick = {
                             scope.launch {
                                 val unreadChats = chats.filter { it.isUnread }
@@ -1230,7 +1270,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                             )
                         }
 
-                        
+
                         IconButton(onClick = { showThemeCustomization = true }) {
                             Icon(
                                 imageVector = Icons.Default.ColorLens,
@@ -1239,7 +1279,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                             )
                         }
 
-                        
+
                         IconButton(onClick = { navController.navigate("accounts") }) {
                             Icon(
                                 imageVector = Icons.Default.AccountCircle,
@@ -1248,7 +1288,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                             )
                         }
 
-                        
+
                         IconButton(onClick = {
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/fptools"))
                             context.startActivity(intent)
@@ -1260,7 +1300,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                             )
                         }
 
-                        
+
                         IconButton(onClick = { navController.navigate("settings") }) {
                             Icon(Icons.Default.Settings, "Settings", tint = ThemeManager.parseColor(currentTheme.textPrimaryColor))
                         }
@@ -1325,7 +1365,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                         repository = repository,
                         theme = currentTheme,
                         onOpenTariffs = { navController.navigate("donations") },
-                        onOpenLots = { navController.navigate("lots") },  
+                        onOpenLots = { navController.navigate("lots") },
                         onLogout = {
                             navController.navigate("welcome") { popUpTo(0) }
                         }
@@ -1569,7 +1609,7 @@ fun ChatItemView(
                             .clip(CircleShape)
                             .background(Color.Gray)
                             .clickable {
-                                if (assignedLabels.isNotEmpty()) showTooltip(assignedLabels.first().name)
+                                navController.navigate("profile/${chat.id}/${chat.username}")
                             },
                         contentScale = ContentScale.Crop
                     )
@@ -1592,7 +1632,7 @@ fun ChatItemView(
                         }
                     }
                 }
-                // еще один аутизм
+                
                 if (labelTooltip != null) {
                     Box(
                         modifier = Modifier
@@ -1971,11 +2011,11 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
 fun PremiumSettingCard(
     title: String,
     subtitle: String,
-    checked: Boolean,                                      
+    checked: Boolean,
     icon: ImageVector,
-    theme: AppTheme,                                       
-    feature: PremiumFeature,                               
-    onCheckedChange: (Boolean) -> Unit                     
+    theme: AppTheme,
+    feature: PremiumFeature,
+    onCheckedChange: (Boolean) -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -1993,7 +2033,7 @@ fun PremiumSettingCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            
+
             Icon(
                 imageVector = icon,
                 contentDescription = null,
@@ -2003,7 +2043,7 @@ fun PremiumSettingCard(
 
             Spacer(modifier = Modifier.width(16.dp))
 
-            
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
@@ -2024,7 +2064,7 @@ fun PremiumSettingCard(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            
+
             PremiumSwitch(
                 feature = feature,
                 checked = checked,
@@ -2036,8 +2076,101 @@ fun PremiumSettingCard(
 }
 
 @Composable
+fun ImagePickerRow(
+    imageUri: android.net.Uri?,
+    theme: AppTheme,
+    onPick: () -> Unit,
+    onClear: () -> Unit
+) {
+    if (imageUri == null) {
+        OutlinedButton(
+            onClick = onPick,
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.5f)
+            )
+        ) {
+            Icon(Icons.Default.Image, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Прикрепить картинку", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 13.sp)
+        }
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .background(ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Image, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Картинка выбрана", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp, modifier = Modifier.weight(1f))
+            IconButton(onClick = onClear, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(16.dp))
+            }
+        }
+    }
+}
+
+/**
+ * Селектор порядка: иконки в виде двух вертикальных стопок.
+ *   [ 🖼 ]  [ 💬 ]
+ *   [ 💬 ]  [ 🖼 ]
+ * Показывается только когда есть и текст и картинка.
+ */
+@Composable
+fun ImageOrderPicker(
+    imageFirst: Boolean,
+    theme: AppTheme,
+    onSelect: (Boolean) -> Unit
+) {
+    Text("Порядок отправки:", fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+    Spacer(Modifier.height(4.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        
+        Surface(
+            modifier = Modifier.weight(1f).clickable { onSelect(true) },
+            color = if (imageFirst) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.3f) else Color.Transparent,
+            shape = RoundedCornerShape(6.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Icon(Icons.Default.Image, null, modifier = Modifier.size(18.dp), tint = ThemeManager.parseColor(theme.accentColor))
+                Icon(Icons.Default.TextFields, null, modifier = Modifier.size(18.dp), tint = ThemeManager.parseColor(theme.textPrimaryColor))
+            }
+        }
+        
+        Surface(
+            modifier = Modifier.weight(1f).clickable { onSelect(false) },
+            color = if (!imageFirst) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.3f) else Color.Transparent,
+            shape = RoundedCornerShape(6.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Icon(Icons.Default.TextFields, null, modifier = Modifier.size(18.dp), tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                Icon(Icons.Default.Image, null, modifier = Modifier.size(18.dp), tint = ThemeManager.parseColor(theme.accentColor))
+            }
+        }
+    }
+}
+
+@Composable
 fun AutoRefundDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
     var settings by remember { mutableStateOf(repository.getAutoRefundSettings()) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        imageUri = uri; settings = settings.copy(imageUri = uri?.toString())
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -2114,19 +2247,25 @@ fun AutoRefundDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: (
                             cursorColor = ThemeManager.parseColor(theme.accentColor)
                         )
                     )
+                    Spacer(Modifier.height(8.dp))
+                    ImagePickerRow(
+                        imageUri = imageUri,
+                        theme = theme,
+                        onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        onClear = { imageUri = null; settings = settings.copy(imageUri = null) }
+                    )
+                    if (imageUri != null && settings.messageText.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        ImageOrderPicker(settings.imageFirst, theme) { settings = settings.copy(imageFirst = it) }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(
-                    onClick = {
-                        repository.saveAutoRefundSettings(settings)
-                        onDismiss()
-                    },
+                    onClick = { repository.saveAutoRefundSettings(settings); onDismiss() },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                ) {
-                    Text("Сохранить")
-                }
+                ) { Text("Сохранить") }
             }
         }
     }
@@ -2162,49 +2301,213 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
     var newTrigger by remember { mutableStateOf("") }
     var newResponse by remember { mutableStateOf("") }
     var exactMatch by remember { mutableStateOf(false) }
+    var newImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var newImageFirst by remember { mutableStateOf(true) }
+    var editingCmd by remember { mutableStateOf<AutoResponseCommand?>(null) }
 
-    Dialog(onDismissRequest = onDismiss) {
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        newImageUri = uri
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
+            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Команды автоответа", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
-                Spacer(modifier = Modifier.height(16.dp))
-                OutlinedTextField(value = newTrigger, onValueChange = { newTrigger = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Триггер") })
-                OutlinedTextField(value = newResponse, onValueChange = { newResponse = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Ответ") })
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = exactMatch, onCheckedChange = { exactMatch = it })
-                    Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor))
-                }
-                Button(onClick = {
-                    if (newTrigger.isNotBlank() && newResponse.isNotBlank()) {
-                        commands = commands + AutoResponseCommand(newTrigger.trim(), newResponse.trim(), exactMatch)
-                        repository.saveCommands(commands)
-                        newTrigger = ""
-                        newResponse = ""
-                        exactMatch = false
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        if (editingCmd != null) "Редактирование команды" else "Команды автоответа",
+                        fontWeight = FontWeight.Bold,
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontSize = 18.sp
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
                     }
-                }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))) { Text("Добавить") }
-                Spacer(modifier = Modifier.height(16.dp))
-                LazyColumn(modifier = Modifier.height(200.dp)) {
-                    items(commands) { cmd ->
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("'${cmd.trigger}'", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                Text(cmd.response, color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp, maxLines = 1)
-                            }
-                            IconButton(onClick = {
-                                commands = commands.filter { it != cmd }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                
+                OutlinedTextField(
+                    value = newTrigger,
+                    onValueChange = { newTrigger = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Триггер (слово/фраза)") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                        cursorColor = ThemeManager.parseColor(theme.accentColor)
+                    ),
+                    singleLine = true
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = newResponse,
+                    onValueChange = { newResponse = it },
+                    modifier = Modifier.fillMaxWidth().height(90.dp),
+                    label = { Text("Ответ (необязательно, если есть картинка)") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                        cursorColor = ThemeManager.parseColor(theme.accentColor)
+                    ),
+                    maxLines = 4
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = exactMatch,
+                        onCheckedChange = { exactMatch = it },
+                        colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                    )
+                    Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(6.dp))
+                ImagePickerRow(
+                    imageUri = newImageUri,
+                    theme = theme,
+                    onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onClear = { newImageUri = null }
+                )
+                if (newImageUri != null && newResponse.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    ImageOrderPicker(newImageFirst, theme) { newImageFirst = it }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (editingCmd != null) {
+                        OutlinedButton(
+                            onClick = {
+                                editingCmd = null
+                                newTrigger = ""; newResponse = ""; exactMatch = false
+                                newImageUri = null; newImageFirst = true
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                    }
+                    Button(
+                        onClick = {
+                            val hasContent = newTrigger.isNotBlank() && (newResponse.isNotBlank() || newImageUri != null)
+                            if (hasContent) {
+                                val cmd = AutoResponseCommand(
+                                    trigger = newTrigger.trim(),
+                                    response = newResponse.trim(),
+                                    exactMatch = exactMatch,
+                                    imageUri = newImageUri?.toString(),
+                                    imageFirst = newImageFirst
+                                )
+                                commands = if (editingCmd != null) {
+                                    commands.map { if (it == editingCmd) cmd else it }
+                                } else {
+                                    commands + cmd
+                                }
                                 repository.saveCommands(commands)
-                            }) {
-                                Icon(Icons.Default.Delete, null, tint = Color.Red)
+                                editingCmd = null
+                                newTrigger = ""; newResponse = ""; exactMatch = false
+                                newImageUri = null; newImageFirst = true
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                    ) { Text(if (editingCmd != null) "Сохранить" else "Добавить") }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                Spacer(Modifier.height(8.dp))
+
+                if (commands.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Text("Нет команд", color = ThemeManager.parseColor(theme.textSecondaryColor))
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(commands) { cmd ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (editingCmd == cmd)
+                                        ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
+                                    else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
+                                ),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                "'${cmd.trigger}'",
+                                                color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp
+                                            )
+                                            if (cmd.exactMatch) {
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("=", color = ThemeManager.parseColor(theme.accentColor), fontSize = 10.sp)
+                                            }
+                                            if (cmd.imageUri != null) {
+                                                Spacer(Modifier.width(4.dp))
+                                                Icon(Icons.Default.Image, null, modifier = Modifier.size(12.dp), tint = ThemeManager.parseColor(theme.accentColor))
+                                            }
+                                        }
+                                        if (cmd.response.isNotBlank()) {
+                                            Text(
+                                                cmd.response,
+                                                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    IconButton(onClick = {
+                                        editingCmd = cmd
+                                        newTrigger = cmd.trigger
+                                        newResponse = cmd.response
+                                        exactMatch = cmd.exactMatch
+                                        newImageUri = cmd.imageUri?.let { android.net.Uri.parse(it) }
+                                        newImageFirst = cmd.imageFirst
+                                    }, modifier = Modifier.size(32.dp)) {
+                                        Icon(Icons.Default.Edit, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(16.dp))
+                                    }
+                                    IconButton(onClick = {
+                                        if (editingCmd == cmd) {
+                                            editingCmd = null
+                                            newTrigger = ""; newResponse = ""; exactMatch = false
+                                            newImageUri = null; newImageFirst = true
+                                        }
+                                        commands = commands.filter { it != cmd }
+                                        repository.saveCommands(commands)
+                                    }, modifier = Modifier.size(32.dp)) {
+                                        Icon(Icons.Default.Delete, null, tint = Color.Red, modifier = Modifier.size(16.dp))
+                                    }
+                                }
                             }
                         }
-                        HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
                     }
                 }
-                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                ) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
             }
         }
     }
@@ -2215,42 +2518,80 @@ fun GreetingDialog(repository: FunPayRepository, settings: GreetingSettings, the
     var text by remember { mutableStateOf(settings.text) }
     var cooldown by remember { mutableIntStateOf(settings.cooldownHours) }
     var ignoreSystem by remember { mutableStateOf(settings.ignoreSystemMessages) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+    var imageFirst by remember { mutableStateOf(settings.imageFirst) }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        imageUri = uri
+    }
 
     Dialog(onDismissRequest = {}) {
         Card(
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка приветствия", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
-                OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Текст") }, maxLines = 3)
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Текст (необязательно, если есть картинка)") },
+                    maxLines = 3,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                        cursorColor = ThemeManager.parseColor(theme.accentColor)
+                    )
+                )
                 Text("Переменные: \$username, \$chat_name", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                 Spacer(modifier = Modifier.height(8.dp))
+
+                ImagePickerRow(
+                    imageUri = imageUri,
+                    theme = theme,
+                    onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onClear = { imageUri = null }
+                )
+                if (imageUri != null && text.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    ImageOrderPicker(imageFirst, theme) { imageFirst = it }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
                 Text("Кулдаун: $cooldown ч", color = ThemeManager.parseColor(theme.textPrimaryColor))
-                Slider(value = cooldown.toFloat(), onValueChange = { cooldown = it.toInt() }, valueRange = 1f..168f, steps = 23, colors = SliderDefaults.colors(
-                    thumbColor = ThemeManager.parseColor(theme.accentColor),
-                    activeTrackColor = ThemeManager.parseColor(theme.accentColor)
-                ))
+                Slider(
+                    value = cooldown.toFloat(),
+                    onValueChange = { cooldown = it.toInt() },
+                    valueRange = 1f..168f,
+                    steps = 23,
+                    colors = SliderDefaults.colors(
+                        thumbColor = ThemeManager.parseColor(theme.accentColor),
+                        activeTrackColor = ThemeManager.parseColor(theme.accentColor)
+                    )
+                )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = ignoreSystem, onCheckedChange = { ignoreSystem = it })
+                    Checkbox(
+                        checked = ignoreSystem,
+                        onCheckedChange = { ignoreSystem = it },
+                        colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                    )
                     Text("Игнорировать системные сообщения", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
                 }
+                Spacer(Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { onSave(GreetingSettings(false, text, cooldown, ignoreSystem)) },
+                        onClick = { onSave(GreetingSettings(false, text, cooldown, ignoreSystem, imageUri?.toString(), imageFirst)) },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                    ) {
-                        Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor))
-                    }
+                    ) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                     Button(
-                        onClick = { onSave(GreetingSettings(true, text, cooldown, ignoreSystem)) },
+                        onClick = { onSave(GreetingSettings(true, text, cooldown, ignoreSystem, imageUri?.toString(), imageFirst)) },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                    ) {
-                        Text("Сохранить")
-                    }
+                    ) { Text("Сохранить") }
                 }
             }
         }
@@ -2266,14 +2607,21 @@ fun ReviewSettingsDialog(
 ) {
     var settings by remember { mutableStateOf(repository.getReviewReplySettings()) }
     var selectedTab by remember { mutableIntStateOf(if (settings.useAi && LicenseManager.hasAccess(PremiumFeature.REVIEW_AI)) 0 else 1) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        imageUri = uri
+        settings = settings.copy(imageUri = uri?.toString())
+        repository.saveReviewReplySettings(settings)
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp),
-            modifier = Modifier.heightIn(max = 650.dp)
+            modifier = Modifier.heightIn(max = 700.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка ответов на отзывы", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -2325,11 +2673,9 @@ fun ReviewSettingsDialog(
                     }
                 }
 
-
                 Spacer(modifier = Modifier.height(16.dp))
 
                 if (selectedTab == 0) {
-
                     Text("Сила ответа: ${settings.aiLength}", color = ThemeManager.parseColor(theme.textPrimaryColor))
                     Text(
                         text = when {
@@ -2341,82 +2687,95 @@ fun ReviewSettingsDialog(
                         fontSize = 12.sp,
                         color = ThemeManager.parseColor(theme.textSecondaryColor)
                     )
-
                     Slider(
                         value = settings.aiLength.toFloat(),
-                        onValueChange = {
-                            val newLength = it.toInt()
-                            settings = settings.copy(aiLength = newLength)
-                        },
+                        onValueChange = { settings = settings.copy(aiLength = it.toInt()) },
                         valueRange = 1f..10f,
                         steps = 8,
-                        onValueChangeFinished = {
-                            repository.saveReviewReplySettings(settings)
-                        },
+                        onValueChangeFinished = { repository.saveReviewReplySettings(settings) },
                         colors = SliderDefaults.colors(
                             thumbColor = ThemeManager.parseColor(theme.accentColor),
                             activeTrackColor = ThemeManager.parseColor(theme.accentColor)
                         )
                     )
-
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Текст при сбое AI:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
                     OutlinedTextField(
                         value = settings.aiFallbackText,
-                        onValueChange = {
-                            settings = settings.copy(aiFallbackText = it)
-                            repository.saveReviewReplySettings(settings)
-                        },
+                        onValueChange = { settings = settings.copy(aiFallbackText = it); repository.saveReviewReplySettings(settings) },
                         modifier = Modifier.fillMaxWidth(),
                         placeholder = { Text("Спасибо за отзыв!") }
                     )
-                    Text("Если AI не ответит 3 раза, будет отправлен этот текст. Переменные поддерживаются.", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                    Text("Если AI не ответит 3 раза, будет отправлен этот текст.", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                 } else {
+                    
+                    (5 downTo 1).forEach { stars ->
+                        val text = settings.manualTemplates[stars] ?: ""
+                        val isEnabled = !settings.disabledStars.contains(stars)
 
-                    LazyColumn(modifier = Modifier.weight(1f, false)) {
-                        items(5) { i ->
-                            val stars = 5 - i
-                            val text = settings.manualTemplates[stars] ?: ""
-                            val isEnabled = !settings.disabledStars.contains(stars)
-
-                            Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                    Text("${"⭐".repeat(stars)}", fontSize = 14.sp, modifier = Modifier.weight(1f))
-                                    Switch(
-                                        checked = isEnabled,
-                                        onCheckedChange = { enabled ->
-                                            val currentDisabled = settings.disabledStars.toMutableList()
-                                            if (enabled) currentDisabled.remove(stars) else if (!currentDisabled.contains(stars)) currentDisabled.add(stars)
-                                            settings = settings.copy(disabledStars = currentDisabled)
-                                            repository.saveReviewReplySettings(settings)
-                                        },
-                                        modifier = Modifier.scale(0.8f)
+                        Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Text("${"⭐".repeat(stars)}", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                                Switch(
+                                    checked = isEnabled,
+                                    onCheckedChange = { enabled ->
+                                        val d = settings.disabledStars.toMutableList()
+                                        if (enabled) d.remove(stars) else if (!d.contains(stars)) d.add(stars)
+                                        settings = settings.copy(disabledStars = d)
+                                        repository.saveReviewReplySettings(settings)
+                                    },
+                                    modifier = Modifier.scale(0.8f),
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                        checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.5f)
                                     )
-                                }
-
-                                if (isEnabled) {
-                                    OutlinedTextField(
-                                        value = text,
-                                        onValueChange = { newText ->
-                                            val newMap = settings.manualTemplates.toMutableMap()
-                                            newMap[stars] = newText
-                                            settings = settings.copy(manualTemplates = newMap)
-                                            repository.saveReviewReplySettings(settings)
-                                        },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        maxLines = 2,
-                                        placeholder = { Text("Текст ответа...") }
-                                    )
-                                }
+                                )
                             }
-                            HorizontalDivider(color = Color.White.copy(0.1f))
+                            if (isEnabled) {
+                                OutlinedTextField(
+                                    value = text,
+                                    onValueChange = { newText ->
+                                        val m = settings.manualTemplates.toMutableMap(); m[stars] = newText
+                                        settings = settings.copy(manualTemplates = m)
+                                        repository.saveReviewReplySettings(settings)
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    maxLines = 2,
+                                    placeholder = { Text("Текст ответа...") }
+                                )
+                            }
                         }
+                        HorizontalDivider(color = Color.White.copy(0.1f))
                     }
-                    Text("Переменные: \$username, \$order_id, \$lot_name", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                    Text("Переменные: \$username, \$order_id, \$lot_name, \$date", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                }
+
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = Color.White.copy(0.08f))
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Картинка к ответу (необязательно):", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                Spacer(Modifier.height(4.dp))
+                ImagePickerRow(
+                    imageUri = imageUri,
+                    theme = theme,
+                    onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onClear = { imageUri = null; settings = settings.copy(imageUri = null); repository.saveReviewReplySettings(settings) }
+                )
+                if (imageUri != null) {
+                    Spacer(Modifier.height(6.dp))
+                    ImageOrderPicker(settings.imageFirst, theme) {
+                        settings = settings.copy(imageFirst = it)
+                        repository.saveReviewReplySettings(settings)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
-                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                ) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
             }
         }
     }
@@ -2440,7 +2799,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
     var selectionKey by remember { mutableIntStateOf(0) }
     var chatInfo by remember { mutableStateOf<ChatInfo?>(null) }
 
-    
+
     var showTemplatesMenu by remember { mutableStateOf(false) }
 
     val focusManager = LocalFocusManager.current
@@ -2464,7 +2823,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         }
         while (true) {
             messages = repository.getChatHistory(chatId)
-            parsedMessages = parseMessagesFromRepository(messages, repository)
+            val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""; parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
 
             if (messages.size > previousMessageCount) {
                 if (messages.isNotEmpty()) {
@@ -2549,6 +2908,54 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             }
     ) {
         
+        Surface(
+            color = ThemeManager.parseColor(theme.surfaceColor),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = 4.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { navController.popBackStack() }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                }
+                if (chatInfo?.avatarUrl != null) {
+                    AsyncImage(
+                        model = chatInfo!!.avatarUrl,
+                        contentDescription = null,
+                        modifier = Modifier.size(38.dp).clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(Modifier.width(10.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        username,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (chatInfo?.userStatus != null) {
+                        Text(
+                            text = chatInfo!!.userStatus!!,
+                            fontSize = 12.sp,
+                            color = ThemeManager.parseColor(theme.textSecondaryColor)
+                        )
+                    }
+                }
+                IconButton(onClick = {
+                    navController.navigate("profile/$chatId/$username")
+                }) {
+                    Icon(Icons.Default.AccountCircle, null, tint = ThemeManager.parseColor(theme.accentColor))
+                }
+            }
+        }
+
         if (chatInfo != null) {
             val info = chatInfo!!
             if (info.lookingAtName != null || info.registrationDate != null) {
@@ -2640,7 +3047,12 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     },
                     onImageClick = { url ->
                         fullScreenImageUrl = url
-                    }
+                    },
+                    onProfileClick = { userId, name ->
+                        navController.navigate("profile/$chatId/$name")
+                    },
+                    otherUserId = chatId,
+                    otherUsername = username
                 )
             }
         }
@@ -2685,7 +3097,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(end = 4.dp)
                             ) {
-                                
+
                                 IconButton(onClick = { showTemplatesMenu = true }) {
                                     Icon(
                                         Icons.Default.ShortText,
@@ -2758,33 +3170,30 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                         }
                                     },
                                     onClick = {
-                                        
-                                        
-                                        
                                         val finalText = processTemplateVariables(template.text, username)
 
                                         if (templateSettings.sendImmediately) {
                                             
-                                            val newMessage = MessageItem(
-                                                id = System.currentTimeMillis().toString(),
-                                                author = "Вы",
-                                                text = finalText, 
-                                                isMe = true,
-                                                time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                                imageUrl = null
-                                            )
-                                            messages = messages + newMessage
-                                            parsedMessages = parseMessagesFromRepository(messages, repository)
-                                            previousMessageCount = messages.size
-                                            scope.launch { listState.scrollToItem(messages.lastIndex) }
-
-
-                                            FunPayRepository.lastOutgoingMessages[chatId] = finalText.trim()
+                                            if (finalText.isNotBlank()) {
+                                                val newMessage = MessageItem(
+                                                    id = System.currentTimeMillis().toString(),
+                                                    author = "Вы",
+                                                    text = finalText,
+                                                    isMe = true,
+                                                    time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                                    imageUrl = null
+                                                )
+                                                messages = messages + newMessage
+                                                val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""; parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
+                                                previousMessageCount = messages.size
+                                                scope.launch { listState.scrollToItem(messages.lastIndex) }
+                                            }
+                                            
+                                            FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
                                             scope.launch {
-                                                repository.sendMessage(chatId, finalText)
+                                                repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
                                             }
                                         } else {
-                                            
                                             inputText = finalText
                                         }
                                         showTemplatesMenu = false
@@ -2809,7 +3218,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             imageUrl = null
                         )
                         messages = messages + newMessage
-                        parsedMessages = parseMessagesFromRepository(messages, repository)
+                        val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""; parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
                         previousMessageCount = messages.size
                         scope.launch { listState.scrollToItem(messages.lastIndex) }
 
@@ -2842,7 +3251,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            
+
             AsyncImage(
                 model = imageUrl,
                 contentDescription = null,
@@ -2852,19 +3261,19 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                 contentScale = ContentScale.Fit
             )
 
-            
+
             IconButton(
                 onClick = onDismiss,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .statusBarsPadding() 
+                    .statusBarsPadding()
                     .padding(16.dp)
                     .background(Color.Black.copy(alpha = 0.3f), CircleShape)
             ) {
                 Icon(Icons.Default.Close, null, tint = Color.White)
             }
 
-            
+
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -2874,15 +3283,15 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                             colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))
                         )
                     )
-                    .navigationBarsPadding() 
-                    .padding(bottom = 48.dp, top = 24.dp) 
+                    .navigationBarsPadding()
+                    .padding(bottom = 48.dp, top = 24.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    
+
                     Box {
                         Button(
                             onClick = { showCopyMenu = true },
@@ -2899,7 +3308,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                             onDismissRequest = { showCopyMenu = false },
                             modifier = Modifier.background(ThemeManager.parseColor(theme.surfaceColor))
                         ) {
-                            
+
                             DropdownMenuItem(
                                 text = { Text("Ссылку", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
                                 onClick = {
@@ -2912,7 +3321,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                                     Icon(Icons.Default.Link, null, tint = ThemeManager.parseColor(theme.accentColor))
                                 }
                             )
-                            
+
                             DropdownMenuItem(
                                 text = { Text("Изображение", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
                                 onClick = {
@@ -2920,11 +3329,11 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                                     isDownloading = true
                                     scope.launch {
                                         try {
-                                            
+
                                             val loader = ImageLoader(context)
                                             val request = ImageRequest.Builder(context)
                                                 .data(imageUrl)
-                                                .allowHardware(false) 
+                                                .allowHardware(false)
                                                 .build()
                                             val result = loader.execute(request)
                                             val drawable = result.drawable
@@ -2932,7 +3341,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                                             if (drawable != null) {
                                                 val bitmap = (drawable as BitmapDrawable).bitmap
 
-                                                
+
                                                 val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                                     val contentValues = ContentValues().apply {
                                                         put(MediaStore.Images.Media.DISPLAY_NAME, "temp_copy_${System.currentTimeMillis()}.jpg")
@@ -2946,7 +3355,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                                                 }
 
                                                 if (uri != null) {
-                                                    
+
                                                     context.contentResolver.openOutputStream(uri)?.use { out ->
                                                         bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
                                                     }
@@ -2972,7 +3381,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                         }
                     }
 
-                    
+
                     Button(
                         onClick = {
                             scope.launch {
@@ -3009,10 +3418,13 @@ fun OptimizedMessageBubble(
     theme: AppTheme,
     selectionKey: Int,
     onLinkClick: (MessageLink) -> Unit,
-    onImageClick: (String) -> Unit
+    onImageClick: (String) -> Unit,
+    onProfileClick: (userId: String, username: String) -> Unit = { _, _ -> },
+    otherUserId: String = "",
+    otherUsername: String = ""
 ) {
     if (message.isSystem) {
-        
+
         val isSupport = message.badge?.contains("поддержка", true) == true || message.badge?.contains("арбитраж", true) == true
         val badgeColor = if (isSupport) Color(0xFF66BB6A) else ThemeManager.parseColor(theme.accentColor)
         val containerColor = if (isSupport) Color(0xFF1B5E20).copy(alpha = 0.6f) else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
@@ -3067,60 +3479,98 @@ fun OptimizedMessageBubble(
             }
         }
     } else {
+        val isIncoming = !message.isMe
+        val profileUserId = if (isIncoming) (message.authorUserId ?: otherUserId) else ""
+        val profileName = if (isIncoming) otherUsername.ifEmpty { message.author } else ""
+        val accentColor = ThemeManager.parseColor(theme.accentColor)
+
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start
+            horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.Bottom
         ) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (message.isMe)
-                        ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f)
-                    else
-                        ThemeManager.parseColor(theme.surfaceColor)
-                ),
-                shape = RoundedCornerShape(
-                    topStart = if (message.isMe) 16.dp else 4.dp,
-                    topEnd = if (message.isMe) 4.dp else 16.dp,
-                    bottomStart = 16.dp,
-                    bottomEnd = 16.dp
-                ),
-                modifier = Modifier.widthIn(max = 280.dp)
+            
+
+            Column(
+                horizontalAlignment = if (message.isMe) Alignment.End else Alignment.Start
             ) {
-                Column(
-                    modifier = Modifier.padding(12.dp)
-                ) {
-                    if (message.imageUrl != null) {
-                        AsyncImage(
-                            model = message.imageUrl,
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(150.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { onImageClick(message.imageUrl) },
-                            contentScale = ContentScale.Crop
-                        )
-                        if (message.text.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                        }
-                    }
-                    if (message.text.isNotEmpty()) {
-                        MessageTextWithLinks(
-                            text = message.text,
-                            links = message.links,
-                            textColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            linkColor = ThemeManager.parseColor(theme.accentColor),
-                            selectionKey = selectionKey,
-                            onLinkClick = onLinkClick
-                        )
-                    }
-                    if (message.time.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
+                
+                if (isIncoming && profileName.isNotEmpty()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .padding(start = 4.dp, bottom = 2.dp)
+                            .clickable(enabled = profileUserId.isNotEmpty()) {
+                                onProfileClick(profileUserId, profileName)
+                            }
+                    ) {
                         Text(
-                            text = message.time,
-                            fontSize = 10.sp,
-                            color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f)
+                            profileName,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = accentColor
                         )
+                        Spacer(Modifier.width(3.dp))
+                        Icon(
+                            Icons.Default.AccountCircle,
+                            null,
+                            tint = accentColor.copy(alpha = 0.5f),
+                            modifier = Modifier.size(10.dp)
+                        )
+                    }
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (message.isMe)
+                            ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f)
+                        else
+                            ThemeManager.parseColor(theme.surfaceColor)
+                    ),
+                    shape = RoundedCornerShape(
+                        topStart = if (message.isMe) 16.dp else 4.dp,
+                        topEnd = if (message.isMe) 4.dp else 16.dp,
+                        bottomStart = 16.dp,
+                        bottomEnd = 16.dp
+                    ),
+                    modifier = Modifier.widthIn(max = 280.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp)
+                    ) {
+                        if (message.imageUrl != null) {
+                            AsyncImage(
+                                model = message.imageUrl,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(150.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onImageClick(message.imageUrl) },
+                                contentScale = ContentScale.Crop
+                            )
+                            if (message.text.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                            }
+                        }
+                        if (message.text.isNotEmpty()) {
+                            MessageTextWithLinks(
+                                text = message.text,
+                                links = message.links,
+                                textColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                linkColor = ThemeManager.parseColor(theme.accentColor),
+                                selectionKey = selectionKey,
+                                onLinkClick = onLinkClick
+                            )
+                        }
+                        if (message.time.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = message.time,
+                                fontSize = 10.sp,
+                                color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f)
+                            )
+                        }
                     }
                 }
             }
@@ -3190,7 +3640,7 @@ fun MessageTextWithLinks(
     }
 }
 
-fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayRepository): List<ParsedMessage> {
+fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayRepository, otherUserId: String = ""): List<ParsedMessage> {
     return messages.map { msg ->
         val isSystemMsg = msg.badge != null || msg.author == "FunPay"
 
@@ -3226,7 +3676,8 @@ fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayR
             isSystem = isSystemMsg,
             isAdmin = isAdminMsg,
             badge = msg.badge,
-            links = links
+            links = links,
+            authorUserId = if (!msg.isMe && !isSystemMsg && otherUserId.isNotEmpty()) otherUserId else null
         )
     }
 }
@@ -3466,7 +3917,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
                     shape = RoundedCornerShape(theme.borderRadius.dp)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        
+
                         Text(
                             text = order.status,
                             color = if (order.status.contains("Закрыт")) Color.Green else Color.Yellow,
@@ -3476,7 +3927,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
 
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -3487,7 +3938,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
                                 color = ThemeManager.parseColor(theme.accentColor),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 20.sp,
-                                modifier = Modifier.weight(1f).padding(end = 8.dp) 
+                                modifier = Modifier.weight(1f).padding(end = 8.dp)
                             )
                             Text(
                                 text = order.price,
@@ -3585,250 +4036,205 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
 fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
     var templates by remember { mutableStateOf(repository.getMessageTemplates()) }
     var templateSettings by remember { mutableStateOf(repository.getTemplateSettings()) }
-    var showAddDialog by remember { mutableStateOf(false) }
-    var newTemplateName by remember { mutableStateOf("") }
-    var newTemplateText by remember { mutableStateOf("") }
+
+    
+    var editingId by remember { mutableStateOf<String?>(null) }   
+    var formName by remember { mutableStateOf("") }
+    var formText by remember { mutableStateOf("") }
+    var formImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var formImageFirst by remember { mutableStateOf(true) }
+    var showForm by remember { mutableStateOf(false) }
+
+    fun resetForm() { editingId = null; formName = ""; formText = ""; formImageUri = null; formImageFirst = true; showForm = false }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> formImageUri = uri }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.85f),
+            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.92f),
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
         ) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        "Шаблоны сообщений",
-                        fontWeight = FontWeight.Bold,
-                        color = ThemeManager.parseColor(theme.textPrimaryColor),
-                        fontSize = 20.sp
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
+
+                
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(if (showForm) (if (editingId != null) "Редактировать шаблон" else "Новый шаблон") else "Шаблоны сообщений",
+                        fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 20.sp)
+                    IconButton(onClick = if (showForm) ::resetForm else onDismiss) {
+                        Icon(if (showForm) Icons.Default.ArrowBack else Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth().background(
-                        ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f),
-                        RoundedCornerShape(12.dp)
-                    ).padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "Отправлять сразу",
-                            color = ThemeManager.parseColor(theme.textPrimaryColor),
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            "При нажатии сразу отправлять, не вставляя в поле ввода",
-                            color = ThemeManager.parseColor(theme.textSecondaryColor),
-                            fontSize = 11.sp
-                        )
-                    }
-                    Switch(
-                        checked = templateSettings.sendImmediately,
-                        onCheckedChange = {
-                            templateSettings = templateSettings.copy(sendImmediately = it)
-                            repository.saveTemplateSettings(templateSettings)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
-                            checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.5f)
-                        )
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Button(
-                    onClick = { showAddDialog = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                ) {
-                    Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Добавить шаблон")
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                if (templates.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.ShortText,
-                                null,
-                                modifier = Modifier.size(64.dp),
-                                tint = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.3f)
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            Text(
-                                "Нет шаблонов",
-                                color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                fontSize = 16.sp
-                            )
-                            Text(
-                                "Добавьте первый шаблон для быстрого общения",
-                                color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f),
-                                fontSize = 12.sp
-                            )
+                if (!showForm) {
+                    
+                    Row(Modifier.fillMaxWidth().background(ThemeManager.parseColor(theme.surfaceColor).copy(0.5f), RoundedCornerShape(12.dp)).padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Отправлять сразу", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                            Text("При нажатии сразу отправлять, не вставляя в поле ввода", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp)
                         }
+                        Switch(
+                            checked = templateSettings.sendImmediately,
+                            onCheckedChange = { templateSettings = templateSettings.copy(sendImmediately = it); repository.saveTemplateSettings(templateSettings) },
+                            colors = SwitchDefaults.colors(checkedThumbColor = ThemeManager.parseColor(theme.accentColor), checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(0.5f))
+                        )
                     }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(templates) { template ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
-                                ),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                    Spacer(Modifier.height(12.dp))
+
+                    Button(onClick = { resetForm(); showForm = true }, modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))) {
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Добавить шаблон")
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    if (templates.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Default.ShortText, null, modifier = Modifier.size(64.dp), tint = ThemeManager.parseColor(theme.textSecondaryColor).copy(0.3f))
+                                Spacer(Modifier.height(16.dp))
+                                Text("Нет шаблонов", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 16.sp)
+                            }
+                        }
+                    } else {
+                        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(templates, key = { it.id }) { template ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(0.5f)),
+                                    shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            template.name,
-                                            color = ThemeManager.parseColor(theme.textPrimaryColor),
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp
-                                        )
-                                        Spacer(Modifier.height(4.dp))
-                                        Text(
-                                            template.text,
-                                            color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                            fontSize = 12.sp,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = {
+                                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(template.name, color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                                if (template.imageUri != null) {
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Icon(Icons.Default.Image, null, modifier = Modifier.size(13.dp), tint = ThemeManager.parseColor(theme.accentColor))
+                                                }
+                                            }
+                                            if (template.text.isNotBlank()) {
+                                                Spacer(Modifier.height(3.dp))
+                                                Text(template.text, color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                            }
+                                        }
+                                        
+                                        IconButton(onClick = {
+                                            editingId = template.id
+                                            formName = template.name
+                                            formText = template.text
+                                            formImageUri = template.imageUri?.let { android.net.Uri.parse(it) }
+                                            formImageFirst = template.imageFirst
+                                            showForm = true
+                                        }, modifier = Modifier.size(32.dp)) {
+                                            Icon(Icons.Default.Edit, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(16.dp))
+                                        }
+                                        
+                                        IconButton(onClick = {
                                             templates = templates.filter { it.id != template.id }
                                             repository.saveMessageTemplates(templates)
+                                        }, modifier = Modifier.size(32.dp)) {
+                                            Icon(Icons.Default.Delete, null, tint = Color.Red, modifier = Modifier.size(16.dp))
                                         }
-                                    ) {
-                                        Icon(Icons.Default.Delete, null, tint = Color.Red)
                                     }
                                 }
                             }
                         }
                     }
+
+                } else {
+                    
+                    Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+
+                        OutlinedTextField(
+                            value = formName, onValueChange = { formName = it },
+                            modifier = Modifier.fillMaxWidth(), label = { Text("Название шаблона") }, singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                cursorColor = ThemeManager.parseColor(theme.accentColor)
+                            )
+                        )
+                        Spacer(Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = formText, onValueChange = { formText = it },
+                            modifier = Modifier.fillMaxWidth().height(110.dp),
+                            label = { Text("Текст (необязательно, если есть картинка)") },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                cursorColor = ThemeManager.parseColor(theme.accentColor)
+                            ),
+                            maxLines = 5
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text("\$username  ·  \$welcome  ·  \$date", fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+
+                        Spacer(Modifier.height(10.dp))
+
+                        ImagePickerRow(
+                            imageUri = formImageUri, theme = theme,
+                            onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            onClear = { formImageUri = null }
+                        )
+
+                        
+                        if (formImageUri != null && formText.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            ImageOrderPicker(formImageFirst, theme) { formImageFirst = it }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = ::resetForm, modifier = Modifier.weight(1f)) {
+                            Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor))
+                        }
+                        Button(
+                            onClick = {
+                                val hasContent = formName.isNotBlank() && (formText.isNotBlank() || formImageUri != null)
+                                if (hasContent) {
+                                    val tpl = MessageTemplate(
+                                        id = editingId ?: java.util.UUID.randomUUID().toString(),
+                                        name = formName.trim(), text = formText.trim(),
+                                        imageUri = formImageUri?.toString(), imageFirst = formImageFirst
+                                    )
+                                    templates = if (editingId != null) templates.map { if (it.id == editingId) tpl else it } else templates + tpl
+                                    repository.saveMessageTemplates(templates)
+                                    resetForm()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                        ) { Text(if (editingId != null) "Сохранить" else "Добавить") }
+                    }
                 }
             }
         }
-    }
-
-    if (showAddDialog) {
-        AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            title = { Text("Новый шаблон", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = newTemplateName,
-                        onValueChange = { newTemplateName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Название") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                            cursorColor = ThemeManager.parseColor(theme.accentColor)
-                        ),
-                        singleLine = true
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = newTemplateText,
-                        onValueChange = { newTemplateText = it },
-                        modifier = Modifier.fillMaxWidth().height(120.dp),
-                        label = { Text("Текст сообщения") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                            cursorColor = ThemeManager.parseColor(theme.accentColor)
-                        ),
-                        maxLines = 5
-                    )
-
-                    
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Переменные:",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = ThemeManager.parseColor(theme.textSecondaryColor)
-                    )
-                    Text(
-                        text = "\$username — ник собеседника\n\$welcome — доброе утро/день/вечер\n\$date — текущая дата и время",
-                        fontSize = 11.sp,
-                        color = ThemeManager.parseColor(theme.textSecondaryColor),
-                        lineHeight = 14.sp
-                    )
-                    
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newTemplateName.isNotBlank() && newTemplateText.isNotBlank()) {
-                            val newTemplate = MessageTemplate(
-                                name = newTemplateName.trim(),
-                                text = newTemplateText.trim()
-                            )
-                            templates = templates + newTemplate
-                            repository.saveMessageTemplates(templates)
-                            newTemplateName = ""
-                            newTemplateText = ""
-                            showAddDialog = false
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ThemeManager.parseColor(theme.accentColor)
-                    )
-                ) {
-                    Text("Добавить")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) {
-                    Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor))
-                }
-            },
-            containerColor = ThemeManager.parseColor(theme.surfaceColor)
-        )
     }
 }
 
 @Composable
 fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
     var settings by remember { mutableStateOf(repository.getOrderConfirmSettings()) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        imageUri = uri
+        settings = settings.copy(imageUri = uri?.toString())
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка просьбы отзыва", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -3836,7 +4242,7 @@ fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss:
                 OutlinedTextField(
                     value = settings.text,
                     onValueChange = { settings = settings.copy(text = it) },
-                    modifier = Modifier.fillMaxWidth().height(150.dp),
+                    modifier = Modifier.fillMaxWidth().height(120.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
                         unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
@@ -3844,25 +4250,26 @@ fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss:
                         cursorColor = ThemeManager.parseColor(theme.accentColor)
                     )
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Переменные: \$username, \$order_id", fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
 
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "Переменные: \$username (имя покупателя), \$order_id (номер заказа).",
-                    fontSize = 11.sp,
-                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                Spacer(modifier = Modifier.height(12.dp))
+                ImagePickerRow(
+                    imageUri = imageUri, theme = theme,
+                    onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    onClear = { imageUri = null; settings = settings.copy(imageUri = null) }
                 )
+                if (imageUri != null && settings.text.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    ImageOrderPicker(settings.imageFirst, theme) { settings = settings.copy(imageFirst = it) }
+                }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(20.dp))
                 Button(
-                    onClick = {
-                        repository.saveOrderConfirmSettings(settings)
-                        onDismiss()
-                    },
+                    onClick = { repository.saveOrderConfirmSettings(settings); onDismiss() },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                ) {
-                    Text("Сохранить")
-                }
+                ) { Text("Сохранить") }
             }
         }
     }
@@ -3871,17 +4278,17 @@ fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss:
 fun processTemplateVariables(text: String, username: String): String {
     var processed = text
 
-    
-    
+
+
     processed = processed.replace("\$username", username)
 
-    
+
     if (processed.contains("\$date")) {
         val dateFormat = SimpleDateFormat("dd.MM.yyyy, HH:mm", Locale.getDefault())
         processed = processed.replace("\$date", dateFormat.format(Date()))
     }
 
-    
+
     if (processed.contains("\$welcome")) {
         val calendar = Calendar.getInstance()
         val hour = calendar.get(Calendar.HOUR_OF_DAY)
@@ -4180,7 +4587,7 @@ fun DonationScreen(theme: AppTheme) {
 
                                 val (statusText, statusColor, bgColor) = when {
                                     isPro     -> Triple("∞ PRO", Color(0xFF4CAF50), Color(0xFF4CAF50).copy(alpha = 0.1f))
-                                    feature == PremiumFeature.XD_DUMPER -> Triple("Только PRO", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f)) // Исключение для демпера
+                                    feature == PremiumFeature.XD_DUMPER -> Triple("Только PRO", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f)) 
                                     adActive  -> Triple("${adHours}ч осталось", Color(0xFF42A5F5), Color(0xFF1565C0).copy(alpha = 0.12f))
                                     else      -> Triple("Закрыто", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f))
                                 }
@@ -4517,7 +4924,7 @@ fun ImprovedTariffCard(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                
+
                 Box(
                     modifier = Modifier
                         .size(64.dp)
@@ -4539,7 +4946,7 @@ fun ImprovedTariffCard(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                
+
                 Text(
                     title,
                     fontWeight = FontWeight.Bold,
@@ -4550,7 +4957,7 @@ fun ImprovedTariffCard(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                
+
                 Text(
                     price,
                     fontWeight = FontWeight.Black,
@@ -4561,7 +4968,7 @@ fun ImprovedTariffCard(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                
+
                 Text(
                     desc,
                     fontSize = 12.sp,
@@ -4571,7 +4978,7 @@ fun ImprovedTariffCard(
                 )
             }
 
-            
+
             Icon(
                 Icons.Default.TouchApp,
                 contentDescription = null,
@@ -4610,7 +5017,7 @@ fun ImprovedCopyableField(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            
+
             Box(
                 modifier = Modifier
                     .size(40.dp)
@@ -4630,7 +5037,7 @@ fun ImprovedCopyableField(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     label,
@@ -4653,7 +5060,7 @@ fun ImprovedCopyableField(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            
+
             Box(
                 modifier = Modifier
                     .size(36.dp)
@@ -4697,7 +5104,9 @@ data class BusyModeSettings(
     @SerializedName("keepRaise") val keepRaise: Boolean = false,
     @SerializedName("keepAutoResponse") val keepAutoResponse: Boolean = false,
     @SerializedName("keepGreeting") val keepGreeting: Boolean = false,
-    @SerializedName("enabledAt") val enabledAt: Long = 0L
+    @SerializedName("enabledAt") val enabledAt: Long = 0L,
+    @SerializedName("imageUri") val imageUri: String? = null,
+    @SerializedName("imageFirst") val imageFirst: Boolean = true
 )
 
 object ChatFolderManager {
@@ -4828,6 +5237,12 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
     var keepRaise by remember { mutableStateOf(settings.keepRaise) }
     var keepAutoResp by remember { mutableStateOf(settings.keepAutoResponse) }
     var keepGreeting by remember { mutableStateOf(settings.keepGreeting) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+    var imageFirst by remember { mutableStateOf(settings.imageFirst) }
+
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        imageUri = uri
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -4852,6 +5267,17 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
                         minLines = 2,
                         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = textSecondary.copy(alpha = 0.4f), focusedTextColor = textPrimary, unfocusedTextColor = textPrimary)
                     )
+                    Spacer(Modifier.height(8.dp))
+                    ImagePickerRow(
+                        imageUri = imageUri,
+                        theme = theme,
+                        onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        onClear = { imageUri = null }
+                    )
+                    if (imageUri != null && message.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        ImageOrderPicker(imageFirst, theme) { imageFirst = it }
+                    }
                 }
                 item {
                     Text("Повторять не чаще: $cooldown мин", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
@@ -4890,7 +5316,16 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Отмена", color = textSecondary) }
                         Button(
-                            onClick = { onSave(BusyModeSettings(settings.enabled, message, cooldown, autoRefund, autoRefundMessage, keepRaise, keepAutoResp, keepGreeting)); onDismiss() },
+                            onClick = {
+                                onSave(BusyModeSettings(
+                                    settings.enabled, message, cooldown,
+                                    autoRefund, autoRefundMessage,
+                                    keepRaise, keepAutoResp, keepGreeting,
+                                    settings.enabledAt,
+                                    imageUri?.toString(), imageFirst
+                                ))
+                                onDismiss()
+                            },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(containerColor = accent)
                         ) { Text("Сохранить", color = Color.White) }
@@ -4985,7 +5420,7 @@ fun ChatItemMenu(
 
                 Spacer(Modifier.height(4.dp))
 
-                // аутизм ебанный
+                
                 Row(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                         .clickable { onArchiveToggle(); onDismiss() }
@@ -5339,6 +5774,24 @@ fun DumperLotEditDialog(initialConfig: DumperLotConfig, theme: AppTheme, onSave:
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = config.ignoreZeroRating, onCheckedChange = { config = config.copy(ignoreZeroRating = it) })
                             Text("Игнор продавцов без нормального рейтинга", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
+                        }
+                    }
+                    item {
+                        OutlinedTextField(
+                            value = config.ratingMin.toString(),
+                            onValueChange = { config = config.copy(ratingMin = it.toIntOrNull() ?: 0) },
+                            label = { Text("Мин. кол-во звёзд конкурента (от 0 до 5)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+                        )
+                    }
+                    item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = config.matchAllMethods, onCheckedChange = { config = config.copy(matchAllMethods = it) })
+                            Column {
+                                Text("Демпить все способы получения", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
+                                Text("Вкл - учитывает все способы получения/выдачи товара. Выкл - только тот способ, который в лоте", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp)
+                            }
                         }
                     }
                     item {

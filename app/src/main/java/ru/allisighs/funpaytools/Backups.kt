@@ -47,13 +47,13 @@ import java.util.*
 
 data class BackupData(
     @SerializedName("version")
-    val version: Int = 1,
+    val version: Int = 2,
 
     @SerializedName("created_at")
     val createdAt: Long = System.currentTimeMillis(),
 
     @SerializedName("app_version")
-    val appVersion: String = "1.2",
+    val appVersion: String = "1.2.4",
 
 
     @SerializedName("accounts")
@@ -133,9 +133,9 @@ class BackupManager(private val context: Context) {
 
     fun createBackup(repository: FunPayRepository, currentTheme: AppTheme): BackupData {
         return BackupData(
-            version = 1,
+            version = 2,
             createdAt = System.currentTimeMillis(),
-            appVersion = "1.2",
+            appVersion = "1.2.4.4",
             accounts = repository.getAccountsData(),
             theme = currentTheme,
             settings = FullBackupSettings(
@@ -427,7 +427,9 @@ fun BackupsScreen(
                                 BackupInfoItem("• Все аккаунты и токены", currentTheme)
                                 BackupInfoItem("• Тема и кастомизация", currentTheme)
                                 BackupInfoItem("• Настройки уведомлений", currentTheme)
-                                BackupInfoItem("• Всё что только можно", currentTheme)
+                                BackupInfoItem("• Шаблоны (с прикреплёнными картинками)", currentTheme)
+                                BackupInfoItem("• Настройки просьбы отзыва с картинкой", currentTheme)
+                                BackupInfoItem("• Всё остальное тоже", currentTheme)
                             }
                         }
                     }
@@ -469,6 +471,13 @@ fun BackupsScreen(
                                     color = ThemeManager.parseColor(currentTheme.textSecondaryColor),
                                     fontSize = 13.sp,
                                     lineHeight = 18.sp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    "Картинки из шаблонов сохраняются как ссылки на файлы устройства. При переносе на другой телефон их нужно переназначить вручную.",
+                                    color = ThemeManager.parseColor(currentTheme.textSecondaryColor),
+                                    fontSize = 12.sp,
+                                    lineHeight = 16.sp
                                 )
                             }
                         }
