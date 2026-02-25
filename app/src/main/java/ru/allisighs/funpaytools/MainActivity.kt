@@ -158,10 +158,25 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) {}
 
+    private val requestMultiplePermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {}
+
+
+    private val pendingChatId = mutableStateOf<Pair<String, String>?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val chatId = intent.getStringExtra("chat_id") ?: return
+        val username = intent.getStringExtra("chat_username") ?: chatId
+        pendingChatId.value = Pair(chatId, username)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        
+
+
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         try {
             val jobScheduler = getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
@@ -183,20 +198,41 @@ class MainActivity : ComponentActivity() {
         Ads.init(this)
         LicenseManager.init(this)
 
+
+        val permissionsToRequest = mutableListOf<String>()
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
             }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.READ_MEDIA_IMAGES)
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            requestMultiplePermissionsLauncher.launch(permissionsToRequest.toTypedArray())
         }
 
         val repository = FunPayRepository(this)
         val startDest = if (repository.hasAuth()) "dashboard" else "welcome"
 
+
+        val initialChatId = intent?.getStringExtra("chat_id")
+        val initialUsername = intent?.getStringExtra("chat_username") ?: initialChatId ?: ""
+        if (initialChatId != null) {
+            pendingChatId.value = Pair(initialChatId, initialUsername)
+        }
+
         setContent {
             var currentTheme by remember { mutableStateOf(ThemeManager.loadTheme(this)) }
 
             MaterialTheme(colorScheme = DarkColorScheme) {
-                FunPayToolsApp(startDest, repository, currentTheme) { newTheme ->
+                FunPayToolsApp(startDest, repository, currentTheme, pendingChatId) { newTheme ->
                     currentTheme = newTheme
                 }
             }
@@ -216,6 +252,7 @@ fun FunPayToolsApp(
     startDestination: String,
     repository: FunPayRepository,
     currentTheme: AppTheme,
+    pendingChatId: androidx.compose.runtime.MutableState<Pair<String, String>?> = remember { mutableStateOf(null) },
     onThemeChanged: (AppTheme) -> Unit
 ) {
     val navController = rememberNavController()
@@ -223,6 +260,20 @@ fun FunPayToolsApp(
     PremiumInterceptor(navController, currentTheme)
     var showSplash by remember { mutableStateOf(true) }
     val context = LocalContext.current
+
+
+    LaunchedEffect(showSplash, pendingChatId.value) {
+        val target = pendingChatId.value
+        if (!showSplash && target != null) {
+            pendingChatId.value = null
+
+            if (startDestination == "dashboard") {
+                navController.navigate("chat/${target.first}/${target.second}") {
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (showSplash) {
@@ -1310,6 +1361,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
             },
             bottomBar = {
                 NavigationBar(containerColor = ThemeManager.parseColor(currentTheme.surfaceColor)) {
+                    val unreadCount = chats.count { it.isUnread }
                     listOf(
                         Triple(0, Icons.Default.Chat, "Чаты"),
                         Triple(1, Icons.Default.Tune, "Управление"),
@@ -1320,7 +1372,21 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                         NavigationBarItem(
                             selected = selectedTab == index,
                             onClick = { selectedTab = index },
-                            icon = { Icon(icon, null) },
+                            icon = {
+                                if (index == 0 && unreadCount > 0) {
+                                    BadgedBox(badge = {
+                                        Badge(containerColor = ThemeManager.parseColor(currentTheme.accentColor)) {
+                                            Text(
+                                                text = if (unreadCount > 99) "99+" else unreadCount.toString(),
+                                                fontSize = 9.sp,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }) { Icon(icon, null) }
+                                } else {
+                                    Icon(icon, null)
+                                }
+                            },
                             label = {
                                 Text(label, maxLines = 1, fontSize = 9.sp, softWrap = false)
                             },
@@ -1632,7 +1698,7 @@ fun ChatItemView(
                         }
                     }
                 }
-                
+
                 if (labelTooltip != null) {
                     Box(
                         modifier = Modifier
@@ -2131,7 +2197,7 @@ fun ImageOrderPicker(
             .padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        
+
         Surface(
             modifier = Modifier.weight(1f).clickable { onSelect(true) },
             color = if (imageFirst) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.3f) else Color.Transparent,
@@ -2146,7 +2212,7 @@ fun ImageOrderPicker(
                 Icon(Icons.Default.TextFields, null, modifier = Modifier.size(18.dp), tint = ThemeManager.parseColor(theme.textPrimaryColor))
             }
         }
-        
+
         Surface(
             modifier = Modifier.weight(1f).clickable { onSelect(false) },
             color = if (!imageFirst) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.3f) else Color.Transparent,
@@ -2169,7 +2235,8 @@ fun AutoRefundDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: (
     var settings by remember { mutableStateOf(repository.getAutoRefundSettings()) }
     var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        imageUri = uri; settings = settings.copy(imageUri = uri?.toString())
+        val localUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+        imageUri = localUri; settings = settings.copy(imageUri = localUri?.toString())
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -2337,7 +2404,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
 
                 Spacer(Modifier.height(12.dp))
 
-                
+
                 OutlinedTextField(
                     value = newTrigger,
                     onValueChange = { newTrigger = it },
@@ -2522,7 +2589,7 @@ fun GreetingDialog(repository: FunPayRepository, settings: GreetingSettings, the
     var imageFirst by remember { mutableStateOf(settings.imageFirst) }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        imageUri = uri
+        imageUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
     }
 
     Dialog(onDismissRequest = {}) {
@@ -2607,13 +2674,6 @@ fun ReviewSettingsDialog(
 ) {
     var settings by remember { mutableStateOf(repository.getReviewReplySettings()) }
     var selectedTab by remember { mutableIntStateOf(if (settings.useAi && LicenseManager.hasAccess(PremiumFeature.REVIEW_AI)) 0 else 1) }
-    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
-
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        imageUri = uri
-        settings = settings.copy(imageUri = uri?.toString())
-        repository.saveReviewReplySettings(settings)
-    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -2699,6 +2759,89 @@ fun ReviewSettingsDialog(
                         )
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+
+                    
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Упоминать название лота", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                            Text("AI назовёт товар в ответе", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                        }
+                        Switch(
+                            checked = settings.aiIncludeLotName,
+                            onCheckedChange = {
+                                settings = settings.copy(aiIncludeLotName = it)
+                                repository.saveReviewReplySettings(settings)
+                            },
+                            modifier = Modifier.scale(0.8f),
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.5f)
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Упоминать дату", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                            Text("AI органично вставит дату отзыва", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                        }
+                        Switch(
+                            checked = settings.aiIncludeDate,
+                            onCheckedChange = {
+                                settings = settings.copy(aiIncludeDate = it)
+                                repository.saveReviewReplySettings(settings)
+                            },
+                            modifier = Modifier.scale(0.8f),
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.5f)
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    
+                    Text("Стиль ответа:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
+                    OutlinedTextField(
+                        value = settings.aiWritingStyle,
+                        onValueChange = {
+                            settings = settings.copy(aiWritingStyle = it)
+                            repository.saveReviewReplySettings(settings)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 2,
+                        placeholder = { Text("напр. «дерзко и с юмором», «официально»...") }
+                    )
+                    Text("Задаёт тон и характер ответа.", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    
+                    Text("Своя инструкция AI:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
+                    OutlinedTextField(
+                        value = settings.aiCustomInstruction,
+                        onValueChange = {
+                            settings = settings.copy(aiCustomInstruction = it)
+                            repository.saveReviewReplySettings(settings)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4,
+                        placeholder = { Text("напр. «всегда заканчивай пожеланием удачи в игре»") }
+                    )
+                    Text("Дополнительные правила, которым будет следовать AI.", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text("Текст при сбое AI:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
                     OutlinedTextField(
                         value = settings.aiFallbackText,
@@ -2708,7 +2851,7 @@ fun ReviewSettingsDialog(
                     )
                     Text("Если AI не ответит 3 раза, будет отправлен этот текст.", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                 } else {
-                    
+
                     (5 downTo 1).forEach { stars ->
                         val text = settings.manualTemplates[stars] ?: ""
                         val isEnabled = !settings.disabledStars.contains(stars)
@@ -2748,26 +2891,7 @@ fun ReviewSettingsDialog(
                         HorizontalDivider(color = Color.White.copy(0.1f))
                     }
                     Text("Переменные: \$username, \$order_id, \$lot_name, \$date", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
-                }
-
-                
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider(color = Color.White.copy(0.08f))
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Картинка к ответу (необязательно):", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textPrimaryColor))
-                Spacer(Modifier.height(4.dp))
-                ImagePickerRow(
-                    imageUri = imageUri,
-                    theme = theme,
-                    onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    onClear = { imageUri = null; settings = settings.copy(imageUri = null); repository.saveReviewReplySettings(settings) }
-                )
-                if (imageUri != null) {
-                    Spacer(Modifier.height(6.dp))
-                    ImageOrderPicker(settings.imageFirst, theme) {
-                        settings = settings.copy(imageFirst = it)
-                        repository.saveReviewReplySettings(settings)
-                    }
+                    Text("(\$date = текущая дата, напр. 25.02.2026)", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -2907,7 +3031,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                 }
             }
     ) {
-        
+
         Surface(
             color = ThemeManager.parseColor(theme.surfaceColor),
             modifier = Modifier.fillMaxWidth()
@@ -3173,7 +3297,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                         val finalText = processTemplateVariables(template.text, username)
 
                                         if (templateSettings.sendImmediately) {
-                                            
+
                                             if (finalText.isNotBlank()) {
                                                 val newMessage = MessageItem(
                                                     id = System.currentTimeMillis().toString(),
@@ -3188,7 +3312,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                                 previousMessageCount = messages.size
                                                 scope.launch { listState.scrollToItem(messages.lastIndex) }
                                             }
-                                            
+
                                             FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
                                             scope.launch {
                                                 repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
@@ -3489,12 +3613,12 @@ fun OptimizedMessageBubble(
             horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start,
             verticalAlignment = Alignment.Bottom
         ) {
-            
+
 
             Column(
                 horizontalAlignment = if (message.isMe) Alignment.End else Alignment.Start
             ) {
-                
+
                 if (isIncoming && profileName.isNotEmpty()) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -4037,8 +4161,8 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
     var templates by remember { mutableStateOf(repository.getMessageTemplates()) }
     var templateSettings by remember { mutableStateOf(repository.getTemplateSettings()) }
 
-    
-    var editingId by remember { mutableStateOf<String?>(null) }   
+
+    var editingId by remember { mutableStateOf<String?>(null) }
     var formName by remember { mutableStateOf("") }
     var formText by remember { mutableStateOf("") }
     var formImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
@@ -4047,7 +4171,9 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
 
     fun resetForm() { editingId = null; formName = ""; formText = ""; formImageUri = null; formImageFirst = true; showForm = false }
 
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> formImageUri = uri }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        formImageUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+    }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Card(
@@ -4057,7 +4183,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
         ) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
 
-                
+
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(if (showForm) (if (editingId != null) "Редактировать шаблон" else "Новый шаблон") else "Шаблоны сообщений",
                         fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 20.sp)
@@ -4069,7 +4195,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                 Spacer(Modifier.height(12.dp))
 
                 if (!showForm) {
-                    
+
                     Row(Modifier.fillMaxWidth().background(ThemeManager.parseColor(theme.surfaceColor).copy(0.5f), RoundedCornerShape(12.dp)).padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Column(Modifier.weight(1f)) {
@@ -4120,7 +4246,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                                                 Text(template.text, color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                             }
                                         }
-                                        
+
                                         IconButton(onClick = {
                                             editingId = template.id
                                             formName = template.name
@@ -4131,7 +4257,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                                         }, modifier = Modifier.size(32.dp)) {
                                             Icon(Icons.Default.Edit, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(16.dp))
                                         }
-                                        
+
                                         IconButton(onClick = {
                                             templates = templates.filter { it.id != template.id }
                                             repository.saveMessageTemplates(templates)
@@ -4145,7 +4271,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                     }
 
                 } else {
-                    
+
                     Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
 
                         OutlinedTextField(
@@ -4183,7 +4309,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                             onClear = { formImageUri = null }
                         )
 
-                        
+
                         if (formImageUri != null && formText.isNotBlank()) {
                             Spacer(Modifier.height(8.dp))
                             ImageOrderPicker(formImageFirst, theme) { formImageFirst = it }
@@ -4225,8 +4351,9 @@ fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss:
     var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        imageUri = uri
-        settings = settings.copy(imageUri = uri?.toString())
+        val localUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+        imageUri = localUri
+        settings = settings.copy(imageUri = localUri?.toString())
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -4587,7 +4714,7 @@ fun DonationScreen(theme: AppTheme) {
 
                                 val (statusText, statusColor, bgColor) = when {
                                     isPro     -> Triple("∞ PRO", Color(0xFF4CAF50), Color(0xFF4CAF50).copy(alpha = 0.1f))
-                                    feature == PremiumFeature.XD_DUMPER -> Triple("Только PRO", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f)) 
+                                    feature == PremiumFeature.XD_DUMPER -> Triple("Только PRO", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f))
                                     adActive  -> Triple("${adHours}ч осталось", Color(0xFF42A5F5), Color(0xFF1565C0).copy(alpha = 0.12f))
                                     else      -> Triple("Закрыто", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f))
                                 }
@@ -5240,8 +5367,9 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
     var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
     var imageFirst by remember { mutableStateOf(settings.imageFirst) }
 
+    val context = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        imageUri = uri
+        imageUri = uri?.let { FunPayRepository(context).copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -5420,7 +5548,7 @@ fun ChatItemMenu(
 
                 Spacer(Modifier.height(4.dp))
 
-                
+
                 Row(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                         .clickable { onArchiveToggle(); onDismiss() }

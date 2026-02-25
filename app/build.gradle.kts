@@ -23,7 +23,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "1.2"
+        versionName = "1.2.5"
         multiDexEnabled = true
 
         vectorDrawables {
@@ -65,6 +65,7 @@ dependencies {
     implementation("com.google.firebase:firebase-analytics")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)

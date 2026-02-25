@@ -53,7 +53,7 @@ data class BackupData(
     val createdAt: Long = System.currentTimeMillis(),
 
     @SerializedName("app_version")
-    val appVersion: String = "1.2.4",
+    val appVersion: String = "1.2.5",
 
 
     @SerializedName("accounts")
@@ -135,7 +135,7 @@ class BackupManager(private val context: Context) {
         return BackupData(
             version = 2,
             createdAt = System.currentTimeMillis(),
-            appVersion = "1.2.4.4",
+            appVersion = "1.2.5",
             accounts = repository.getAccountsData(),
             theme = currentTheme,
             settings = FullBackupSettings(

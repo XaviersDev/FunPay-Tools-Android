@@ -108,7 +108,7 @@ class FunPayService : Service() {
                             lastCleanup = System.currentTimeMillis()
                         }
 
-                        
+
                         if (System.currentTimeMillis() - lastWidgetUpdate > 5 * 60 * 1000L) {
                             try {
                                 val profile = repository.getSelfProfile()
@@ -156,20 +156,10 @@ class FunPayService : Service() {
         }
 
         for (chat in newlyUnread) {
-            try {
-                val messages = repository.getChatHistory(chat.id)
-                val lastMsg = messages.lastOrNull() ?: continue
-
-                if (lastMsg.isMe) {
-
-                    FunPayRepository.lastOutgoingMessages[chat.id] = lastMsg.text
-                } else {
-
-                    repository.knownUnreadChats.add(chat.id)
-                }
-            } catch (e: Exception) {
-
-            }
+            
+            
+            
+            repository.knownUnreadChats.add(chat.id)
         }
 
 
@@ -242,10 +232,14 @@ class FunPayService : Service() {
         ).addRemoteInput(remoteInput).build()
 
         val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("chat_id", chat.id)
+            putExtra("chat_username", chat.username)
         }
-        val pendingIntent = PendingIntent.getActivity(this, notificationId, intent, PendingIntent.FLAG_IMMUTABLE)
+        val pendingIntent = PendingIntent.getActivity(
+            this, notificationId, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        )
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)

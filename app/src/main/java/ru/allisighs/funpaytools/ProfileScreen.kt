@@ -27,6 +27,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -100,11 +104,11 @@ fun ProfileScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                
+
                 PremiumTariffButton(onClick = onOpenTariffs)
 
                 MyLotsButton(onClick = onOpenLots, theme = theme)
-                
+
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -172,6 +176,8 @@ fun ProfileScreen(
                 }
 
                 AnimatedBalanceCard(user.totalBalance, theme)
+
+                DonateEasterEggButton(theme = theme)
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -326,7 +332,7 @@ fun PremiumTariffButton(onClick: () -> Unit) {
 fun AnimatedBalanceCard(balance: String, theme: AppTheme) {
     val infiniteTransition = rememberInfiniteTransition(label = "liquid_waves")
 
-    
+
     val wave1Offset by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
@@ -337,7 +343,7 @@ fun AnimatedBalanceCard(balance: String, theme: AppTheme) {
         label = "wave1"
     )
 
-    
+
     val wave2Offset by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
@@ -348,7 +354,7 @@ fun AnimatedBalanceCard(balance: String, theme: AppTheme) {
         label = "wave2"
     )
 
-    
+
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.1f,
         targetValue = 0.25f,
@@ -369,16 +375,16 @@ fun AnimatedBalanceCard(balance: String, theme: AppTheme) {
         shape = RoundedCornerShape(theme.borderRadius.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
-        
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .drawWithCache {
-                    
+
                     val width = size.width
                     val height = size.height
 
-                    
+
                     val linearBrush = Brush.linearGradient(
                         colors = listOf(
                             accentColor.copy(alpha = 0.05f),
@@ -390,7 +396,7 @@ fun AnimatedBalanceCard(balance: String, theme: AppTheme) {
                         tileMode = androidx.compose.ui.graphics.TileMode.Mirror
                     )
 
-                    
+
                     val radialBrush = Brush.radialGradient(
                         colors = listOf(
                             accentColor.copy(alpha = 0.15f),
@@ -404,14 +410,14 @@ fun AnimatedBalanceCard(balance: String, theme: AppTheme) {
                     )
 
                     onDrawBehind {
-                        
+
                         drawRect(linearBrush)
                         drawRect(radialBrush)
                     }
                 },
             contentAlignment = Alignment.Center
         ) {
-            
+
             Column(
                 modifier = Modifier.padding(vertical = 40.dp, horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -515,5 +521,207 @@ fun MyLotsButton(onClick: () -> Unit, theme: AppTheme) {
                 }
             }
         }
+    }
+}
+
+
+
+
+private enum class DonateDialogStep {
+    NONE,
+    FAKE_LOADING,   
+    CANCEL_CONFIRM, 
+    REALLY_SURE,    
+    CONFESSION      
+}
+
+@Composable
+fun DonateEasterEggButton(theme: AppTheme) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var step by remember { mutableStateOf(DonateDialogStep.NONE) }
+
+    
+    OutlinedButton(
+        onClick = {
+            step = DonateDialogStep.FAKE_LOADING
+            scope.launch {
+                delay(3000)
+                if (step == DonateDialogStep.FAKE_LOADING) {
+                    step = DonateDialogStep.CANCEL_CONFIRM
+                }
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp, Color(0xFFFF6B35).copy(alpha = 0.7f)
+        ),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = Color(0xFFFF6B35)
+        ),
+        enabled = step == DonateDialogStep.NONE
+    ) {
+        if (step == DonateDialogStep.FAKE_LOADING) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = Color(0xFFFF6B35)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("Выполняется вывод 500 ₽...", fontSize = 13.sp)
+        } else {
+            Icon(Icons.Default.VolunteerActivism, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Вывести 500 ₽ на донат разработчику", fontSize = 13.sp)
+        }
+    }
+
+    
+    if (step == DonateDialogStep.CANCEL_CONFIRM) {
+        AlertDialog(
+            onDismissRequest = {},
+            containerColor = ThemeManager.parseColor(theme.surfaceColor),
+            title = {
+                Text(
+                    "⚠️ Вывод средств",
+                    fontWeight = FontWeight.Bold,
+                    color = ThemeManager.parseColor(theme.textPrimaryColor)
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Запрос на вывод 500 ₽ принят и поставлен в очередь обработки.",
+                        color = ThemeManager.parseColor(theme.textPrimaryColor)
+                    )
+                    Text(
+                        "Средства будут выведены на личную карту разработчика.",
+                        color = ThemeManager.parseColor(theme.textSecondaryColor),
+                        fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Вы уверены, что хотите продолжить? Отменить вывод?",
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { step = DonateDialogStep.REALLY_SURE }) {
+                    Text("Нет, продолжить вывод", color = Color(0xFFFF6B35))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { step = DonateDialogStep.CONFESSION }) {
+                    Text("Да, отменить", color = ThemeManager.parseColor(theme.textSecondaryColor))
+                }
+            }
+        )
+    }
+
+    
+    if (step == DonateDialogStep.REALLY_SURE) {
+        AlertDialog(
+            onDismissRequest = {},
+            containerColor = ThemeManager.parseColor(theme.surfaceColor),
+            title = {
+                Text(
+                    "‼️ Подождите",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 20.sp,
+                    color = Color(0xFFFF6B35)
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Вы действительно хотите перевести 500 ₽ разработчику?",
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Сумма: 500 ₽\nПолучатель: 4441********7711\nСрок зачисления: 47 часов и 59 минут\nОтмена после подтверждения: невозможна",
+                        color = ThemeManager.parseColor(theme.textSecondaryColor),
+                        fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Вы точно уверены?",
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { step = DonateDialogStep.CONFESSION },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF6B35))
+                ) {
+                    Text("Да, подтверждаю", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { step = DonateDialogStep.CONFESSION }) {
+                    Text("Нет, отменить", color = ThemeManager.parseColor(theme.textSecondaryColor))
+                }
+            }
+        )
+    }
+
+    
+    if (step == DonateDialogStep.CONFESSION) {
+        AlertDialog(
+            onDismissRequest = { step = DonateDialogStep.NONE },
+            containerColor = ThemeManager.parseColor(theme.surfaceColor),
+            title = {
+                Text(
+                    "😅 Ладно, признаёмся...",
+                    fontWeight = FontWeight.Bold,
+                    color = ThemeManager.parseColor(theme.textPrimaryColor)
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Никакие деньги никуда не ушли и не уйдут. Это была шутка 🙃",
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "Но если вы реально хотите помочь развитию FunPay Tools и делать его лучше вместе с нами - рассмотрите лицензию Pro.",
+                        color = ThemeManager.parseColor(theme.textSecondaryColor),
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        "Оплата принимается картами СНГ и криптовалютой.",
+                        color = ThemeManager.parseColor(theme.textSecondaryColor),
+                        fontSize = 13.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/fptoolsbot"))
+                        context.startActivity(intent)
+                        step = DonateDialogStep.NONE
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ThemeManager.parseColor(theme.accentColor)
+                    )
+                ) {
+                    Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Узнать про Pro →", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { step = DonateDialogStep.NONE }) {
+                    Text("Закрыть", color = ThemeManager.parseColor(theme.textSecondaryColor))
+                }
+            }
+        )
     }
 }

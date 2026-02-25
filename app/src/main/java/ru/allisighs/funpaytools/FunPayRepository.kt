@@ -48,7 +48,7 @@ import java.util.regex.Pattern
 import kotlin.apply
 import kotlin.compareTo
 
-const val APP_VERSION = "1.2.4"
+const val APP_VERSION = "1.2.5"
 
 data class AutoRefundSettings(
     val enabled: Boolean = false,
@@ -106,8 +106,11 @@ data class ReviewReplySettings(
     val aiFallbackText: String = "Спасибо за отзыв! 🤝",
     val manualTemplates: Map<Int, String> = (1..5).associateWith { "Спасибо за отзыв!" },
     val disabledStars: List<Int> = emptyList(),
-    val imageUri: String? = null,
-    val imageFirst: Boolean = true
+    
+    val aiIncludeLotName: Boolean = true,
+    val aiIncludeDate: Boolean = false,
+    val aiWritingStyle: String = "",        
+    val aiCustomInstruction: String = ""    
 )
 
 data class GreetingSettings(
@@ -216,7 +219,7 @@ class FunPayRepository(private val context: Context) {
     val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
 
     private val extraCookies = mutableMapOf<String, String>()
-    private val recentCommandKeys = mutableSetOf<String>()
+    private val recentCommandKeys = mutableMapOf<String, Long>()
     private var lastCommandKeyCleanup = 0L
     private val gson = Gson()
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
@@ -846,7 +849,6 @@ class FunPayRepository(private val context: Context) {
 
                 val messageHash = "${chat.lastMessage.hashCode()}"
                 if (wasEventProcessed(chat.id, messageHash, "refund_check")) {
-                    LogManager.addLogDebug("⏭️ Сообщение уже обработано")
                     continue
                 }
 
@@ -941,7 +943,6 @@ class FunPayRepository(private val context: Context) {
                 val reviewEventKey = "${chat.lastMessage.hashCode()}"
 
                 if (wasEventProcessed(chat.id, reviewEventKey, "review_reply")) {
-                    LogManager.addLogDebug("⏭️ Ответ на отзыв уже отправлен")
                     continue
                 }
 
@@ -1030,7 +1031,8 @@ class FunPayRepository(private val context: Context) {
                         lotName = lotName,
                         reviewText = reviewText,
                         stars = stars,
-                        sentenceCount = settings.aiLength
+                        sentenceCount = settings.aiLength,
+                        settings = settings
                     )
 
                     if (aiResponse != null) {
@@ -1044,11 +1046,13 @@ class FunPayRepository(private val context: Context) {
                     settings.manualTemplates[stars] ?: "Спасибо за отзыв!"
                 }
 
+                val todayDate = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
                 val finalReplyText = replyText
                     .replace("\$username", chat.username)
                     .replace("\$order_id", orderId)
                     .replace("\$chat_name", chat.username)
                     .replace("\$lot_name", lotName)
+                    .replace("\$date", todayDate)
 
                 val formattedReply = formatReviewReply(finalReplyText)
 
@@ -1089,7 +1093,7 @@ class FunPayRepository(private val context: Context) {
         return result.trim()
     }
 
-    private suspend fun generateAiReviewReply(lotName: String, reviewText: String, stars: Int, sentenceCount: Int): String? {
+    private suspend fun generateAiReviewReply(lotName: String, reviewText: String, stars: Int, sentenceCount: Int, settings: ReviewReplySettings): String? {
         return try {
             withContext(Dispatchers.IO) {
                 val systemPrompt = "You are a professional review response generator for FunPay marketplace sellers."
@@ -1106,16 +1110,34 @@ class FunPayRepository(private val context: Context) {
                     else -> "$sentenceCount предложений (максимально подробный, креативный и живой ответ)"
                 }
 
+                val styleLine = if (settings.aiWritingStyle.isNotBlank())
+                    "СТИЛЬ НАПИСАНИЯ: ${settings.aiWritingStyle.trim()}."
+                else ""
+
+                val lotNameLine = if (settings.aiIncludeLotName)
+                    "2. ОБЯЗАТЕЛЬНО УПОМЯНИ товар \"$lotName\" или его суть в своём ответе."
+                else
+                    "2. НЕ упоминай конкретное название товара, пиши в общих словах."
+
+                val dateLine = if (settings.aiIncludeDate) {
+                    val today = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+                    "   Можешь органично упомянуть дату покупки/отзыва: $today."
+                } else ""
+
+                val customLine = if (settings.aiCustomInstruction.isNotBlank())
+                    "\n--- ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ ПРОДАВЦА ---\n${settings.aiCustomInstruction.trim()}"
+                else ""
+
                 val combinedUserPrompt = """
 Ты — дружелюбный продавец на игровой бирже FunPay.
 Покупатель оставил отзыв с оценкой $stars из 5 на товар "$lotName".
 Текст отзыва: "$reviewText"
-
+${if (styleLine.isNotBlank()) "\n$styleLine" else ""}
 Твоя задача — написать тёплый, искренний ответ на этот отзыв.
 
 --- ВАЖНЫЕ ПРАВИЛА ---
 1. ДЛИНА: Твой ответ должен быть примерно $lengthGuide.
-2. ОБЯЗАТЕЛЬНО УПОМЯНИ товар "$lotName" или его суть в своём ответе.
+$lotNameLine${if (dateLine.isNotBlank()) "\n$dateLine" else ""}
 3. ИСПОЛЬЗУЙ эмодзи уместно (😊, 👍, 🎉, ✨, 💜, 🔥) для живости.
 4. ПОБЛАГОДАРИ покупателя за отзыв и/или покупку.
 5. ПОДСТРАИВАЙСЯ под тон и настроение отзыва:
@@ -1126,10 +1148,10 @@ class FunPayRepository(private val context: Context) {
 6. ИЗБЕГАЙ шаблонных фраз типа "Обращайтесь ещё" или "Буду рад помочь снова".
 7. ПИШИ естественно, как живой человек, а не робот.
 8. НЕ используй Markdown, жирный текст или курсив.
-9. Твой ответ — это ТОЛЬКО готовый текст. Без кавычек, без заголовков, без пояснений.
+9. Твой ответ — это ТОЛЬКО готовый текст. Без кавычек, без заголовков, без пояснений.$customLine
 
 ГОТОВЫЙ ТЕКСТ ОТВЕТА:
-            """.trimIndent()
+                """.trimIndent()
 
                 val messages = JSONArray()
                 val sysMsg = JSONObject().put("role", "system").put("content", systemPrompt)
@@ -1382,16 +1404,83 @@ class FunPayRepository(private val context: Context) {
     }
 
 
+    /**
+     * Копирует picker URI (content://media/picker/...) в filesDir приложения,
+     * чтобы сервис мог читать файл позже без временных прав пикера.
+     * Возвращает путь к локальной копии (file:
+     */
+    fun copyPickedImageToStorage(uri: Uri): String? {
+        return try {
+            val contentResolver = context.contentResolver
+            val ext = when (contentResolver.getType(uri)) {
+                "image/png" -> "png"
+                "image/webp" -> "webp"
+                "image/gif" -> "gif"
+                else -> "jpg"
+            }
+            val destFile = File(context.filesDir, "autoimg_${System.currentTimeMillis()}.$ext")
+            contentResolver.openInputStream(uri)?.use { input ->
+                destFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+
+            context.filesDir.listFiles()?.forEach { f ->
+                if (f.name.startsWith("autoimg_") && f.absolutePath != destFile.absolutePath) f.delete()
+            }
+            val resultUri = android.net.Uri.fromFile(destFile).toString()
+            LogManager.addLogDebug("✅ Картинка скопирована: $resultUri")
+            resultUri
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Ошибка копирования фото: ${e.message}")
+            null
+        }
+    }
+
     suspend fun uploadImage(uri: Uri): String? {
         return try {
             val contentResolver = context.contentResolver
-            val mimeType = contentResolver.getType(uri) ?: "image/jpeg"
-            val inputStream = contentResolver.openInputStream(uri) ?: return null
+
+            val resolvedUri = when {
+                uri.scheme == "file" -> {
+
+                    val f = File(uri.path ?: "")
+                    if (!f.exists()) {
+                        LogManager.addLog("❌ Картинка не найдена на диске: ${uri.path}")
+                        LogManager.addLog("ℹ️ Зайдите в настройки команды/автоответа и выберите картинку заново — старый файл был удалён")
+                        return null
+                    }
+                    uri
+                }
+                uri.scheme == "content" -> {
+                    try {
+                        contentResolver.openInputStream(uri)?.close()
+                        uri
+                    } catch (e: SecurityException) {
+                        LogManager.addLog("❌ Нет доступа к картинке: ${uri}")
+                        LogManager.addLog("ℹ️ Это временный URI от галереи — он истёк. Зайдите в настройки команды/автоответа и выберите картинку заново")
+                        return null
+                    }
+                }
+                else -> {
+                    LogManager.addLog("❌ Неизвестная схема URI картинки: ${uri.scheme}")
+                    return null
+                }
+            }
+
+            val mimeType = contentResolver.getType(resolvedUri) ?: "image/jpeg"
+            val inputStream = contentResolver.openInputStream(resolvedUri)
+            if (inputStream == null) {
+                LogManager.addLog("❌ Не удалось открыть файл картинки: $resolvedUri")
+                LogManager.addLog("ℹ️ Зайдите в настройки команды/автоответа и выберите картинку заново")
+                return null
+            }
+
             val file = File(context.cacheDir, "upload_image.jpg")
             val outputStream = FileOutputStream(file)
             inputStream.copyTo(outputStream)
             inputStream.close()
             outputStream.close()
+
+            LogManager.addLogDebug("📤 Загружаю картинку: ${file.length()} байт, тип: $mimeType")
 
             val requestFile = file.asRequestBody(mimeType.toMediaTypeOrNull())
             val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
@@ -1405,18 +1494,28 @@ class FunPayRepository(private val context: Context) {
             )
             updateSession(response)
             val jsonStr = readBodySilent(response)
+
+            if (jsonStr.isEmpty()) {
+                LogManager.addLog("❌ Сервер не ответил на загрузку картинки (пустой ответ)")
+                return null
+            }
+
             val json = JSONObject(jsonStr)
 
-            if (json.has("fileId")) {
-                json.getString("fileId")
-            } else if (json.has("url")) {
-
-                json.getString("url")
-            } else {
-                null
+            when {
+                json.has("fileId") -> json.getString("fileId")
+                json.has("url") -> json.getString("url")
+                json.optBoolean("error", false) -> {
+                    LogManager.addLog("❌ FunPay отклонил картинку: ${json.optString("msg", jsonStr)}")
+                    null
+                }
+                else -> {
+                    LogManager.addLog("❌ Неожиданный ответ при загрузке картинки: $jsonStr")
+                    null
+                }
             }
         } catch (e: Exception) {
-            LogManager.addLog("❌ Ошибка загрузки фото: ${e.message}")
+            LogManager.addLog("❌ Ошибка загрузки картинки: ${e.javaClass.simpleName} — ${e.message}")
             null
         }
     }
@@ -1577,9 +1676,18 @@ class FunPayRepository(private val context: Context) {
         val imgId = try {
             uploadImage(android.net.Uri.parse(imageUri))
         } catch (e: Exception) {
-            LogManager.addLog("⚠️ sendWithOptionalImage: не удалось загрузить картинку: ${e.message}")
+            LogManager.addLog("❌ Не удалось загрузить картинку: ${e.javaClass.simpleName} — ${e.message}")
             null
         }
+
+        if (imgId == null && text.isBlank()) {
+            LogManager.addLog("⛔ Картинка не загрузилась и текст пустой — сообщение не отправлено")
+            return false
+        }
+        if (imgId == null) {
+            LogManager.addLog("⚠️ Картинка не загрузилась — отправляю только текст")
+        }
+
         return if (imageFirst) {
             var ok = false
             if (imgId != null) ok = sendMessage(nodeId, "", imgId)
@@ -1851,13 +1959,12 @@ $contextHistory
 
 
                                 val lastSent = lastOutgoingMessages[chatId]
-                                if (lastSent != null) {
+                                if (lastSent != null && lastSent != "__image__") {
+
+                                    val isTruncated = lastMsgText.endsWith("...")
                                     val cleanMsg = lastMsgText.replace("...", "").trim().lowercase()
                                     val cleanSent = lastSent.trim().lowercase()
-                                    if (cleanSent.contains(cleanMsg) ||
-                                        cleanMsg.contains(cleanSent) ||
-                                        cleanSent.startsWith(cleanMsg) ||
-                                        cleanMsg.startsWith(cleanSent)) {
+                                    if (cleanSent == cleanMsg || (isTruncated && cleanSent.startsWith(cleanMsg))) {
                                         isUnread = false
                                     }
                                 }
@@ -1981,6 +2088,11 @@ $contextHistory
                         val messagesArray = data.optJSONArray("messages") ?: continue
 
                         val messages = mutableListOf<MessageItem>()
+
+
+                        var lastKnownAuthorId = "0"
+                        var lastKnownAuthorName = "Unknown"
+
                         for (j in 0 until messagesArray.length()) {
                             try {
                                 val msgObj = messagesArray.getJSONObject(j)
@@ -1988,10 +2100,23 @@ $contextHistory
                                 val doc = Jsoup.parse(html.replace("<br>", "\n"))
 
                                 val id = msgObj.optString("id", "0")
-                                val authorId = msgObj.optString("author", "0")
+                                val rawAuthorId = msgObj.optString("author", "0")
 
                                 val authorElement = doc.select("div.media-user-name a").first()
-                                val author = authorElement?.text() ?: "Unknown"
+
+
+                                val authorId: String
+                                val author: String
+                                if (authorElement != null && rawAuthorId != "0") {
+                                    authorId = rawAuthorId
+                                    author = authorElement.text()
+                                    lastKnownAuthorId = authorId
+                                    lastKnownAuthorName = author
+                                } else {
+
+                                    authorId = lastKnownAuthorId
+                                    author = lastKnownAuthorName
+                                }
 
                                 val badgeText = doc.select(".chat-msg-author-label").text().ifEmpty { null }
 
@@ -2321,7 +2446,6 @@ $contextHistory
                     val cleanIncoming = lastMessageText.replace("...", "").trim()
                     val cleanSelf = lastSelf.trim()
 
-
                     if (cleanIncoming.equals(cleanSelf, ignoreCase = true)) {
                         isSelfMessage = true
                     }
@@ -2409,55 +2533,53 @@ $contextHistory
                         continue
                     }
 
-
                     val incomingText = lastMessageText.replace("\n", "").trim().lowercase(Locale.getDefault())
-
 
                     val cmd = commands.find { commandObj ->
                         val trigger = commandObj.trigger.trim().lowercase(Locale.getDefault())
-
-                        if (commandObj.exactMatch) {
-
-                            incomingText == trigger
-                        } else {
-
-                            incomingText == trigger || incomingText.contains(trigger)
-                        }
+                        if (commandObj.exactMatch) incomingText == trigger
+                        else incomingText == trigger || incomingText.contains(trigger)
                     }
 
                     if (cmd != null) {
-                        val commandKey = "${chat.id}_${incomingText.hashCode()}"
-
                         val now = System.currentTimeMillis()
-                        if (now - lastCommandKeyCleanup > 10 * 60 * 1000L) {
-                            recentCommandKeys.clear()
-                            lastCommandKeyCleanup = now
-                        }
-
-                        if (recentCommandKeys.contains(commandKey)) continue
 
 
-                        var shouldSkip = false
+
+
+                        val messageId: String
                         try {
                             val history = getChatHistory(chat.id)
-                            val lastMsg = history.lastOrNull()
-                            if (lastMsg == null || lastMsg.isMe) {
-                                shouldSkip = true
-                            }
+                            val lastIncoming = history.lastOrNull { !it.isMe }
+                            if (lastIncoming == null) continue
+
+                            val trigger = cmd.trigger.trim().lowercase(Locale.getDefault())
+                            val incomingNorm = lastIncoming.text.trim().lowercase(Locale.getDefault())
+                            val triggerMatches = if (cmd.exactMatch) incomingNorm == trigger
+                            else incomingNorm == trigger || incomingNorm.contains(trigger)
+
+                            if (!triggerMatches) continue
+                            messageId = lastIncoming.id
                         } catch (e: Exception) {
-                            shouldSkip = true
+                            continue
                         }
 
-                        if (shouldSkip) continue
+
+                        if (now - lastCommandKeyCleanup > 10 * 60 * 1000L) {
+                            recentCommandKeys.entries.removeAll { now - it.value > 10 * 60 * 1000L }
+                            lastCommandKeyCleanup = now
+                        }
+                        if (recentCommandKeys.containsKey(messageId)) continue
 
                         LogManager.addLog("🎯 Команда '${cmd.trigger}' от ${chat.username}")
                         val success = sendWithOptionalImage(chat.id, cmd.response, cmd.imageUri, cmd.imageFirst)
 
                         if (success) {
-                            recentCommandKeys.add(commandKey)
+                            recentCommandKeys[messageId] = now
                             kotlinx.coroutines.delay(1500)
                         }
                     }
+
                 }
             }
         } catch (e: Exception) {
@@ -2494,6 +2616,9 @@ $contextHistory
         )
 
         for (chat in chats) {
+
+            if (!chat.isUnread) continue
+
             val lastMsgLower = chat.lastMessage.lowercase()
 
             val lastSelf = FunPayRepository.lastOutgoingMessages[chat.id]
@@ -2511,11 +2636,22 @@ $contextHistory
             val lastGreetTime = cache[chat.id] ?: 0L
             if (currentTime - lastGreetTime < cooldownMs) continue
 
-            LogManager.addLog("👋 Приветствие для ${chat.username}")
+
+
 
             val greetingText = settings.text
                 .replace("\$username", chat.username)
                 .replace("\$chat_name", chat.username)
+
+            val lastMsgClean = chat.lastMessage.replace("...", "").trim()
+            val greetClean = greetingText.trim()
+            if (lastMsgClean.equals(greetClean, ignoreCase = true) ||
+                greetClean.startsWith(lastMsgClean, ignoreCase = true)) {
+
+                continue
+            }
+
+            LogManager.addLog("👋 Приветствие для ${chat.username}")
 
             val success = sendWithOptionalImage(chat.id, greetingText, settings.imageUri, settings.imageFirst)
 
@@ -2599,7 +2735,7 @@ $contextHistory
 
                 repeat(3) {
                     if (finalReplyText == null) {
-                        finalReplyText = generateReviewReply(lotName, reviewText, stars, settings.aiLength)
+                        finalReplyText = generateReviewReply(lotName, reviewText, stars, settings.aiLength, settings)
                         if (finalReplyText == null) delay(1000)
                     }
                 }
@@ -2610,10 +2746,12 @@ $contextHistory
                 }
 
                 if (finalReplyText != null) {
+                    val todayDate = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
                     finalReplyText = finalReplyText!!
                         .replace("\$username", buyerName)
                         .replace("\$order_id", orderId)
                         .replace("\$lot_name", lotName)
+                        .replace("\$date", todayDate)
                 }
             } else {
                 if (settings.disabledStars.contains(stars)) {
@@ -2633,6 +2771,7 @@ $contextHistory
                     .replace("\$username", buyerName)
                     .replace("\$order_id", orderId)
                     .replace("\$lot_name", lotName)
+                    .replace("\$date", SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date()))
             }
 
             if (finalReplyText != null && finalReplyText!!.isNotEmpty()) {
@@ -2670,7 +2809,7 @@ $contextHistory
         }
     }
 
-    suspend fun generateReviewReply(lotName: String, reviewText: String, stars: Int, strength: Int): String? {
+    suspend fun generateReviewReply(lotName: String, reviewText: String, stars: Int, strength: Int, settings: ReviewReplySettings = ReviewReplySettings()): String? {
         return try {
             val lengthInstruction = when {
                 strength <= 2 -> "2. Ответ должен быть ОЧЕНЬ коротким (1-2 предложения)."
@@ -2680,23 +2819,41 @@ $contextHistory
                 else -> "2. Ответ должен быть максимально развёрнутым и креативным (5-6 предложений), очень живым, эмоциональным и запоминающимся."
             }
 
+            val lotNameInstruction = if (settings.aiIncludeLotName)
+                "1. ОБЯЗАТЕЛЬНО упомяни название товара \"$lotName\" или его суть."
+            else
+                "1. НЕ упоминай конкретное название товара, пиши в общих словах."
+
+            val dateLine = if (settings.aiIncludeDate) {
+                val today = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault()).format(Date())
+                "   Можешь органично упомянуть дату: $today."
+            } else ""
+
+            val styleLine = if (settings.aiWritingStyle.isNotBlank())
+                "СТИЛЬ: ${settings.aiWritingStyle.trim()}."
+            else ""
+
+            val customLine = if (settings.aiCustomInstruction.isNotBlank())
+                "\n--- ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ---\n${settings.aiCustomInstruction.trim()}"
+            else ""
+
             val systemPrompt = "You are a text editing model. Follow user instructions precisely."
             val combinedUserPrompt = """
 Ты — вежливый и дружелюбный продавец на игровой бирже FunPay.
 Покупатель оставил отзыв с оценкой $stars из 5 на твой товар "$lotName".
 Текст отзыва: "$reviewText"
-
+${if (styleLine.isNotBlank()) "\n$styleLine" else ""}
 Твоя задача — написать позитивный и благодарный ответ на этот отзыв.
 
 --- ПРАВИЛА ---
-1. ОБЯЗАТЕЛЬНО упомяни название товара "$lotName" или его суть.
-$lengthInstruction
+$lotNameInstruction
+$lengthInstruction${if (dateLine.isNotBlank()) "\n$dateLine" else ""}
 3. Используй дружелюбный тон и уместные эмодзи (например, 😊, 👍, 🎉, ✨, 💜, 🔥).
 4. Поблагодари покупателя за отзыв и/или покупку.
 5. НЕ используй шаблонные фразы типа "Обращайтесь ещё" или "Буду рад помочь".
 6. Пиши живо и естественно, как настоящий человек.
 7. НЕ используй Markdown, жирный текст или курсив.
-8. Твой ответ — это ТОЛЬКО готовый текст. Без кавычек, заголовков или объяснений.
+8. Твой ответ — это ТОЛЬКО готовый текст. Без кавычек, заголовков или объяснений.$customLine
 
 ГОТОВЫЙ ТЕКСТ ОТВЕТА:
         """.trimIndent()
