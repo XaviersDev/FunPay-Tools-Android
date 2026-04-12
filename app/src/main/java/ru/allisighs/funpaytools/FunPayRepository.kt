@@ -106,11 +106,11 @@ data class ReviewReplySettings(
     val aiFallbackText: String = "Спасибо за отзыв! 🤝",
     val manualTemplates: Map<Int, String> = (1..5).associateWith { "Спасибо за отзыв!" },
     val disabledStars: List<Int> = emptyList(),
-    
+
     val aiIncludeLotName: Boolean = true,
     val aiIncludeDate: Boolean = false,
-    val aiWritingStyle: String = "",        
-    val aiCustomInstruction: String = ""    
+    val aiWritingStyle: String = "",
+    val aiCustomInstruction: String = ""
 )
 
 data class GreetingSettings(
@@ -1634,7 +1634,37 @@ $lotNameLine${if (dateLine.isNotBlank()) "\n$dateLine" else ""}
                 }
 
                 if (hasReviewInChat) {
-                    LogManager.addLog("📝 Отзыв оставлен, отправляем ответ...")
+                    LogManager.addLog("📝 Отзыв оставлен, проверяем автовозврат и ответ...")
+
+                    val autoRefundSettings = getAutoRefundSettings()
+                    if (autoRefundSettings.enabled) {
+                        val refundCacheKey = "${orderId}_confirm_refund"
+                        if (!wasEventProcessed(chat.id, refundCacheKey, "refund_done")) {
+                            val orderDetails = getOrderDetails(orderId)
+                            if (orderDetails != null && orderDetails.canRefund) {
+                                val priceVal = orderDetails.price
+                                    .replace(Regex("[^0-9,.]"), "")
+                                    .replace(",", ".")
+                                    .toDoubleOrNull() ?: 0.0
+                                if (priceVal <= autoRefundSettings.maxPrice &&
+                                    autoRefundSettings.triggerStars.contains(orderDetails.reviewRating)
+                                ) {
+                                    LogManager.addLog("💸 Авто-возврат при подтверждении (#$orderId, ${orderDetails.reviewRating}*, $priceVal)")
+                                    val success = refundOrder(orderId)
+                                    if (success) {
+                                        markEventAsProcessed(chat.id, refundCacheKey, "refund_done")
+                                        if (autoRefundSettings.sendMessage) {
+                                            sendWithOptionalImage(chat.id, autoRefundSettings.messageText, autoRefundSettings.imageUri, autoRefundSettings.imageFirst)
+                                        }
+                                    }
+                                } else {
+                                    LogManager.addLog("ℹ️ Возврат при подтверждении не нужен (${orderDetails.reviewRating}*, $priceVal)")
+                                    markEventAsProcessed(chat.id, refundCacheKey, "refund_done")
+                                }
+                            }
+                        }
+                    }
+
                     val (csrf, userId) = getCsrfAndId() ?: continue
                     handleReview(orderId, chat.username, csrf, userId)
                 } else {
@@ -2003,161 +2033,184 @@ $contextHistory
         }
     }
 
+    suspend fun getChatHistory(chatId: String): List<MessageItem> = withContext(Dispatchers.IO) {
+        val authData = getCsrfAndId() ?: return@withContext emptyList()
+        val (_, myUserId) = authData
 
-    suspend fun getChatHistory(chatId: String): List<MessageItem> {
-        val authData = getCsrfAndId()
-        if (authData == null) {
-            return emptyList()
+        try {
+            val url = "https://funpay.com/chat/?node=$chatId"
+            val response = RetrofitInstance.api.getChatPage(url, getCookieString(), userAgent)
+            updateSession(response)
+            val html = readBodySilent(response)
+
+            if (html.isEmpty()) return@withContext emptyList()
+
+            val doc = Jsoup.parse(html)
+            val messageElements = doc.select(".chat-message-list .chat-msg-item")
+
+            val resultList = mutableListOf<MessageItem>()
+            var currentAuthor = "Unknown"
+            var currentAuthorId = ""
+            var currentTime = ""
+
+            for (itemDiv in messageElements) {
+                val idStr = itemDiv.attr("id").removePrefix("message-")
+                if (idStr.isEmpty()) continue
+
+                val authorLink = itemDiv.selectFirst(".chat-msg-author-link")
+                if (authorLink != null) {
+                    currentAuthor = authorLink.text().trim()
+                    currentAuthorId = authorLink.attr("href").substringAfter("/users/").substringBefore("/").trim()
+                } else {
+                    val mediaUserName = itemDiv.selectFirst(".media-user-name")
+                    if (mediaUserName != null) {
+                        val textName = mediaUserName.ownText().trim()
+                        if (textName.isNotEmpty()) {
+                            currentAuthor = textName
+                            currentAuthorId = "0"
+                        }
+                    }
+                }
+
+                val dateEl = itemDiv.selectFirst(".chat-msg-date")
+                if (dateEl != null) {
+                    currentTime = dateEl.attr("title").ifEmpty { dateEl.text() }
+                }
+
+                val text = itemDiv.select(".chat-msg-text").text().trim()
+
+                var imageUrl: String? = null
+                val imgLink = itemDiv.selectFirst(".chat-img-link")
+                if (imgLink != null) {
+                    imageUrl = imgLink.attr("href")
+                    if (imageUrl.startsWith("/")) imageUrl = "https://funpay.com$imageUrl"
+                }
+
+                val badge = itemDiv.selectFirst(".chat-msg-author-label")?.text()
+
+                val isMe = (currentAuthorId == myUserId)
+
+                if (text.isNotEmpty() || imageUrl != null) {
+                    resultList.add(MessageItem(
+                        id = idStr,
+                        author = currentAuthor,
+                        text = text,
+                        isMe = isMe,
+                        time = currentTime,
+                        imageUrl = imageUrl,
+                        badge = badge
+                    ))
+                }
+            }
+
+            return@withContext resultList
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return@withContext emptyList()
         }
+    }
 
-        val (csrf, userId) = authData
+    suspend fun fetchOlderMessages(chatId: String, beforeMessageId: String): List<MessageItem> = withContext(Dispatchers.IO) {
+        val authData = getCsrfAndId() ?: return@withContext emptyList()
+        val (_, myUserId) = authData
 
         var nodeName = chatId
         if (!chatId.startsWith("users-")) {
             try {
                 val url = "https://funpay.com/chat/history?node=$chatId&last_message=0"
                 val resp = RetrofitInstance.api.getChatHistory(url, getCookieString(), userAgent, "XMLHttpRequest")
-                val json = JSONObject(readBodySilent(resp))
-                val correctName = json.optJSONObject("chat")?.optJSONObject("node")?.optString("name")
-
-                if (!correctName.isNullOrEmpty() && correctName.startsWith("users-")) {
-                    nodeName = correctName
+                val jsonStr = readBodySilent(resp)
+                if (jsonStr.isNotEmpty()) {
+                    val json = JSONObject(jsonStr)
+                    val correctName = json.optJSONObject("chat")?.optJSONObject("node")?.optString("name")
+                    if (!correctName.isNullOrEmpty() && correctName.startsWith("users-")) {
+                        nodeName = correctName
+                    }
                 }
-            } catch (e: Exception) {
-            }
+            } catch (e: Exception) { }
         }
 
-        repeat(2) { attempt ->
-            try {
-                val objectsPayload = """
-                    [
-                        {
-                            "type": "chat_node",
-                            "id": "$nodeName",
-                            "tag": "00000000",
-                            "data": {
-                                "node": "$nodeName",
-                                "last_message": -1,
-                                "content": ""
-                            }
+        try {
+            val url = "https://funpay.com/chat/history?node=$nodeName&last_message=$beforeMessageId"
+            val response = RetrofitInstance.api.getChatHistory(url, getCookieString(), userAgent, "XMLHttpRequest")
+            updateSession(response)
+            val jsonStr = readBodySilent(response)
+
+            if (jsonStr.isEmpty() || jsonStr == "null") return@withContext emptyList()
+
+            val json = JSONObject(jsonStr)
+            if (json.optBoolean("error", false)) return@withContext emptyList()
+
+            val messagesArray = json.optJSONObject("chat")?.optJSONArray("messages") ?: return@withContext emptyList()
+
+            val resultList = mutableListOf<MessageItem>()
+            var currentAuthor = "Unknown"
+            var currentAuthorId = ""
+            var currentTime = ""
+
+            for (i in 0 until messagesArray.length()) {
+                val msgObj = messagesArray.getJSONObject(i)
+                val html = msgObj.optString("html")
+                val rawAuthorId = msgObj.optString("author")
+
+                val doc = Jsoup.parseBodyFragment(html)
+                val itemDiv = doc.selectFirst(".chat-msg-item") ?: continue
+
+                val idStr = itemDiv.attr("id").removePrefix("message-").ifEmpty { msgObj.optString("id") }
+
+                val authorLink = itemDiv.selectFirst(".chat-msg-author-link")
+                if (authorLink != null) {
+                    currentAuthor = authorLink.text().trim()
+                    currentAuthorId = authorLink.attr("href").substringAfter("/users/").substringBefore("/").trim()
+                } else if (rawAuthorId.isNotEmpty() && rawAuthorId != "0") {
+                    currentAuthorId = rawAuthorId
+                } else {
+                    val mediaUserName = itemDiv.selectFirst(".media-user-name")
+                    if (mediaUserName != null) {
+                        val textName = mediaUserName.ownText().trim()
+                        if (textName.isNotEmpty()) {
+                            currentAuthor = textName
+                            currentAuthorId = "0"
                         }
-                    ]
-                """.trimIndent()
-
-                val response = withContext(Dispatchers.IO) {
-                    RetrofitInstance.api.runnerGet(
-                        cookie = getCookieString(),
-                        userAgent = userAgent,
-                        objects = objectsPayload,
-                        request = "false",
-                        csrfToken = csrf
-                    )
-                }
-
-                updateSession(response)
-                val jsonStr = readBodySilent(response)
-
-                if (jsonStr.isEmpty() || jsonStr == "null") {
-                    if (attempt < 1) {
-                        delay(2000)
-                        return@repeat
-                    }
-                    return emptyList()
-                }
-
-                rawChatResponses[chatId] = jsonStr
-
-                val json = JSONObject(jsonStr)
-
-                if (json.optBoolean("error", false)) {
-                    LogManager.addLog("❌ История вернула ошибку: ${json.optString("msg")}")
-                    if (attempt < 1) {
-                        delay(2000)
-                        cachedCsrf = null
-                        return@repeat
-                    }
-                    return emptyList()
-                }
-
-                val objectsArr = json.optJSONArray("objects") ?: return emptyList()
-
-                for (i in 0 until objectsArr.length()) {
-                    val obj = objectsArr.getJSONObject(i)
-                    if (obj.optString("type") == "chat_node" && obj.optString("id") == nodeName) {
-                        val data = obj.optJSONObject("data") ?: continue
-                        val messagesArray = data.optJSONArray("messages") ?: continue
-
-                        val messages = mutableListOf<MessageItem>()
-
-
-                        var lastKnownAuthorId = "0"
-                        var lastKnownAuthorName = "Unknown"
-
-                        for (j in 0 until messagesArray.length()) {
-                            try {
-                                val msgObj = messagesArray.getJSONObject(j)
-                                val html = msgObj.optString("html", "")
-                                val doc = Jsoup.parse(html.replace("<br>", "\n"))
-
-                                val id = msgObj.optString("id", "0")
-                                val rawAuthorId = msgObj.optString("author", "0")
-
-                                val authorElement = doc.select("div.media-user-name a").first()
-
-
-                                val authorId: String
-                                val author: String
-                                if (authorElement != null && rawAuthorId != "0") {
-                                    authorId = rawAuthorId
-                                    author = authorElement.text()
-                                    lastKnownAuthorId = authorId
-                                    lastKnownAuthorName = author
-                                } else {
-
-                                    authorId = lastKnownAuthorId
-                                    author = lastKnownAuthorName
-                                }
-
-                                val badgeText = doc.select(".chat-msg-author-label").text().ifEmpty { null }
-
-                                val textElement = doc.select("div.chat-msg-text").first()
-
-                                var text = textElement?.wholeText() ?: ""
-
-                                var imageUrl: String? = null
-                                val imgLink = doc.select("a.chat-img-link").first()
-                                if (imgLink != null) {
-                                    imageUrl = imgLink.attr("href")
-                                    if (imageUrl.isNotEmpty() && !imageUrl.startsWith("http")) {
-                                        imageUrl = "https://funpay.com$imageUrl"
-                                    }
-                                    if (text.isEmpty()) text = "Фотография"
-                                }
-
-                                val timeElement = doc.select("div.chat-msg-date").first()
-                                val time = timeElement?.text() ?: ""
-                                val isMe = authorId == userId
-
-                                if (text.isNotEmpty() || imageUrl != null) {
-                                    messages.add(MessageItem(id, author, text, isMe, time, imageUrl, badgeText))
-                                }
-                            } catch (e: Exception) { }
-                        }
-
-                        return messages
                     }
                 }
 
-                return emptyList()
+                val dateEl = itemDiv.selectFirst(".chat-msg-date")
+                if (dateEl != null) {
+                    currentTime = dateEl.attr("title").ifEmpty { dateEl.text() }
+                }
 
-            } catch (e: java.net.SocketTimeoutException) {
-                if (attempt < 1) delay(3000)
-            } catch (e: Exception) {
-                if (attempt < 1) delay(2000)
+                val text = itemDiv.select(".chat-msg-text").text().trim()
+
+                var imageUrl: String? = null
+                val imgLink = itemDiv.selectFirst(".chat-img-link")
+                if (imgLink != null) {
+                    imageUrl = imgLink.attr("href")
+                    if (imageUrl.startsWith("/")) imageUrl = "https://funpay.com$imageUrl"
+                }
+
+                val badge = itemDiv.selectFirst(".chat-msg-author-label")?.text()
+
+                val isMe = (currentAuthorId == myUserId)
+
+                if (text.isNotEmpty() || imageUrl != null) {
+                    resultList.add(MessageItem(
+                        id = idStr,
+                        author = currentAuthor,
+                        text = text,
+                        isMe = isMe,
+                        time = currentTime,
+                        imageUrl = imageUrl,
+                        badge = badge
+                    ))
+                }
             }
-        }
 
-        return emptyList()
+            return@withContext resultList
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return@withContext emptyList()
+        }
     }
 
     suspend fun getChatInfo(chatId: String): ChatInfo? {
@@ -2376,6 +2429,11 @@ $contextHistory
                 lastBusyInitAt = enabledAt
                 return
             }
+            if (cache.isEmpty() && chats.isNotEmpty()) {
+                chats.forEach { chat -> cache[chat.id] = currentTime }
+                saveBusyCache(cache)
+                return
+            }
 
             val isNewOrder = lastMsgLower.contains("оплатил заказ") ||
                     lastMsgLower.contains("paid for order") ||
@@ -2398,7 +2456,10 @@ $contextHistory
             if (systemPhrases.any { lastMsgLower.contains(it) } || chat.lastMessage.startsWith("####")) continue
 
             val lastReplyTime = cache[chat.id] ?: 0L
-            if (settings.cooldownMinutes > 0 && (currentTime - lastReplyTime < cooldownMs)) continue
+            if (lastReplyTime > 0L) {
+                if (settings.cooldownMinutes == 0) continue
+                if (currentTime - lastReplyTime < cooldownMs) continue
+            }
 
             if (settings.message.isNotBlank() || settings.imageUri != null) {
                 LogManager.addLog("🛑 Режим занятости: ответ для ${chat.username}")
@@ -2634,7 +2695,10 @@ $contextHistory
             }
 
             val lastGreetTime = cache[chat.id] ?: 0L
-            if (currentTime - lastGreetTime < cooldownMs) continue
+            if (lastGreetTime > 0L) {
+                if (settings.cooldownHours == 0) continue
+                if (currentTime - lastGreetTime < cooldownMs) continue
+            }
 
 
 
@@ -3229,6 +3293,215 @@ $lengthInstruction${if (dateLine.isNotBlank()) "\n$dateLine" else ""}
         allFields["price"] = String.format(Locale.US, "%.2f", priceWithoutComm)
 
         saveLot(lotId, allFields, fieldsData.csrfToken, fieldsData.activeCookies)
+    }
+
+    fun getAutoTicketSettings(): AutoTicketSettings {
+        val json = prefs.getString("auto_ticket_settings", null) ?: return AutoTicketSettings()
+        return try { gson.fromJson(json, AutoTicketSettings::class.java) } catch (e: Exception) { AutoTicketSettings() }
+    }
+
+    fun saveAutoTicketSettings(settings: AutoTicketSettings) =
+        prefs.edit().putString("auto_ticket_settings", gson.toJson(settings)).apply()
+
+    suspend fun getUnconfirmedOrders(ageHours: Int, alreadySent: Set<String>): List<String> = withContext(Dispatchers.IO) {
+        try {
+            val result = mutableListOf<String>()
+            val req = Request.Builder()
+                .url("https://funpay.com/orders/trade?state=paid")
+                .header("Cookie", getCookieString())
+                .header("User-Agent", userAgent)
+                .build()
+            val html = repoClient.newCall(req).execute().body?.string() ?: run {
+                LogManager.addLog("❌ AutoTicket: пустой ответ от страницы заказов")
+                return@withContext emptyList()
+            }
+            LogManager.addLogDebug("AutoTicket: страница заказов загружена (${html.length} байт)")
+            val doc = Jsoup.parse(html)
+            doc.select("a.tc-item, .orders-table a[href*='/orders/']").forEach { item ->
+                val href = item.attr("href")
+                val orderId = Regex("/orders/([A-Za-z0-9]+)").find(href)?.groupValues?.get(1)
+                    ?: item.select(".tc-id, .order-id").text().replace("#", "").trim()
+                if (orderId.isNotBlank() && orderId !in alreadySent) result.add(orderId)
+            }
+            if (result.isEmpty()) {
+                LogManager.addLogDebug("AutoTicket: основной парсер не нашёл заказов, пробуем резервный")
+                // Ищем только по /orders/XXXXXXXX/ — реальный формат FunPay (8 символов верхний регистр+цифры)
+                Regex("/orders/([A-Z0-9]{8})/").findAll(html).forEach { m ->
+                    val id = m.groupValues[1]
+                    if (id !in alreadySent && id !in result) result.add(id)
+                }
+            }
+            LogManager.addLog("🎫 AutoTicket: найдено ${result.size} неподтверждённых заказов")
+            result
+        } catch (e: Exception) {
+            LogManager.addLog("❌ AutoTicket: ошибка получения заказов: ${e.message}")
+            emptyList()
+        }
+    }
+
+    suspend fun sendAutoSupportTickets(): AutoTicketResult = withContext(Dispatchers.IO) {
+        val settings = getAutoTicketSettings()
+        val alreadySent = settings.sentOrderIds.toSet()
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val ticketsToday = if (settings.todayDate == today) settings.ticketsToday else 0
+        val remaining = settings.dailyLimit - ticketsToday
+        if (remaining <= 0) {
+            val msg = "⛔ AutoTicket: дневной лимит (${settings.dailyLimit}) исчерпан"
+            LogManager.addLog(msg)
+            return@withContext AutoTicketResult(0, 0, msg)
+        }
+        val orderIds = getUnconfirmedOrders(settings.orderAgeHours, alreadySent)
+        if (orderIds.isEmpty()) {
+            LogManager.addLog("ℹ️ AutoTicket: нет заказов для отправки в ТП")
+            return@withContext AutoTicketResult(0, 0, null)
+        }
+        val support = FunPaySupport(this@FunPayRepository)
+        val initOk = try { support.init() } catch (e: Exception) { false }
+        if (!initOk) {
+            val msg = "❌ AutoTicket: не удалось подключиться к support.funpay.com"
+            LogManager.addLog(msg)
+            return@withContext AutoTicketResult(0, 0, msg)
+        }
+        val username = getActiveAccount()?.username ?: ""
+        val chunks = orderIds.chunked(settings.maxOrdersPerTicket)
+        var ticketsCreated = 0
+        val sentIds = mutableListOf<String>()
+        var lastError: String? = null
+        for ((index, chunk) in chunks.withIndex()) {
+            if (ticketsCreated >= remaining) {
+                LogManager.addLog("⛔ AutoTicket: достигнут дневной лимит ($remaining тикетов)")
+                break
+            }
+            if (index > 0) delay(2500)
+            val idsStr = chunk.joinToString(", ")
+            val message = "Здравствуйте! Прошу подтвердить заказы, ожидающие подтверждения: $idsStr. С уважением, $username!"
+            val fieldValues = mapOf(
+                "ticket[fields][1]" to username,
+                "ticket[fields][2]" to idsStr,
+                "ticket[fields][3]" to "2",
+                "ticket[fields][5]" to "201"
+            )
+            try {
+                val ticketId = support.createTicket("1", fieldValues, message)
+                LogManager.addLog("✅ AutoTicket: тикет ${ticketId ?: "(без ID)"} создан для ${chunk.size} заказов ($idsStr)")
+                sentIds.addAll(chunk)
+                ticketsCreated++
+            } catch (e: Exception) {
+                val errMsg = e.message ?: "неизвестная ошибка"
+                when {
+                    errMsg.contains("лимит", ignoreCase = true) ||
+                            errMsg.contains("1 запрос", ignoreCase = true) ||
+                            errMsg.contains("limit", ignoreCase = true) -> {
+                        LogManager.addLog("⛔ AutoTicket: FunPay вернул лимит — «$errMsg»")
+                        LogManager.addLog("ℹ️ AutoTicket: FunPay разрешает только 1 тикет на подтверждение заказа в день")
+                        lastError = errMsg
+                        break
+                    }
+                    errMsg.contains("авторизац", ignoreCase = true) ||
+                            errMsg.contains("401") || errMsg.contains("403") -> {
+                        LogManager.addLog("❌ AutoTicket: ошибка авторизации в ТП — «$errMsg»")
+                        lastError = errMsg
+                        break
+                    }
+                    else -> {
+                        LogManager.addLog("❌ AutoTicket: ошибка создания тикета — «$errMsg»")
+                        lastError = errMsg
+                    }
+                }
+            }
+        }
+        // Всегда сохраняем lastRunAt — иначе цикл повторяется каждые 7 сек при 0 заказов
+        saveAutoTicketSettings(settings.copy(
+            sentOrderIds = (alreadySent + sentIds).toList(),
+            ticketsToday = ticketsToday + ticketsCreated,
+            todayDate = today,
+            lastRunAt = System.currentTimeMillis()
+        ))
+        AutoTicketResult(ticketsCreated, sentIds.size, lastError)
+    }
+
+    suspend fun checkAutoTicketCycle() {
+        val settings = getAutoTicketSettings()
+        if (!settings.enabled) return
+        // Минимальный интервал 1 час, даже если autoIntervalHours = 0
+        val intervalMs = maxOf(settings.autoIntervalHours, 1) * 3600_000L
+        if (System.currentTimeMillis() - settings.lastRunAt < intervalMs) return
+        LogManager.addLog("🤖 AutoTicket: запуск авто-цикла")
+        val result = sendAutoSupportTickets()
+        if (result.ticketsCreated > 0) {
+            LogManager.addLog("✅ AutoTicket авто-цикл: ${result.ticketsCreated} тикетов, ${result.ordersProcessed} заказов")
+        }
+    }
+
+    fun getOrderReminderSettings(): OrderReminderSettings {
+        val json = prefs.getString("order_reminder_settings", null) ?: return OrderReminderSettings()
+        return try { gson.fromJson(json, OrderReminderSettings::class.java) } catch (e: Exception) { OrderReminderSettings() }
+    }
+
+    fun saveOrderReminderSettings(settings: OrderReminderSettings) =
+        prefs.edit().putString("order_reminder_settings", gson.toJson(settings)).apply()
+
+    fun getPendingReminders(): List<PendingOrderReminder> {
+        val json = prefs.getString("pending_order_reminders", "[]") ?: return emptyList()
+        return try {
+            gson.fromJson(json, object : TypeToken<List<PendingOrderReminder>>() {}.type) ?: emptyList()
+        } catch (e: Exception) { emptyList() }
+    }
+
+    fun savePendingReminders(reminders: List<PendingOrderReminder>) =
+        prefs.edit().putString("pending_order_reminders", gson.toJson(reminders)).apply()
+
+    suspend fun checkOrderReminders(chats: List<ChatItem>) {
+        val settings = getOrderReminderSettings()
+        if (!settings.enabled) return
+        val currentTime = System.currentTimeMillis()
+        val newOrderPhrases = listOf("оплатил заказ", "paid for order", "сплатив замовлення")
+        val pendingReminders = getPendingReminders().toMutableList()
+        val existingOrderIds = pendingReminders.map { it.orderId }.toSet()
+        for (chat in chats) {
+            val lastMsgLower = chat.lastMessage.lowercase()
+            if (!newOrderPhrases.any { lastMsgLower.contains(it) }) continue
+            val orderId = Regex("#([A-Za-z0-9]+)").find(chat.lastMessage)?.groupValues?.get(1) ?: continue
+            if (orderId in existingOrderIds) continue
+            if (wasEventProcessed(chat.id, orderId, "reminder_scheduled")) continue
+            val remindAt = currentTime + settings.delayHours * 3600_000L
+            pendingReminders.add(PendingOrderReminder(
+                orderId = orderId, chatId = chat.id, buyerName = chat.username,
+                placedAt = currentTime, remindAt = remindAt
+            ))
+            markEventAsProcessed(chat.id, orderId, "reminder_scheduled")
+            LogManager.addLogDebug("⏰ Reminder: запланировано для #$orderId (${chat.username}) через ${settings.delayHours}ч")
+        }
+        savePendingReminders(pendingReminders)
+        val toRemove = mutableListOf<PendingOrderReminder>()
+        for (reminder in pendingReminders) {
+            if (currentTime < reminder.remindAt) continue
+            if (wasEventProcessed(reminder.chatId, reminder.orderId, "confirm")) {
+                LogManager.addLogDebug("⏭️ Reminder: #${reminder.orderId} уже подтверждён, пропускаем")
+                toRemove.add(reminder)
+                continue
+            }
+            if (wasEventProcessed(reminder.chatId, reminder.orderId, "reminder_sent")) {
+                toRemove.add(reminder)
+                continue
+            }
+            val finalText = settings.message
+                .replace("\$username", reminder.buyerName)
+                .replace("\$order_id", reminder.orderId)
+            LogManager.addLog("⏰ Reminder: отправляем напоминание ${reminder.buyerName} (#${reminder.orderId})")
+            val success = sendMessage(reminder.chatId, finalText)
+            if (success) {
+                markEventAsProcessed(reminder.chatId, reminder.orderId, "reminder_sent")
+                LogManager.addLog("✅ Reminder: напоминание отправлено (#${reminder.orderId})")
+                toRemove.add(reminder)
+            } else {
+                LogManager.addLog("❌ Reminder: не удалось отправить напоминание (#${reminder.orderId})")
+            }
+            delay(1200)
+        }
+        if (toRemove.isNotEmpty()) {
+            savePendingReminders(pendingReminders.filterNot { it in toRemove })
+        }
     }
 }
 

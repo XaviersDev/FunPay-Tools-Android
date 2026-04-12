@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -66,7 +67,8 @@ data class ProfileReview(
     val rating: Int,
     val text: String,
     val date: String,
-    val detail: String?
+    val detail: String?,
+    val sellerReply: String? = null
 )
 
 sealed class ProfileUiState {
@@ -97,10 +99,10 @@ private suspend fun FunPayRepository.resolveUserIdFromNode(nodeId: String): Stri
         val dataName = chatEl?.attr("data-name") ?: ""
         val myUserId = chatEl?.attr("data-user")?.trim() ?: ""
 
-        
+
         val ids = Regex("""\d+""").findAll(dataName).map { it.value }.toList()
 
-        
+
         ids.firstOrNull { it != myUserId && it.isNotEmpty() } ?: ""
     }
 }
@@ -129,7 +131,9 @@ private fun parseReviewsFromHtml(html: String): List<ProfileReview> {
         val text = reviewEl.select(".review-item-text").text().trim()
         val date = reviewEl.select(".review-item-date").text().trim()
         val detail = reviewEl.select(".review-item-detail").text().trim().ifEmpty { null }
-        if (text.isNotEmpty() || date.isNotEmpty()) ProfileReview(ratingNum, text, date, detail) else null
+        val sellerReply = reviewEl.select(".review-item-answer div").text().trim().ifEmpty { null }
+
+        if (text.isNotEmpty() || date.isNotEmpty()) ProfileReview(ratingNum, text, date, detail, sellerReply) else null
     }
 }
 
@@ -163,7 +167,7 @@ suspend fun FunPayRepository.getUserProfile(userId: String): FunPayUserProfile {
         val registrationDate = doc.select(".param-item .text-nowrap").firstOrNull()
             ?.text()?.trim()?.lines()?.firstOrNull()?.trim()
 
-        
+
         val ratingValue = doc.select(".rating-value .big").first()?.text()?.trim()?.ifEmpty { null }
         val reviewCountRaw = doc.select(".rating-full-count a").text().trim()
         val reviewCountShort = reviewCountRaw.replace("\n", " ").replace("\\s+".toRegex(), " ").ifEmpty { null }
@@ -320,11 +324,11 @@ private fun ProfileContent(
     var reviews by remember { mutableStateOf(profile.reviews) }
     var currentPage by remember { mutableStateOf(1) }
     var isLoadingMore by remember { mutableStateOf(false) }
-    var noMoreReviews by remember { mutableStateOf(false) }
+    var noMoreReviews by remember { mutableStateOf(profile.reviews.size < 20) }
 
     val tabs = buildList {
         add("Предложения")
-        add("Отзывы (${reviews.size}${if (!noMoreReviews && reviews.size >= 25) "+" else ""})")
+        add("Отзывы (${reviews.size}${if (!noMoreReviews) "+" else ""})")
     }
 
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -374,11 +378,10 @@ private fun ProfileContent(
                         }
                     }
                 } else {
-                    items(reviews, key = { "review_${it.date}_${it.text.take(20)}" }) { review ->
+                    itemsIndexed(reviews, key = { index, review -> "review_${index}_${review.date}_${review.text.take(20)}" }) { _, review ->
                         ReviewCard(review, theme)
                     }
 
-                    
                     if (!noMoreReviews) {
                         item {
                             Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
@@ -396,12 +399,14 @@ private fun ProfileContent(
                                                 try {
                                                     val nextPage = currentPage + 1
                                                     val newReviews = repository.fetchReviewsPage(profile.userId, nextPage)
-                                                    if (newReviews.isEmpty()) {
+
+                                                    if (newReviews.isEmpty() || newReviews.size < 20) {
                                                         noMoreReviews = true
-                                                    } else {
+                                                    }
+
+                                                    if (newReviews.isNotEmpty()) {
                                                         reviews = reviews + newReviews
                                                         currentPage = nextPage
-                                                        if (newReviews.size < 25) noMoreReviews = true
                                                     }
                                                 } catch (_: Exception) {
                                                     noMoreReviews = true
@@ -475,7 +480,7 @@ private fun ProfileHeader(
                 Spacer(Modifier.height(16.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (profile.ratingValue != null) {
-                        
+
                         StatChip(Icons.Default.Star, "${profile.ratingValue}/5", "Рейтинг", theme, Color(0xFFFFC107), Modifier.weight(1f))
                     }
                     if (profile.reviewCountShort != null) {
@@ -580,6 +585,21 @@ private fun ReviewCard(review: ProfileReview, theme: AppTheme) {
             if (review.text.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
                 Text(review.text, fontSize = 13.sp, color = ThemeManager.parseColor(theme.textPrimaryColor), lineHeight = 18.sp)
+            }
+
+            if (review.sellerReply != null) {
+                Spacer(Modifier.height(10.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.15f)),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text("Ответ продавца:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.accentColor))
+                        Spacer(Modifier.height(4.dp))
+                        Text(review.sellerReply, fontSize = 12.sp, color = ThemeManager.parseColor(theme.textPrimaryColor), lineHeight = 16.sp)
+                    }
+                }
             }
         }
     }

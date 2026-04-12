@@ -97,6 +97,8 @@ class FunPayService : Service() {
                             repository.checkAutoRefund(chats)
                             repository.checkReviewReplies(chats)
                             repository.runDumperCycle()
+                            repository.checkOrderReminders(chats)
+                            repository.checkAutoTicketCycle()
                         }
 
                         if (repository.getSetting("push_notifications")) {

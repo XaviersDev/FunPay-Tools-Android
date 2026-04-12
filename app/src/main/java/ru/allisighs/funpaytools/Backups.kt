@@ -125,7 +125,13 @@ data class FullBackupSettings(
     val busyMode: BusyModeSettings = BusyModeSettings(),
 
     @SerializedName("dumper_settings")
-    val dumperSettings: DumperSettings = DumperSettings()
+    val dumperSettings: DumperSettings = DumperSettings(),
+
+    @SerializedName("auto_ticket_settings")
+    val autoTicketSettings: AutoTicketSettings = AutoTicketSettings(),
+
+    @SerializedName("order_reminder_settings")
+    val orderReminderSettings: OrderReminderSettings = OrderReminderSettings()
 )
 
 class BackupManager(private val context: Context) {
@@ -155,7 +161,9 @@ class BackupManager(private val context: Context) {
                 chatLabels = ChatFolderManager.getLabels(context),
                 chatLabelAssignments = ChatFolderManager.getChatLabels(context),
                 busyMode = ChatFolderManager.getBusyMode(context),
-                dumperSettings = repository.getDumperSettings()
+                dumperSettings = repository.getDumperSettings(),
+                autoTicketSettings = repository.getAutoTicketSettings(),
+                orderReminderSettings = repository.getOrderReminderSettings()
             )
         )
     }
@@ -210,6 +218,8 @@ class BackupManager(private val context: Context) {
             ChatFolderManager.saveChatLabels(context, settings.chatLabelAssignments)
             ChatFolderManager.saveBusyMode(context, settings.busyMode)
             repository.saveDumperSettings(settings.dumperSettings)
+            repository.saveAutoTicketSettings(settings.autoTicketSettings)
+            repository.saveOrderReminderSettings(settings.orderReminderSettings)
 
             Result.success(Unit)
         } catch (e: Exception) {

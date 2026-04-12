@@ -70,3 +70,36 @@ data class DumperSettings(
     @SerializedName("enabled") val enabled: Boolean = false,
     @SerializedName("lots") val lots: List<DumperLotConfig> = emptyList()
 )
+
+data class AutoTicketSettings(
+    @SerializedName("enabled") val enabled: Boolean = false,
+    @SerializedName("order_age_hours") val orderAgeHours: Int = 24,
+    @SerializedName("max_orders_per_ticket") val maxOrdersPerTicket: Int = 10,
+    @SerializedName("daily_limit") val dailyLimit: Int = 3,
+    @SerializedName("auto_interval_hours") val autoIntervalHours: Int = 12,
+    @SerializedName("sent_order_ids") val sentOrderIds: List<String> = emptyList(),
+    @SerializedName("tickets_today") val ticketsToday: Int = 0,
+    @SerializedName("today_date") val todayDate: String = "",
+    @SerializedName("last_run_at") val lastRunAt: Long = 0L
+)
+
+data class AutoTicketResult(
+    val ticketsCreated: Int,
+    val ordersProcessed: Int,
+    val errorMessage: String?
+)
+
+data class OrderReminderSettings(
+    @SerializedName("enabled") val enabled: Boolean = false,
+    @SerializedName("delay_hours") val delayHours: Int = 4,
+    @SerializedName("message") val message: String =
+        "⚠️ \$username, Вы забыли подтвердить заказ.\n\n⚡ Заказ выполнен. Пожалуйста, зайдите в раздел «Покупки», выберите его в списке и нажмите кнопку «Подтвердить выполнение заказа».\n\n⭐ Спасибо."
+)
+
+data class PendingOrderReminder(
+    @SerializedName("order_id") val orderId: String,
+    @SerializedName("chat_id") val chatId: String,
+    @SerializedName("buyer_name") val buyerName: String,
+    @SerializedName("placed_at") val placedAt: Long,
+    @SerializedName("remind_at") val remindAt: Long
+)

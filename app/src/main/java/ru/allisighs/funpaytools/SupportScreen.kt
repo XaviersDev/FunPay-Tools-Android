@@ -10,20 +10,20 @@
 
 package ru.allisighs.funpaytools
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
@@ -40,6 +41,14 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import org.jsoup.Jsoup as JsoupParser
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 
 @Composable
 fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBack: () -> Unit) {
@@ -51,6 +60,7 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
     var selectedTicket by remember { mutableStateOf<TicketDetails?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showNotifDialog by remember { mutableStateOf(false) }
     var autoRefresh by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -69,8 +79,8 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
         }
 
         when (statusFilter) {
-            "active" -> result = result.filter { it.status == "Открыт" }
-            "solved" -> result = result.filter { it.status == "Закрыт" }
+            "active" -> result = result.filter { it.status == "Открыт" || it.status == "В ожидании" }
+            "solved" -> result = result.filter { it.status == "Закрыт" || it.status == "Решена" }
         }
 
         when (sortOrder) {
@@ -107,8 +117,13 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
         }
     }
 
+    BackHandler {
+        if (selectedTicket != null) selectedTicket = null else onBack()
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(AppGradient)) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // Топбар: только стрелка назад + контекстный заголовок + колокол
             Surface(
                 color = ThemeManager.parseColor(currentTheme.surfaceColor),
                 shadowElevation = 4.dp
@@ -116,15 +131,11 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = {
-                        if (selectedTicket != null) {
-                            selectedTicket = null
-                        } else {
-                            onBack()
-                        }
+                        if (selectedTicket != null) selectedTicket = null else onBack()
                     }) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
@@ -132,35 +143,18 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
                             tint = ThemeManager.parseColor(currentTheme.textPrimaryColor)
                         )
                     }
-
                     Text(
-                        "Тех. поддержка",
+                        text = if (selectedTicket != null) "Заявка #${selectedTicket!!.id}" else "Заявки",
                         modifier = Modifier.weight(1f),
-                        fontSize = 20.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = ThemeManager.parseColor(currentTheme.textPrimaryColor)
                     )
-
                     if (selectedTicket == null) {
-                        IconButton(onClick = {
-                            scope.launch {
-                                isLoading = true
-                                allTickets = support.getTicketsList()
-                                applyFilters()
-                                isLoading = false
-                            }
-                        }) {
+                        IconButton(onClick = { showNotifDialog = true }) {
                             Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = "Обновить",
-                                tint = ThemeManager.parseColor(currentTheme.accentColor)
-                            )
-                        }
-
-                        IconButton(onClick = { showCreateDialog = true }) {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = "Создать заявку",
+                                Icons.Default.Notifications,
+                                contentDescription = "Уведомления",
                                 tint = ThemeManager.parseColor(currentTheme.accentColor)
                             )
                         }
@@ -185,23 +179,55 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
                     }
                 )
             } else {
-                TicketsListView(
-                    tickets = filteredTickets,
-                    theme = currentTheme,
-                    searchQuery = searchQuery,
-                    onSearchChange = { searchQuery = it },
-                    statusFilter = statusFilter,
-                    onStatusFilterChange = { statusFilter = it },
-                    sortOrder = sortOrder,
-                    onSortOrderChange = { sortOrder = it },
-                    onTicketClick = { ticket ->
-                        scope.launch {
-                            val details = support.getTicketDetails(ticket.id)
-                            
-                            selectedTicket = details?.copy(title = ticket.title)
+                Box(modifier = Modifier.fillMaxSize()) {
+                    TicketsListView(
+                        tickets = filteredTickets,
+                        theme = currentTheme,
+                        searchQuery = searchQuery,
+                        onSearchChange = { searchQuery = it },
+                        statusFilter = statusFilter,
+                        onStatusFilterChange = { statusFilter = it },
+                        sortOrder = sortOrder,
+                        onSortOrderChange = { sortOrder = it },
+                        onTicketClick = { ticket ->
+                            scope.launch {
+                                val details = support.getTicketDetails(ticket.id)
+                                selectedTicket = details?.copy(title = ticket.title)
+                            }
+                        }
+                    )
+                    // FABs — обновить и создать в правом нижнем углу
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(16.dp)
+                            .navigationBarsPadding(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        SmallFloatingActionButton(
+                            onClick = {
+                                scope.launch {
+                                    isLoading = true
+                                    allTickets = support.getTicketsList()
+                                    applyFilters()
+                                    isLoading = false
+                                }
+                            },
+                            containerColor = ThemeManager.parseColor(currentTheme.surfaceColor),
+                            contentColor = ThemeManager.parseColor(currentTheme.accentColor)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Обновить")
+                        }
+                        FloatingActionButton(
+                            onClick = { showCreateDialog = true },
+                            containerColor = ThemeManager.parseColor(currentTheme.accentColor),
+                            contentColor = Color.White
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Создать заявку")
                         }
                     }
-                )
+                }
             }
         }
 
@@ -228,9 +254,15 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
                 },
                 errorMessage = errorMessage,
                 onErrorDismiss = { errorMessage = null },
-                onError = { error ->
-                    errorMessage = error
-                }
+                onError = { error -> errorMessage = error }
+            )
+        }
+
+        if (showNotifDialog) {
+            NotificationSettingsDialog(
+                support = support,
+                theme = currentTheme,
+                onDismiss = { showNotifDialog = false }
             )
         }
     }
@@ -463,16 +495,24 @@ fun TicketCard(ticket: SupportTicket, theme: AppTheme, onClick: () -> Unit) {
                     fontWeight = FontWeight.Bold
                 )
 
-                Text(
-                    ticket.status,
-                    fontSize = 12.sp,
-                    color = when (ticket.status) {
-                        "Открыт" -> Color(0xFFFF5252)
-                        "Закрыт" -> Color(0xFF00E676)
-                        else -> ThemeManager.parseColor(theme.textSecondaryColor)
-                    },
-                    fontWeight = FontWeight.Medium
-                )
+                val sc = when (ticket.status) {
+                    "Открыт" -> Color(0xFF4CAF50)
+                    "В ожидании" -> Color(0xFFFFC107)
+                    "Решена" -> Color(0xFF4CAF50)
+                    else -> ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f)
+                }
+                Surface(
+                    color = sc.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        ticket.status,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        fontSize = 11.sp,
+                        color = sc,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -503,20 +543,70 @@ fun TicketDetailsView(
     onUpdate: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    var newMessage by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
     var showInfoPanel by remember { mutableStateOf(false) }
     var isClosing by remember { mutableStateOf(false) }
+    var isUploadingAttachment by remember { mutableStateOf(false) }
+    var actionError by remember { mutableStateOf<String?>(null) } // Текст ошибки от сервера
+    var pendingAttachmentIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    val fileLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                isUploadingAttachment = true
+                actionError = null
+                try {
+                    val stream = context.contentResolver.openInputStream(uri)
+                    val bytes = stream?.readBytes()
+                    stream?.close()
+                    val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+                    val fileName = context.contentResolver.query(
+                        uri,
+                        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                        null, null, null
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(0) else null
+                    } ?: run {
+                        val ext = android.webkit.MimeTypeMap.getSingleton()
+                            .getExtensionFromMimeType(mimeType) ?: "bin"
+                        "file.$ext"
+                    }
+                    if (bytes != null) {
+                        val id = support.uploadAttachment(ticket.id, fileName, mimeType, bytes)
+                        if (id != null) pendingAttachmentIds = pendingAttachmentIds + id
+                    }
+                } catch (e: Exception) {
+                    actionError = "Вложение: ${e.message}"
+                }
+                isUploadingAttachment = false
+            }
+        }
+    }
+
+    // Окно сообщения об ошибке
+    if (actionError != null) {
+        AlertDialog(
+            onDismissRequest = { actionError = null },
+            title = { Text("Ошибка", color = Color.Red, fontWeight = FontWeight.Bold) },
+            text = { Text(actionError!!, color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+            confirmButton = {
+                TextButton(onClick = { actionError = null }) {
+                    Text("Понятно", color = ThemeManager.parseColor(theme.accentColor))
+                }
+            },
+            containerColor = ThemeManager.parseColor(theme.surfaceColor),
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-        ) {
-            
+        Column(modifier = Modifier.fillMaxSize().imePadding()) {
+
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
                 ),
@@ -540,28 +630,22 @@ fun TicketDetailsView(
                                     fontWeight = FontWeight.Bold
                                 )
 
-                                Surface(
-                                    color = when (ticket.status) {
-                                        "Открыт" -> Color(0xFFFF5252)
-                                        else -> Color(0xFF00E676)
-                                    }.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
+                                val sc = when (ticket.status) {
+                                    "Открыт" -> Color(0xFF4CAF50)
+                                    "В ожидании" -> Color(0xFFFFC107)
+                                    "Решена" -> Color(0xFF4CAF50)
+                                    "Закрыт" -> ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.6f)
+                                    else -> ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.6f)
+                                }
+                                Surface(color = sc.copy(alpha = 0.15f), shape = RoundedCornerShape(6.dp)) {
                                     Text(
                                         ticket.status,
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                        fontSize = 12.sp,
-                                        color = when (ticket.status) {
-                                            "Открыт" -> Color(0xFFFF5252)
-                                            else -> Color(0xFF00E676)
-                                        },
-                                        fontWeight = FontWeight.Medium
+                                        fontSize = 12.sp, color = sc, fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             }
-
                             Spacer(modifier = Modifier.height(8.dp))
-
                             Text(
                                 ticket.title,
                                 fontSize = 18.sp,
@@ -570,48 +654,39 @@ fun TicketDetailsView(
                                 lineHeight = 24.sp
                             )
                         }
-
-                        IconButton(
-                            onClick = { showInfoPanel = !showInfoPanel },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                contentColor = ThemeManager.parseColor(theme.accentColor)
-                            )
-                        ) {
-                            Icon(
-                                Icons.Default.Info,
-                                contentDescription = if (showInfoPanel) "Скрыть инфо" else "Показать инфо"
-                            )
+                        IconButton(onClick = { showInfoPanel = !showInfoPanel }) {
+                            Icon(Icons.Default.Info, contentDescription = null, tint = ThemeManager.parseColor(theme.accentColor))
                         }
                     }
 
-                    if (ticket.status == "Открыт") {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(
+                    if (ticket.canReply) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
                             onClick = {
                                 scope.launch {
                                     isClosing = true
-                                    val success = support.closeTicket(ticket.id)
-                                    if (success) onUpdate()
+                                    try {
+                                        if (support.closeTicket(ticket.id)) onUpdate()
+                                    } catch (e: Exception) { actionError = e.message }
                                     isClosing = false
                                 }
                             },
                             enabled = !isClosing,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFFFF5252)
-                            ),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF5350)),
+                            border = BorderStroke(1.dp, Color(0xFFEF5350).copy(alpha = 0.6f)),
                             shape = RoundedCornerShape(8.dp)
                         ) {
+                            Icon(Icons.Default.Close, null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(if (isClosing) "Закрытие..." else "Закрыть заявку")
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            
             LazyColumn(
                 modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(ticket.comments) { comment ->
@@ -619,63 +694,35 @@ fun TicketDetailsView(
                 }
             }
 
-            
-            if (ticket.status == "Открыт") {
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = newMessage,
-                        onValueChange = { newMessage = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = {
-                            Text(
-                                "Написать ответ...",
-                                color = ThemeManager.parseColor(theme.textSecondaryColor)
-                            )
-                        },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                            unfocusedBorderColor = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.3f),
-                            cursorColor = ThemeManager.parseColor(theme.accentColor)
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        enabled = !isSending
-                    )
-
-                    Button(
-                        onClick = {
-                            if (newMessage.isNotBlank()) {
-                                scope.launch {
-                                    isSending = true
-                                    val success = support.addComment(ticket.id, newMessage)
-                                    if (success) {
-                                        newMessage = ""
-                                        onUpdate()
-                                    }
-                                    isSending = false
+            if (ticket.canReply) {
+                MessageInputWithFormatting(
+                    theme = theme,
+                    isSending = isSending,
+                    isUploadingAttachment = isUploadingAttachment,
+                    pendingAttachmentCount = pendingAttachmentIds.size,
+                    onSend = { text ->
+                        scope.launch {
+                            isSending = true
+                            actionError = null
+                            try {
+                                val ids = pendingAttachmentIds
+                                if (support.addComment(ticket.id, text, ids)) {
+                                    pendingAttachmentIds = emptyList()
+                                    onUpdate()
                                 }
+                            } catch (e: Exception) {
+                                // ПОЙМАЛИ ОШИБКУ ОТ FunPay
+                                actionError = e.message
+                            } finally {
+                                isSending = false
                             }
-                        },
-                        enabled = newMessage.isNotBlank() && !isSending,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ThemeManager.parseColor(theme.accentColor)
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(if (isSending) "..." else "→", fontSize = 20.sp)
-                    }
-                }
+                        }
+                    },
+                    onAttach = { fileLauncher.launch("*/*") }
+                )
             }
         }
 
-        
         if (showInfoPanel) {
             Box(
                 modifier = Modifier
@@ -688,74 +735,25 @@ fun TicketDetailsView(
                         .align(Alignment.TopEnd)
                         .padding(16.dp)
                         .width(280.dp)
-                        .clickable(enabled = false) { }, 
-                    colors = CardDefaults.cardColors(
-                        containerColor = ThemeManager.parseColor(theme.surfaceColor)
-                    ),
+                        .clickable(enabled = false) { },
+                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
                     shape = RoundedCornerShape(12.dp),
                     elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "Информация",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = ThemeManager.parseColor(theme.textPrimaryColor)
-                            )
-
-                            IconButton(
-                                onClick = { showInfoPanel = false },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Info,
-                                    contentDescription = "Закрыть",
-                                    tint = ThemeManager.parseColor(theme.accentColor),
-                                    modifier = Modifier.size(20.dp)
-                                )
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Заявка #${ticket.id}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.weight(1f))
+                            IconButton(onClick = { showInfoPanel = false }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(18.dp))
                             }
                         }
-
-                        HorizontalDivider(
-                            color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.2f)
-                        )
-
-                        
-                        CompactInfoRow(
-                            label = "ID",
-                            value = "#${ticket.id}",
-                            theme = theme,
-                            highlighted = true
-                        )
-
-                        
-                        CompactInfoRow(
-                            label = "Комментариев",
-                            value = ticket.comments.size.toString(),
-                            theme = theme
-                        )
-
-                        
+                        HorizontalDivider(color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.15f))
+                        if (ticket.createdAt.isNotEmpty()) CompactInfoRow("Создана", ticket.createdAt, theme)
+                        if (ticket.responsible.isNotEmpty()) CompactInfoRow("Ответственный", ticket.responsible, theme)
+                        CompactInfoRow("Комментариев", ticket.comments.size.toString(), theme)
                         if (ticket.additionalFields.isNotEmpty()) {
-                            HorizontalDivider(
-                                color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.2f)
-                            )
-
-                            ticket.additionalFields.forEach { (key, value) ->
-                                CompactInfoRow(
-                                    label = key,
-                                    value = value,
-                                    theme = theme
-                                )
-                            }
+                            HorizontalDivider(color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.15f))
+                            ticket.additionalFields.forEach { (key, value) -> CompactInfoRow(key, value, theme) }
                         }
                     }
                 }
@@ -768,7 +766,7 @@ fun TicketDetailsView(
 fun CompactInfoRow(label: String, value: String, theme: AppTheme, highlighted: Boolean = false) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.Top
     ) {
         Text(
@@ -776,7 +774,8 @@ fun CompactInfoRow(label: String, value: String, theme: AppTheme, highlighted: B
             fontSize = 11.sp,
             color = ThemeManager.parseColor(theme.textSecondaryColor),
             fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(0.4f)
+            modifier = Modifier.widthIn(min = 60.dp, max = 100.dp),
+            softWrap = true
         )
         SelectionContainer {
             Text(
@@ -796,11 +795,40 @@ fun CompactInfoRow(label: String, value: String, theme: AppTheme, highlighted: B
 @Composable
 fun CommentBubble(comment: TicketComment, theme: AppTheme) {
     val uriHandler = LocalUriHandler.current
+    val textColor = if (comment.isMyComment) Color.White else ThemeManager.parseColor(theme.textPrimaryColor)
+    val secondaryColor = if (comment.isMyComment) Color.White.copy(alpha = 0.7f) else ThemeManager.parseColor(theme.textSecondaryColor)
+
+    val initials = comment.author.trim().split(" ").take(2).joinToString("") { it.take(1) }.uppercase().ifEmpty { "?" }
+    val avatarColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.7f)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (comment.isMyComment) Arrangement.End else Arrangement.Start
+        horizontalArrangement = if (comment.isMyComment) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom
     ) {
+        if (!comment.isMyComment) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .background(avatarColor, androidx.compose.foundation.shape.CircleShape)
+                    .clip(androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                if (comment.avatarUrl.isNotEmpty()) {
+                    coil.compose.AsyncImage(
+                        model = comment.avatarUrl,
+                        contentDescription = comment.author,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(androidx.compose.foundation.shape.CircleShape),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                } else {
+                    Text(initials, fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(modifier = Modifier.width(6.dp))
+        }
         Card(
             modifier = Modifier.widthIn(max = 400.dp),
             colors = CardDefaults.cardColors(
@@ -829,62 +857,314 @@ fun CommentBubble(comment: TicketComment, theme: AppTheme) {
 
                 SelectionContainer {
                     val annotatedText = buildAnnotatedString {
-                        val urlPattern = Regex("https?://[^\\s]+")
-                        val matches = urlPattern.findAll(comment.text)
-                        var lastIndex = 0
+                        // Нормализуем HTML: убираем лишние переносы перед парсингом
+                        val rawHtml = comment.htmlText.ifEmpty { comment.text }
+                        val htmlSource = rawHtml
+                            // <p><br></p> и <p></p> — пустые параграфы
+                            .replace(Regex("<p>\\s*(<br\\s*/?>)?\\s*</p>"), "")
+                            // Пробельные символы между тегами — whitespace TextNodes
+                            .replace(Regex(">\\s+<"), "><")
+                            // Несколько br подряд → один
+                            .replace(Regex("(<br\\s*/?>){2,}"), "<br>")
+                            .trim()
+                        val linkColor = if (comment.isMyComment) Color.White else ThemeManager.parseColor(theme.accentColor)
 
-                        matches.forEach { match ->
-                            append(comment.text.substring(lastIndex, match.range.first))
-
-                            pushStringAnnotation(
-                                tag = "URL",
-                                annotation = match.value
-                            )
-                            withStyle(
-                                style = SpanStyle(
-                                    color = if (comment.isMyComment) Color.White else ThemeManager.parseColor(theme.accentColor),
-                                    textDecoration = TextDecoration.Underline
-                                )
-                            ) {
-                                append(match.value)
+                        fun appendNode(node: org.jsoup.nodes.Node, bold: Boolean = false, italic: Boolean = false, underline: Boolean = false) {
+                            when (node) {
+                                is org.jsoup.nodes.TextNode -> {
+                                    val txt = node.wholeText
+                                    if (txt.isBlank()) return
+                                    withStyle(SpanStyle(
+                                        color = textColor,
+                                        fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+                                        fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
+                                        textDecoration = if (underline) TextDecoration.Underline else null
+                                    )) { append(txt) }
+                                }
+                                is org.jsoup.nodes.Element -> {
+                                    val tag = node.tagName().lowercase()
+                                    val nb = bold || tag in listOf("b", "strong")
+                                    val ni = italic || tag in listOf("i", "em")
+                                    val nu = underline || tag == "u"
+                                    when (tag) {
+                                        "br" -> append("\n")
+                                        "p", "div" -> {
+                                            // Только если перед нами уже что-то есть — разделяем одним переносом
+                                            if (length > 0 && toString().last() != '\n') append("\n")
+                                            node.childNodes().forEach { appendNode(it, nb, ni, nu) }
+                                        }
+                                        "li" -> {
+                                            append("• ")
+                                            node.childNodes().forEach { appendNode(it, nb, ni, nu) }
+                                            if (length > 0 && toString().last() != '\n') append("\n")
+                                        }
+                                        "a" -> {
+                                            val href = node.attr("abs:href").ifEmpty { node.attr("href") }
+                                            if (href.isNotEmpty()) {
+                                                pushStringAnnotation("URL", href)
+                                                withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                                                    node.childNodes().forEach { appendNode(it, nb, ni, nu) }
+                                                }
+                                                pop()
+                                            } else node.childNodes().forEach { appendNode(it, nb, ni, nu) }
+                                        }
+                                        else -> node.childNodes().forEach { appendNode(it, nb, ni, nu) }
+                                    }
+                                }
                             }
-                            pop()
-
-                            lastIndex = match.range.last + 1
                         }
 
-                        append(comment.text.substring(lastIndex))
+                        JsoupParser.parseBodyFragment(htmlSource).body().childNodes().forEach { appendNode(it) }
                     }
-
                     Text(
                         text = annotatedText,
                         fontSize = 14.sp,
-                        color = if (comment.isMyComment)
-                            Color.White
-                        else
-                            ThemeManager.parseColor(theme.textPrimaryColor),
+                        color = textColor,
+                        lineHeight = 20.sp,
                         modifier = Modifier.clickable {
-                            annotatedText.getStringAnnotations(tag = "URL", start = 0, end = annotatedText.length)
-                                .firstOrNull()?.let { annotation ->
-                                    uriHandler.openUri(annotation.item)
-                                }
+                            annotatedText.getStringAnnotations("URL", 0, annotatedText.length)
+                                .firstOrNull()?.let { uriHandler.openUri(it.item) }
                         }
                     )
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                if (comment.attachments.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    comment.attachments.forEach { att ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { uriHandler.openUri(att.url) }
+                                .background(Color.Black.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                if (att.isImage) Icons.Default.Image else Icons.Default.AttachFile,
+                                contentDescription = null,
+                                tint = secondaryColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                att.name,
+                                fontSize = 12.sp,
+                                color = secondaryColor,
+                                textDecoration = TextDecoration.Underline,
+                                maxLines = 1
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                }
 
-                Text(
-                    comment.timestamp,
-                    fontSize = 10.sp,
-                    color = if (comment.isMyComment)
-                        Color.White.copy(0.7f)
-                    else
-                        ThemeManager.parseColor(theme.textSecondaryColor)
-                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(comment.timestamp, fontSize = 10.sp, color = secondaryColor)
             }
         }
     }
+}
+
+@Composable
+fun MessageInputWithFormatting(
+    theme: AppTheme,
+    isSending: Boolean,
+    isUploadingAttachment: Boolean = false,
+    pendingAttachmentCount: Int = 0,
+    onSend: (String) -> Unit,
+    onAttach: (() -> Unit)? = null
+) {
+    var text by remember { mutableStateOf("") }
+    val accentColor = ThemeManager.parseColor(theme.accentColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val hasText = text.isNotBlank()
+    val canSend = (hasText || pendingAttachmentCount > 0) && !isSending && !isUploadingAttachment
+
+    Column(modifier = Modifier.padding(bottom = 8.dp)) {
+        // Индикатор загруженных вложений
+        if (pendingAttachmentCount > 0 || isUploadingAttachment) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (isUploadingAttachment) {
+                    CircularProgressIndicator(modifier = Modifier.size(13.dp), strokeWidth = 2.dp, color = accentColor)
+                    Text("Загрузка...", fontSize = 12.sp, color = textSecondary)
+                } else {
+                    Icon(Icons.Default.AttachFile, null, tint = accentColor, modifier = Modifier.size(13.dp))
+                    Text("$pendingAttachmentCount файл(а) прикреплено", fontSize = 12.sp, color = accentColor)
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Кнопка вложений
+            if (onAttach != null) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .align(Alignment.Bottom)
+                        .clip(CircleShape)
+                        .clickable(enabled = !isSending && !isUploadingAttachment, onClick = onAttach),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.AttachFile,
+                        contentDescription = "Прикрепить",
+                        tint = textSecondary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+
+            // Поле ввода в пузыре
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                enabled = !isSending,
+                placeholder = { Text("Написать ответ...", color = textSecondary.copy(alpha = 0.6f), fontSize = 15.sp) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = textPrimary,
+                    unfocusedTextColor = textPrimary,
+                    cursorColor = accentColor,
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedContainerColor = surface,
+                    unfocusedContainerColor = surface,
+                    disabledBorderColor = Color.Transparent,
+                    disabledContainerColor = surface
+                ),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp),
+                shape = RoundedCornerShape(24.dp),
+                maxLines = 6,
+                modifier = Modifier.weight(1f)
+            )
+
+            // Кнопка отправки — иконка в круге
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .align(Alignment.Bottom)
+                    .clip(CircleShape)
+                    .background(if (canSend) accentColor else textSecondary.copy(alpha = 0.25f))
+                    .clickable(enabled = canSend) {
+                        onSend(text.trim())
+                        text = ""
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (isSending) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Send,
+                        contentDescription = "Отправить",
+                        tint = if (canSend) Color.White else textSecondary.copy(alpha = 0.5f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        } // end Row
+    } // end Column
+}
+
+@Composable
+fun NotificationSettingsDialog(support: FunPaySupport, theme: AppTheme, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(true) }
+    var isSaving by remember { mutableStateOf(false) }
+    var emailEnabled by remember { mutableStateOf(false) }
+    var csrfToken by remember { mutableStateOf<String?>(null) }
+    var statusMsg by remember { mutableStateOf<Pair<Boolean, String>?>(null) } // true=ok, false=err
+
+    LaunchedEffect(Unit) {
+        val (checked, token) = support.getNotificationSettings()
+        emailEnabled = checked
+        csrfToken = token
+        isLoading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ThemeManager.parseColor(theme.surfaceColor),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Notifications, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(22.dp))
+                Text("Уведомления", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    color = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.08f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Row(modifier = Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+                        Icon(Icons.Default.Email, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(15.dp))
+                        Text(
+                            "Уведомления отправляются на электронную почту, а не в это приложение.",
+                            fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 17.sp
+                        )
+                    }
+                }
+                if (isLoading) {
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp), color = ThemeManager.parseColor(theme.accentColor), strokeWidth = 2.dp)
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { emailEnabled = !emailEnabled }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Checkbox(
+                            checked = emailEnabled,
+                            onCheckedChange = { emailEnabled = it },
+                            colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                        )
+                        Text("Получен ответ на заявку", fontSize = 14.sp, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                    }
+                }
+                statusMsg?.let { (ok, msg) ->
+                    Text(msg, fontSize = 12.sp, color = if (ok) Color(0xFF4CAF50) else Color(0xFFEF5350))
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val token = csrfToken ?: return@Button
+                    scope.launch {
+                        isSaving = true
+                        statusMsg = null
+                        val ok = support.saveNotificationSettings(emailEnabled, token)
+                        statusMsg = if (ok) Pair(true, "✓ Настройки сохранены") else Pair(false, "Не удалось сохранить")
+                        isSaving = false
+                    }
+                },
+                enabled = !isLoading && !isSaving && csrfToken != null,
+                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+            ) { Text(if (isSaving) "Сохранение..." else "Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Закрыть", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+        }
+    )
 }
 
 @Composable
@@ -918,7 +1198,7 @@ fun CreateTicketDialog(
             isLoadingFields = true
             val fields = support.getCategoryFields(selectedCategory!!.id)
             categoryFields = fields
-            
+
             fieldValues = fields.associate { it.id to it.defaultValue }
             isLoadingFields = false
         }
@@ -937,7 +1217,7 @@ fun CreateTicketDialog(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                
+
                 errorMessage?.let { error ->
                     Card(
                         modifier = Modifier.fillMaxWidth(),
