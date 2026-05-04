@@ -39,6 +39,23 @@ class FunPayService : Service() {
     override fun onCreate() {
         super.onCreate()
         repository = FunPayRepository(this)
+
+        
+        
+        
+        
+        val prefs = getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("app_fully_disabled", false)) {
+            LogManager.addLog("⏸ SERVICE: Приложение выключено полностью — сервис не запускается")
+            try {
+                
+                getSystemService(NotificationManager::class.java)?.cancel(1)
+            } catch (_: Exception) {}
+            
+            stopSelf()
+            return
+        }
+
         WatchdogWorker.start(this)
         try {
             startService(Intent(this, WatchdogDaemon::class.java))
@@ -71,6 +88,7 @@ class FunPayService : Service() {
             LogManager.addLog("🛠️ SERVICE: Цикл started")
             var lastCleanup = 0L
             var lastWidgetUpdate = 0L
+            var lastOnlinePing = 0L
             while (isActive) {
                 if (!isNetworkAvailable(this@FunPayService)) {
                     LogManager.addLogDebug("📶 Нет интернета. Сплю...")
@@ -81,7 +99,39 @@ class FunPayService : Service() {
                 if (repository.hasAuth()) {
                     try {
                         val chats = repository.getChats()
-                        val busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
+                        var busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
+
+                        
+                        
+                        
+                        
+                        val activeSlot = try {
+                            ChatFolderManager.getActiveScheduleSlot(this@FunPayService)
+                        } catch (_: Exception) { null }
+
+                        if (activeSlot != null && !busySettings.enabled) {
+                            
+                            
+                            
+                            val cal = java.util.Calendar.getInstance()
+                            val dayStamp = cal.get(java.util.Calendar.YEAR) * 10000L +
+                                    cal.get(java.util.Calendar.MONTH) * 100L +
+                                    cal.get(java.util.Calendar.DAY_OF_MONTH)
+                            val slotStamp = (activeSlot.id.hashCode().toLong() and 0xFFFFFFFFL)
+                            val scheduledEnabledAt = dayStamp * 1_000_000_000L + slotStamp
+
+                            busySettings = busySettings.copy(
+                                enabled = true,
+                                enabledAt = scheduledEnabledAt,
+                                message = if (activeSlot.overrideMessage && activeSlot.message.isNotBlank())
+                                    activeSlot.message
+                                else busySettings.message,
+                                cooldownMinutes = if (activeSlot.overrideCooldown)
+                                    activeSlot.cooldownMinutes
+                                else busySettings.cooldownMinutes
+                            )
+                            LogManager.addLogDebug("📅 Расписание активно: '${activeSlot.name}'")
+                        }
 
                         if (busySettings.enabled) {
                             repository.checkBusyModeReplies(chats, busySettings)
@@ -101,8 +151,25 @@ class FunPayService : Service() {
                             repository.checkAutoTicketCycle()
                         }
 
+                        
+                        
+                        
+                        try {
+                            ConcurentManager.tick(this@FunPayService, repository)
+                        } catch (e: Exception) {
+                            LogManager.addLogDebug("⚠️ Concurent tick error: ${e.message}")
+                        }
+
                         if (repository.getSetting("push_notifications")) {
                             checkPushNotifications(chats)
+                        }
+
+                        
+                        if (repository.getSetting("always_online")) {
+                            if (System.currentTimeMillis() - lastOnlinePing > 4 * 60 * 1000L) {
+                                repository.pingOnlineStatus()
+                                lastOnlinePing = System.currentTimeMillis()
+                            }
                         }
 
                         if (System.currentTimeMillis() - lastCleanup > 24 * 60 * 60 * 1000L) {
@@ -137,11 +204,36 @@ class FunPayService : Service() {
                 val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
                 val isNight = hour in 2..6
 
-                val delayTime = if (isNight) {
-                    15000L
-                } else {
-                    6513L
-                }
+                
+                
+                
+                val dumperMinIntervalSec: Int = try {
+                    val dumper = repository.getDumperSettings()
+                    if (dumper.enabled && dumper.lots.isNotEmpty()) {
+                        dumper.lots.filter { it.enabled }
+                            .minOfOrNull { it.updateInterval.coerceAtLeast(1) }
+                            ?: Int.MAX_VALUE
+                    } else Int.MAX_VALUE
+                } catch (_: Exception) { Int.MAX_VALUE }
+
+                
+                
+                
+                
+                val concurentMinSec: Int = try {
+                    val cs = ConcurentManager.getSettings(this@FunPayService)
+                    if (cs.enabled) {
+                        val leftMs = cs.nextPostAt - System.currentTimeMillis()
+                        if (leftMs <= 0) 1
+                        else (leftMs / 1000).toInt().coerceAtLeast(1)
+                    } else Int.MAX_VALUE
+                } catch (_: Exception) { Int.MAX_VALUE }
+
+                val defaultDelay = if (isNight) 15000L else 6513L
+                val tightest = minOf(dumperMinIntervalSec, concurentMinSec)
+                val delayTime = if (tightest < Int.MAX_VALUE) {
+                    (tightest * 1000L).coerceAtMost(defaultDelay).coerceAtLeast(1000L)
+                } else defaultDelay
 
                 delay(delayTime)
             }
@@ -158,9 +250,9 @@ class FunPayService : Service() {
         }
 
         for (chat in newlyUnread) {
-            
-            
-            
+
+
+
             repository.knownUnreadChats.add(chat.id)
         }
 
@@ -337,6 +429,15 @@ class FunPayService : Service() {
             }
         } catch (e: Exception) { }
 
+        val prefs = getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+        val fullyDisabled = prefs.getBoolean("app_fully_disabled", false)
+
+        if (fullyDisabled) {
+            LogManager.addLog("⏸ SERVICE: onDestroy при полном выключении — не воскрешаем")
+            super.onDestroy()
+            return
+        }
+
         LogManager.addLog("🛑 SERVICE: Убит системой, запускаю дефибриллятор")
         if (repository.getSetting("auto_start_on_boot")) {
 
@@ -359,6 +460,13 @@ class FunPayService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         LogManager.addLog("⚠️ SERVICE: Смахнули из недавних. Воскрешаюсь!")
+
+        val prefs = getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("app_fully_disabled", false)) {
+            LogManager.addLog("⏸ SERVICE: onTaskRemoved при полном выключении — не воскрешаем")
+            super.onTaskRemoved(rootIntent)
+            return
+        }
 
         if (repository.getSetting("auto_start_on_boot")) {
             val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {

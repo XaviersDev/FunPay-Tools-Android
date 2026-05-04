@@ -25,34 +25,34 @@ class BootReceiver : BroadcastReceiver() {
 
         val action = intent.action ?: return
 
-        
+
         if (action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
             action == "android.intent.action.QUICKBOOT_POWERON" ||
             action == "com.htc.intent.action.QUICKBOOT_POWERON" ||
-            action == Intent.ACTION_USER_PRESENT || 
-            action == Intent.ACTION_POWER_CONNECTED || 
-            action == Intent.ACTION_POWER_DISCONNECTED 
+            action == Intent.ACTION_USER_PRESENT ||
+            action == Intent.ACTION_POWER_CONNECTED ||
+            action == Intent.ACTION_POWER_DISCONNECTED
         ) {
             try {
                 val repository = FunPayRepository(context)
 
                 if (repository.hasAuth() && repository.getSetting("auto_start_on_boot")) {
 
-                    
+
                     if (action.contains("BOOT")) {
                         LogManager.addLog("🔄 Автозапуск после перезагрузки")
                     } else {
                         LogManager.addLogDebug("⚡ Системный триггер ($action) разбудил сервис")
                     }
 
-                    
+
                     try {
                         context.startService(Intent(context, WatchdogDaemon::class.java))
                     } catch (e: Exception) {}
 
-                    
-                    
+
+
                     ServiceStarter.startSafely(context)
                 }
             } catch (e: Exception) {

@@ -304,7 +304,7 @@ fun UserProfileScreen(
                     }
                 }
                 is ProfileUiState.Success -> {
-                    ProfileContent(state.profile, assignedLabels, theme, repository, scope, context)
+                    ProfileContent(state.profile, assignedLabels, theme, repository, scope, context, navController)
                 }
             }
         }
@@ -318,7 +318,8 @@ private fun ProfileContent(
     theme: AppTheme,
     repository: FunPayRepository,
     scope: kotlinx.coroutines.CoroutineScope,
-    context: android.content.Context
+    context: android.content.Context,
+    navController: NavController
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     var reviews by remember { mutableStateOf(profile.reviews) }
@@ -366,7 +367,7 @@ private fun ProfileContent(
                                 color = ThemeManager.parseColor(theme.textSecondaryColor),
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         }
-                        items(group.offers, key = { "offer_${it.id}" }) { offer -> OfferRow(offer, theme, context) }
+                        items(group.offers, key = { "offer_${it.id}" }) { offer -> OfferRow(offer, theme, context, navController) }
                     }
                 }
             }
@@ -536,11 +537,16 @@ private fun StatChip(icon: androidx.compose.ui.graphics.vector.ImageVector, valu
 }
 
 @Composable
-private fun OfferRow(offer: ProfileOffer, theme: AppTheme, context: android.content.Context) {
+private fun OfferRow(offer: ProfileOffer, theme: AppTheme, context: android.content.Context, navController: NavController) {
     Surface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp).clickable {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(offer.url))
-            context.startActivity(intent)
+            val lotId = Regex("[?&]id=([A-Za-z0-9\\-]+)").find(offer.url)?.groupValues?.get(1)
+            if (!lotId.isNullOrBlank()) {
+                navController.navigate("lot/$lotId")
+            } else {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(offer.url))
+                context.startActivity(intent)
+            }
         },
         shape = RoundedCornerShape(10.dp),
         color = ThemeManager.parseColor(theme.surfaceColor)
@@ -554,6 +560,17 @@ private fun OfferRow(offer: ProfileOffer, theme: AppTheme, context: android.cont
             }
             Spacer(Modifier.width(12.dp))
             Text(offer.price, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.accentColor))
+            
+            IconButton(
+                onClick = {
+                    try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(offer.url))) } catch (_: Exception) {}
+                },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(Icons.Default.OpenInBrowser, null,
+                    tint = ThemeManager.parseColor(theme.textSecondaryColor),
+                    modifier = Modifier.size(16.dp))
+            }
             Icon(Icons.Default.ChevronRight, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(16.dp))
         }
     }

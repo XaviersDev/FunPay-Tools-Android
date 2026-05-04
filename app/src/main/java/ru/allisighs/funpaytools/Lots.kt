@@ -3,6 +3,7 @@ package ru.allisighs.funpaytools
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -347,12 +348,30 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
                 try {
                     val categoryLink = offerBlock.select(".offer-list-title a").firstOrNull() ?: return@forEach
                     val categoryName = categoryLink.text().trim()
-                    val nodeId = Regex("""/(?:lots|chips)/(\d+)""")
-                        .find(categoryLink.attr("href"))?.groupValues?.get(1) ?: return@forEach
+                    val categoryHref = categoryLink.attr("href")
+
+                    // Сначала пытаемся достать nodeId через LotUrlParser — он понимает
+                    // и /lots/168/, и /lots/lot-name/ (именованные категории), и
+                    // /chips/168/; если не получилось — fallback на старый regex.
+                    val parsedCat = LotUrlParser.parse(categoryHref)
+                    val nodeId = parsedCat?.nodeId
+                        ?: parsedCat?.id?.takeIf { it.all { ch -> ch.isDigit() } }
+                        ?: Regex("""/(?:lots|chips)/(\d+)""")
+                            .find(categoryHref)?.groupValues?.get(1)
+                        ?: return@forEach
 
                     offerBlock.select("a.tc-item").forEach { row ->
-                        val id = Regex("""(?:offer=|id=)(\d+)""")
-                            .find(row.attr("href"))?.groupValues?.get(1) ?: return@forEach
+                        val href = row.attr("href")
+                        val parsed = LotUrlParser.parse(href)
+
+                        // Правильный ID:
+                        //   - для обычного лота (/lots/offer?id=22238017) → "22238017";
+                        //   - для чипа (/chips/offer?id=3934718-168-110-2842-0) → весь компаунд;
+                        //   - для edit-URL (/lots/offerEdit?offer=...) тоже ок.
+                        val id = parsed?.id
+                            ?: Regex("""(?:offer=|id=)([0-9A-Za-z\-]+)""")
+                                .find(href)?.groupValues?.get(1)
+                            ?: return@forEach
 
                         val title = row.select(".tc-desc-text").text().trim().ifEmpty { "Без названия" }
                         val priceDiv = row.select(".tc-price").firstOrNull()
@@ -1699,6 +1718,119 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                 }
                                 if (enFields.isNotEmpty()) {
                                     Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("🇬🇧 English") })
+                                }
+                            }
+
+                            // Кнопка автоперевода RU→EN: берёт все значения RU-полей,
+                            // переводит через Google Translate с защитой эмодзи/
+                            // спецсимволов (см. FpTranslate в FpExtensions.kt) и
+                            // подставляет в соответствующие EN-поля.
+                            //
+                            // RU и EN поля у FunPay называются одинаково, отличаются только
+                            // суффиксом locale ([ru]/[en]); а также у некоторых полей
+                            // совсем нет суффикса, но их locale всё равно отмечен в
+                            // LotField.locale. Мэппинг строим по имени БЕЗ суффикса.
+                            if (ruFields.isNotEmpty() && enFields.isNotEmpty()) {
+                                var isTranslating by remember { mutableStateOf(false) }
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            isTranslating = true
+                                            try {
+                                                fun stripLocale(n: String) = n
+                                                    .replace("[ru]", "[en]")
+                                                    .replace("_ru", "_en")
+                                                    .replace(Regex("""-ru(\b|_|$)"""), "-en$1")
+
+                                                val updates = mutableMapOf<String, String>()
+                                                for ((ruName, ruField) in ruFields) {
+                                                    val ruValue = fieldValues[ruName] ?: ruField.value
+                                                    if (ruValue.isBlank()) continue
+
+                                                    // Пытаемся найти EN-пару несколькими способами:
+                                                    //   1) прямая замена [ru]→[en], _ru→_en, -ru→-en;
+                                                    //   2) совпадение по «ядру имени» без суффикса локали.
+                                                    val enKey1 = stripLocale(ruName)
+                                                    val enTarget = when {
+                                                        enFields.containsKey(enKey1) -> enKey1
+                                                        else -> enFields.keys.firstOrNull { enName ->
+                                                            val ruCore = ruName
+                                                                .replace("[ru]", "")
+                                                                .replace("_ru", "")
+                                                                .replace("-ru", "")
+                                                            val enCore = enName
+                                                                .replace("[en]", "")
+                                                                .replace("_en", "")
+                                                                .replace("-en", "")
+                                                            ruCore == enCore && ruCore.isNotEmpty()
+                                                        }
+                                                    } ?: continue
+
+                                                    val translated = repository.translateLotDescriptionRuToEn(ruValue)
+                                                    if (!translated.isNullOrBlank()) {
+                                                        updates[enTarget] = translated
+                                                    }
+                                                }
+
+                                                if (updates.isNotEmpty()) {
+                                                    fieldValues = fieldValues + updates
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Переведено: ${updates.size} полей",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                    // Автоматически переключаемся на EN-таб, чтобы
+                                                    // пользователь увидел результат.
+                                                    selectedTab = 2
+                                                } else {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Нечего переводить (RU-поля пусты)",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            } catch (e: Exception) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "Ошибка перевода: ${e.message}",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            } finally {
+                                                isTranslating = false
+                                            }
+                                        }
+                                    },
+                                    enabled = !isTranslating,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.85f)
+                                    ),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    if (isTranslating) {
+                                        CircularProgressIndicator(
+                                            Modifier.size(14.dp),
+                                            color = Color.White,
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Перевод…", color = Color.White, fontSize = 13.sp)
+                                    } else {
+                                        Icon(
+                                            Icons.Default.Translate,
+                                            null,
+                                            modifier = Modifier.size(16.dp),
+                                            tint = Color.White
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "Перевести RU→EN (с эмодзи)",
+                                            color = Color.White,
+                                            fontSize = 13.sp
+                                        )
+                                    }
                                 }
                             }
                         }

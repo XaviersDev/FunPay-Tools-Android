@@ -93,6 +93,12 @@ interface FunPayApi {
     ): Response<ResponseBody>
 
 
+    @GET("orders/new")
+    suspend fun getConfirmationPage(
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String
+    ): Response<ResponseBody>
+
     @GET("orders/{id}/")
     suspend fun getOrder(
         @Path("id") orderId: String,
@@ -150,6 +156,26 @@ interface FunPayApi {
         @Header("Content-Type") contentType: String = "application/json",
         @Header("Authorization") auth: String,
         @Body body: RequestBody
+    ): Response<ResponseBody>
+
+    
+
+    @GET("lots/offer")
+    suspend fun getLotPage(
+        @Query("id") offerId: String,
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String
+    ): Response<ResponseBody>
+
+    @FormUrlEncoded
+    @POST("orders/new")
+    suspend fun postOrderNew(
+        @Header("Cookie") cookie: String,
+        @Header("User-Agent") userAgent: String,
+        @Header("X-Requested-With") xReq: String = "XMLHttpRequest",
+        @Header("Accept") accept: String = "application/json, text/javascript, */*; q=0.01",
+        @Header("Referer") referer: String,
+        @FieldMap fields: Map<String, String>
     ): Response<ResponseBody>
 }
 

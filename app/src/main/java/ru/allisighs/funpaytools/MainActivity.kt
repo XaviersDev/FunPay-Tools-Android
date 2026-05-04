@@ -142,7 +142,8 @@ data class ParsedMessage(
     val isAdmin: Boolean = false,
     val badge: String? = null,
     val links: List<MessageLink> = emptyList(),
-    val authorUserId: String? = null
+    val authorUserId: String? = null,
+    val authorAvatarUrl: String? = null
 )
 
 data class MessageLink(
@@ -152,7 +153,7 @@ data class MessageLink(
 )
 
 enum class LinkType {
-    ORDER, USER, EXTERNAL
+    ORDER, USER, LOT, EXTERNAL
 }
 
 class MainActivity : ComponentActivity() {
@@ -319,6 +320,15 @@ fun FunPayToolsApp(
                         )
                     }
 
+                    composable("funpay_browser_pick") {
+                        FunPayBrowserScreen(
+                            navController = navController,
+                            repository = repository,
+                            theme = currentTheme,
+                            pickForConcurent = true
+                        )
+                    }
+
                     composable("dashboard") { DashboardScreen(navController, repository, currentTheme, onThemeChanged) }
 
                     composable("donations") {
@@ -403,7 +413,7 @@ fun FunPayToolsApp(
 
                     composable("order/{orderId}") { backStackEntry ->
                         val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
-                        AppScaffold("Заказ #$orderId", navController, currentTheme) { OrderScreen(orderId, repository, currentTheme) }
+                        AppScaffold("Заказ #$orderId", navController, currentTheme) { OrderScreen(orderId, repository, currentTheme, navController) }
                     }
 
                     composable("profile/{nodeId}/{username}") { backStackEntry ->
@@ -415,6 +425,30 @@ fun FunPayToolsApp(
                             navController = navController,
                             repository = repository,
                             theme = currentTheme
+                        )
+                    }
+
+                    composable("buyer_history/{partnerName}/{partnerId}") { backStackEntry ->
+                        val partnerName = backStackEntry.arguments?.getString("partnerName") ?: ""
+                        val partnerId   = backStackEntry.arguments?.getString("partnerId")   ?: ""
+                        AppScaffold("История с $partnerName", navController, currentTheme) {
+                            BuyerHistoryScreen(
+                                partnerName = partnerName,
+                                partnerId   = partnerId,
+                                repository  = repository,
+                                theme       = currentTheme,
+                                navController = navController
+                            )
+                        }
+                    }
+
+                    composable("lot/{offerId}") { backStackEntry ->
+                        val offerId = backStackEntry.arguments?.getString("offerId") ?: ""
+                        LotScreen(
+                            offerId = offerId,
+                            repository = repository,
+                            theme = currentTheme,
+                            navController = navController
                         )
                     }
                 }
@@ -944,7 +978,7 @@ fun AuthMethodScreen(navController: NavController) {
                         backup = backup,
                         repository = repository,
                         context = context,
-                        onThemeChanged = { /* Тема обновится сама при навигации */ }
+                        onThemeChanged = { }
                     ).onSuccess {
                         Toast.makeText(context, "Бэкап восстановлен! Входим...", Toast.LENGTH_SHORT).show()
                         navController.navigate("dashboard") {
@@ -1236,10 +1270,11 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun FunPayBrowserScreen(navController: NavController, repository: FunPayRepository, theme: AppTheme) {
+fun FunPayBrowserScreen(navController: NavController, repository: FunPayRepository, theme: AppTheme, pickForConcurent: Boolean = false) {
     val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember { mutableStateOf("https://funpay.com") }
+    var currentTitle by remember { mutableStateOf("") }
     var canGoBack by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
@@ -1343,15 +1378,91 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                             super.onPageFinished(view, url)
                             isLoading = false
                             currentUrl = url ?: currentUrl
+                            currentTitle = view?.title ?: ""
                             canGoBack = view?.canGoBack() == true
                             canGoForward = view?.canGoForward() == true
                         }
                     }
                     webChromeClient = WebChromeClient()
+
+                    
+                    setOnLongClickListener {
+                        val hit = (it as? WebView)?.hitTestResult ?: return@setOnLongClickListener false
+                        val value: String? = when (hit.type) {
+                            WebView.HitTestResult.SRC_ANCHOR_TYPE,
+                            WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> hit.extra
+                            WebView.HitTestResult.IMAGE_TYPE -> hit.extra
+                            else -> null
+                        }
+                        if (!value.isNullOrBlank()) {
+                            try {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("url", value))
+                                Toast.makeText(context, "Скопировано: $value", Toast.LENGTH_SHORT).show()
+                                return@setOnLongClickListener true
+                            } catch (_: Exception) {}
+                        }
+                        false
+                    }
+
                     loadUrl("https://funpay.com")
                 }.also { webView = it }
             }
         )
+    }
+
+    
+    
+    
+    if (pickForConcurent) {
+        val nodeId = remember(currentUrl) { ConcurentManager.parseNodeId(currentUrl) }
+        val isChatPage = currentUrl.contains("/chat/")
+        val isLotsPage = currentUrl.contains("/lots/")
+        if (nodeId != null && (isChatPage || isLotsPage)) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
+                Column(horizontalAlignment = Alignment.End,
+                    modifier = Modifier.padding(bottom = 24.dp, end = 16.dp)) {
+                    
+                    if (isLotsPage) {
+                        Surface(
+                            color = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.95f),
+                            shape = RoundedCornerShape(10.dp),
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        ) {
+                            Text(
+                                "📢 Чат этой игры: node=$nodeId",
+                                color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                    ExtendedFloatingActionButton(
+                        onClick = {
+                            
+                            val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+                            
+                            val name = currentTitle.trim().split(Regex("\\s+"))
+                                .filter { it.isNotBlank() }.take(2).joinToString(" ")
+                                .ifBlank { "Чат $nodeId" }
+                            prefs.edit()
+                                .putString("concurent_pending_node", nodeId)
+                                .putString("concurent_pending_name", name)
+                                .apply()
+                            Toast.makeText(context, "Добавлено: $name", Toast.LENGTH_SHORT).show()
+                            navController.popBackStack()
+                        },
+                        containerColor = ThemeManager.parseColor(theme.accentColor),
+                        contentColor = Color.White
+                    ) {
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("В Concurent")
+                    }
+                }
+            }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -1380,10 +1491,14 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
     val accountKey = activeAccount?.id ?: "none"
 
     DisposableEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(Intent(context, FunPayService::class.java))
-        } else {
-            context.startService(Intent(context, FunPayService::class.java))
+        
+        val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("app_fully_disabled", false)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(Intent(context, FunPayService::class.java))
+            } else {
+                context.startService(Intent(context, FunPayService::class.java))
+            }
         }
 
         onDispose { }
@@ -1403,7 +1518,28 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
 
         while (true) {
             try {
-                chats = repository.getChats()
+                val loadedChats = repository.getChats()
+
+                
+                
+                
+                val floodSettings = ChatFolderManager.getFloodChat(context)
+                chats = if (floodSettings.enabled) {
+                    val flood = ChatItem(
+                        id = "flood",
+                        username = floodSettings.customDisplayName.ifBlank { "Флудилка" },
+                        lastMessage = "Секретный общий чат FunPay",
+                        isUnread = false,
+                        avatarUrl = "https://funpay.com/img/layout/avatar.png",
+                        date = ""
+                    )
+                    
+                    val existing = loadedChats.any { it.id == "flood" }
+                    if (existing) loadedChats else (listOf(flood) + loadedChats)
+                } else {
+                    loadedChats
+                }
+
                 if (!hasLoadedOnce) {
                     hasLoadedOnce = true
                 }
@@ -1505,6 +1641,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                         Triple(0, Icons.Default.Chat, "Чаты"),
                         Triple(1, Icons.Default.Tune, "Управление"),
                         Triple(2, Icons.Default.Person, "Профиль"),
+                        Triple(5, Icons.Default.ShoppingBag, "Продажи"),
                         Triple(3, Icons.Default.Support, "Поддержка"),
                         Triple(4, Icons.Default.Terminal, "Консоль")
                     ).forEach { (index, icon, label) ->
@@ -1562,10 +1699,8 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                 }
 
                 when (selectedTab) {
-
-                    0 -> ChatListView(chats, isLoadingChats && !hasLoadedOnce, navController, currentTheme)
+                    0 -> ChatListView(chats, isLoadingChats && !hasLoadedOnce, navController, currentTheme, repository) { selectedTab = 3 }
                     1 -> ControlView(navController, repository, currentTheme, onNavigateToSupport = { selectedTab = 3 })
-
                     2 -> ProfileScreen(
                         repository = repository,
                         theme = currentTheme,
@@ -1577,6 +1712,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                     )
                     3 -> SupportScreenView(repository, currentTheme) { selectedTab = 0 }
                     4 -> ConsoleView(logs, currentTheme, navController)
+                    5 -> SalesScreen(repository = repository, theme = currentTheme, navController = navController)
                 }
             }
         }
@@ -1588,15 +1724,32 @@ fun ChatListView(
     chats: List<ChatItem>,
     isLoading: Boolean,
     navController: NavController,
-    theme: AppTheme
+    theme: AppTheme,
+    repository: FunPayRepository,
+    onNavigateToSupport: () -> Unit
 ) {
     val context = LocalContext.current
+
+    
+    val banInfo by repository.banInfo.collectAsState()
+    if (banInfo != null) {
+        AccountBannedView(banInfo = banInfo!!, theme = theme, onNavigateToSupport = onNavigateToSupport)
+        return 
+    }
+
+    
+    
+    var mode by remember { mutableStateOf(ChatListMode.PERSONAL) }
+
     var folders by remember { mutableStateOf(ChatFolderManager.getFolders(context)) }
     var labels by remember { mutableStateOf(ChatFolderManager.getLabels(context)) }
     var chatLabels by remember { mutableStateOf(ChatFolderManager.getChatLabels(context)) }
     var selectedFolderId by remember { mutableStateOf<String?>(null) }
     var showManageFolders by remember { mutableStateOf(false) }
     var showManageLabels by remember { mutableStateOf(false) }
+
+    
+    var personalQuery by remember { mutableStateOf("") }
 
     val allFolderIds = remember(folders) { listOf(null) + folders.map { it.id } }
     val pagerState = rememberPagerState(
@@ -1639,77 +1792,221 @@ fun ChatListView(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        ChatFolderTabs(
-            folders = folders,
-            selectedFolderId = selectedFolderId,
-            onFolderSelected = { selectedFolderId = it },
-            onManageFolders = { showManageFolders = true },
+
+        
+        ChatModeSegmentedControl(
+            mode = mode,
+            onModeChanged = { mode = it },
             theme = theme
         )
 
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            val pageFolderId = allFolderIds.getOrNull(page)
-            val filtered = remember(chats, pageFolderId, folders, chatLabels) {
-                when (pageFolderId) {
-                    null -> chats
-                    "preset_unread" -> chats.filter { it.isUnread }
-                    "preset_labeled" -> chats.filter { chatLabels[it.id]?.isNotEmpty() == true }
-                    "preset_archived" -> chats.filter {
-                        folders.firstOrNull { f -> f.id == "preset_archived" }?.chatIds?.contains(it.id) == true
-                    }
-                    else -> chats.filter {
-                        folders.firstOrNull { f -> f.id == pageFolderId }?.chatIds?.contains(it.id) == true
-                    }
-                }
+        when (mode) {
+            ChatListMode.GAMES -> {
+                
+                GameChatsView(navController = navController, theme = theme)
             }
 
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(
-                            color = ThemeManager.parseColor(theme.accentColor),
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("Загрузка чатов...", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 14.sp)
-                    }
-                }
-            } else if (filtered.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.ChatBubbleOutline, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(64.dp))
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            if (pageFolderId != null) "Нет чатов в этой папке" else "Нет чатов",
-                            color = ThemeManager.parseColor(theme.textSecondaryColor)
-                        )
-                    }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            ChatListMode.PERSONAL -> {
+                
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    items(filtered, key = { it.id }) { chat ->
-                        ChatItemView(
-                            chat = chat,
-                            navController = navController,
-                            theme = theme,
-                            labels = labels,
-                            chatLabels = chatLabels,
+                    Box(modifier = Modifier.weight(1f)) {
+                        ChatFolderTabs(
                             folders = folders,
-                            onChatLabelsChanged = { chatLabels = it; ChatFolderManager.saveChatLabels(context, it) },
-                            onFoldersChanged = { folders = it; ChatFolderManager.saveFolders(context, it) },
+                            selectedFolderId = selectedFolderId,
+                            onFolderSelected = { selectedFolderId = it },
                             onManageFolders = { showManageFolders = true },
-                            onManageLabels = { showManageLabels = true }
+                            theme = theme
                         )
+                    }
+                    ThinChatSearch(
+                        query = personalQuery,
+                        onQueryChanged = { personalQuery = it },
+                        theme = theme,
+                        modifier = Modifier.padding(end = 10.dp),
+                        placeholder = "Чат"
+                    )
+                }
+
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize()
+                ) { page ->
+                    val pageFolderId = allFolderIds.getOrNull(page)
+                    
+                    val floodSettings = remember(chats) { ChatFolderManager.getFloodChat(context) }
+                    val filteredByFolder = remember(chats, pageFolderId, folders, chatLabels, floodSettings) {
+                        
+                        
+                        fun chatInFolder(chatId: String, folderId: String?): Boolean {
+                            if (folderId == null) return false
+                            if (chatId == "flood" && floodSettings.enabled && floodSettings.folderId == folderId) return true
+                            return folders.firstOrNull { it.id == folderId }?.chatIds?.contains(chatId) == true
+                        }
+                        when (pageFolderId) {
+                            null -> {
+                                
+                                
+                                if (floodSettings.enabled && floodSettings.folderId != null) {
+                                    chats.filter { it.id != "flood" }
+                                } else {
+                                    chats
+                                }
+                            }
+                            "preset_unread" -> chats.filter { it.isUnread }
+                            "preset_labeled" -> chats.filter { chatLabels[it.id]?.isNotEmpty() == true }
+                            "preset_archived" -> chats.filter { chatInFolder(it.id, "preset_archived") }
+                            else -> chats.filter { chatInFolder(it.id, pageFolderId) }
+                        }
+                    }
+
+                    
+                    val filtered = remember(filteredByFolder, personalQuery) {
+                        if (personalQuery.isBlank()) filteredByFolder
+                        else {
+                            val q = personalQuery.trim().lowercase(Locale.ROOT)
+                            filteredByFolder.filter { chat ->
+                                chat.username.lowercase(Locale.ROOT).contains(q) ||
+                                        chat.lastMessage.lowercase(Locale.ROOT).contains(q) ||
+                                        chat.id.lowercase(Locale.ROOT).contains(q)
+                            }
+                        }
+                    }
+
+                    if (isLoading) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(
+                                    color = ThemeManager.parseColor(theme.accentColor),
+                                    modifier = Modifier.size(48.dp)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text("Загрузка чатов...", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 14.sp)
+                            }
+                        }
+                    } else if (filtered.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Default.ChatBubbleOutline, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(64.dp))
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    when {
+                                        personalQuery.isNotBlank() -> "Ничего не нашли по «$personalQuery»"
+                                        pageFolderId != null -> "Нет чатов в этой папке"
+                                        else -> "Нет чатов"
+                                    },
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                                )
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(filtered, key = { it.id }) { chat ->
+                                ChatItemView(
+                                    chat = chat,
+                                    navController = navController,
+                                    theme = theme,
+                                    labels = labels,
+                                    chatLabels = chatLabels,
+                                    folders = folders,
+                                    onChatLabelsChanged = { chatLabels = it; ChatFolderManager.saveChatLabels(context, it) },
+                                    onFoldersChanged = { folders = it; ChatFolderManager.saveFolders(context, it) },
+                                    onManageFolders = { showManageFolders = true },
+                                    onManageLabels = { showManageLabels = true }
+                                )
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun AccountBannedView(banInfo: BanInfo, theme: AppTheme, onNavigateToSupport: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.Block,
+            contentDescription = null,
+            tint = Color(0xFFE53935),
+            modifier = Modifier.size(72.dp)
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(
+            text = "Аккаунт заблокирован",
+            color = ThemeManager.parseColor(theme.textPrimaryColor),
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "К сожалению, FunPay ограничил доступ к вашему аккаунту. Мы рекомендуем написать обращение в техническую поддержку через наше приложение.",
+            color = ThemeManager.parseColor(theme.textSecondaryColor),
+            fontSize = 14.sp,
+            textAlign = TextAlign.Center,
+            lineHeight = 18.sp
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFE53935).copy(alpha = 0.1f)),
+            shape = RoundedCornerShape(16.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE53935).copy(alpha = 0.5f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "Официальный ответ FunPay:",
+                    color = Color(0xFFE53935),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                Text(
+                    text = banInfo.reason,
+                    color = ThemeManager.parseColor(theme.textPrimaryColor),
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        Button(
+            onClick = onNavigateToSupport,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor)),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(Icons.Default.SupportAgent, contentDescription = null, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Написать в поддержку FunPay", fontWeight = FontWeight.Bold, fontSize = 15.sp)
         }
     }
 }
@@ -1813,7 +2110,7 @@ fun ChatItemView(
                             .size(48.dp)
                             .clip(CircleShape)
                             .background(Color.Gray)
-                            .clickable {
+                            .clickable(enabled = !GameChatsRegistry.isSystemChatId(chat.id)) {
                                 navController.navigate("profile/${chat.id}/${chat.username}")
                             },
                         contentScale = ContentScale.Crop
@@ -1917,6 +2214,12 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
     var greetingSettings by remember { mutableStateOf(repository.getGreetingSettings()) }
     var autoStartOnBoot by remember { mutableStateOf(repository.getSetting("auto_start_on_boot")) }
     var busySettings by remember { mutableStateOf(ChatFolderManager.getBusyMode(context)) }
+    var floodSettings by remember { mutableStateOf(ChatFolderManager.getFloodChat(context)) }
+    var scheduleSettings by remember { mutableStateOf(ChatFolderManager.getBusySchedule(context)) }
+    var showScheduleDialog by remember { mutableStateOf(false) }
+    var appFullyDisabled by remember {
+        mutableStateOf(context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE).getBoolean("app_fully_disabled", false))
+    }
     var dumperSettings by remember { mutableStateOf(repository.getDumperSettings()) }
     var autoTicketSettings by remember { mutableStateOf(repository.getAutoTicketSettings()) }
     var reminderSettings by remember { mutableStateOf(repository.getOrderReminderSettings()) }
@@ -1924,6 +2227,11 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
     var ticketSendResult by remember { mutableStateOf<String?>(null) }
     var showReviewAiGate by remember { mutableStateOf(false) }
     var showBusyDialog by remember { mutableStateOf(false) }
+    var alwaysOnline by remember { mutableStateOf(repository.getSetting("always_online")) }
+    var readMarkSettings by remember { mutableStateOf(repository.getReadMarkSettings()) }
+    var aiVarPermissions by remember { mutableStateOf(repository.getAiVarPermissions()) }
+    var showReadMarkDialog by remember { mutableStateOf(false) }
+    var showAiVarDialog by remember { mutableStateOf(false) }
 
     fun isAllowed(f: String) = !busySettings.enabled || when (f) {
         "raise" -> busySettings.keepRaise
@@ -1932,6 +2240,22 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         else -> false
     }
 
+    if (showReadMarkDialog) {
+        ReadMarkSettingsDialog(
+            settings = readMarkSettings,
+            theme = theme,
+            onSave = { readMarkSettings = it; repository.saveReadMarkSettings(it) },
+            onDismiss = { showReadMarkDialog = false }
+        )
+    }
+    if (showAiVarDialog) {
+        AiVarPermissionsDialog(
+            settings = aiVarPermissions,
+            theme = theme,
+            onSave = { aiVarPermissions = it; repository.saveAiVarPermissions(it) },
+            onDismiss = { showAiVarDialog = false }
+        )
+    }
     if (showReviewAiGate) {
         PremiumDialog(feature = PremiumFeature.REVIEW_AI, theme = theme,
             onDismiss = { showReviewAiGate = false }, onUnlocked = { showReviewAiGate = false })
@@ -1940,6 +2264,14 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         BusyModeDialog(settings = busySettings,
             onSave = { busySettings = it; ChatFolderManager.saveBusyMode(context, it) },
             onDismiss = { showBusyDialog = false }, theme = theme)
+    }
+    if (showScheduleDialog) {
+        BusyScheduleDialog(
+            settings = scheduleSettings,
+            onSave = { scheduleSettings = it; ChatFolderManager.saveBusySchedule(context, it) },
+            onDismiss = { showScheduleDialog = false },
+            theme = theme
+        )
     }
 
     LazyColumn(
@@ -1963,6 +2295,13 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             }
         }
 
+        item {
+            SettingCard("Всегда онлайн", "Пингует FunPay каждые 4 минуты — аккаунт всегда показывает статус «онлайн»", alwaysOnline, Icons.Default.Wifi, theme) {
+                alwaysOnline = !alwaysOnline
+                repository.setSetting("always_online", alwaysOnline)
+            }
+        }
+
         item { ControlSectionHeader("РЕЖИМ РАБОТЫ", Icons.Default.Tune, theme) }
 
         item {
@@ -1973,6 +2312,137 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                     busySettings = u; ChatFolderManager.saveBusyMode(context, u)
                 },
                 onConfigure = { showBusyDialog = true }, theme = theme)
+        }
+
+        item {
+            
+            Card(modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
+                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Schedule, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Расписание занятости", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                            Text(
+                                "Автоматически включает режим занятости в указанное время (рабочее время, перерыв, вечер, ночь).",
+                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                            )
+                        }
+                        Switch(
+                            checked = scheduleSettings.enabled,
+                            onCheckedChange = {
+                                scheduleSettings = scheduleSettings.copy(enabled = it)
+                                ChatFolderManager.saveBusySchedule(context, scheduleSettings)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
+                            )
+                        )
+                    }
+                    if (scheduleSettings.enabled) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if (scheduleSettings.slots.isEmpty()) "Слотов ещё нет — добавьте хотя бы один."
+                            else "Слотов: ${scheduleSettings.slots.size}",
+                            fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor)
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Button(
+                            onClick = { showScheduleDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                        ) { Text("Настроить слоты", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                    }
+                }
+            }
+        }
+
+        item {
+            
+            Card(modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (appFullyDisabled)
+                        Color(0xFFB71C1C).copy(alpha = 0.25f)
+                    else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
+                ),
+                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.PowerSettingsNew, null,
+                            tint = if (appFullyDisabled) Color(0xFFFF5252) else ThemeManager.parseColor(theme.accentColor),
+                            modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (appFullyDisabled) "Приложение выключено полностью" else "Полностью выключить приложение",
+                                fontWeight = FontWeight.Bold,
+                                color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp
+                            )
+                            Text(
+                                "Останавливает сервис, отменяет автозапуск и уведомления. Фон не работает вообще. Включается обратно одним переключателем.",
+                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                            )
+                        }
+                        Switch(
+                            checked = appFullyDisabled,
+                            onCheckedChange = { newValue ->
+                                appFullyDisabled = newValue
+                                val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+                                prefs.edit().putBoolean("app_fully_disabled", newValue).apply()
+
+                                if (newValue) {
+                                    
+                                    
+                                    prefs.edit()
+                                        .putBoolean("app_fully_disabled_prev_autostart", autoStartOnBoot)
+                                        .putBoolean("app_fully_disabled_prev_push", pushNotifications)
+                                        .apply()
+
+                                    
+                                    try {
+                                        context.stopService(Intent(context, FunPayService::class.java))
+                                    } catch (_: Exception) {}
+                                    autoStartOnBoot = false
+                                    repository.setSetting("auto_start_on_boot", false)
+                                    pushNotifications = false
+                                    repository.setSetting("push_notifications", false)
+                                    try {
+                                        val nm = context.getSystemService(android.app.NotificationManager::class.java)
+                                        nm?.cancelAll()
+                                    } catch (_: Exception) {}
+                                    Toast.makeText(context, "Приложение выключено. Фон и уведомления отключены.", Toast.LENGTH_LONG).show()
+                                } else {
+                                    
+                                    
+                                    val prevAutoStart = prefs.getBoolean("app_fully_disabled_prev_autostart", true)
+                                    val prevPush = prefs.getBoolean("app_fully_disabled_prev_push", true)
+                                    autoStartOnBoot = prevAutoStart
+                                    repository.setSetting("auto_start_on_boot", prevAutoStart)
+                                    pushNotifications = prevPush
+                                    repository.setSetting("push_notifications", prevPush)
+
+                                    try {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                            context.startForegroundService(Intent(context, FunPayService::class.java))
+                                        } else {
+                                            context.startService(Intent(context, FunPayService::class.java))
+                                        }
+                                    } catch (_: Exception) {}
+                                    Toast.makeText(context, "Приложение снова работает. Настройки фона восстановлены.", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFFFF5252),
+                                checkedTrackColor = Color(0xFFFF5252).copy(alpha = 0.4f),
+                                uncheckedThumbColor = ThemeManager.parseColor(theme.textSecondaryColor)
+                            )
+                        )
+                    }
+                }
+            }
         }
 
         item { ControlSectionHeader("АВТОМАТИЗАЦИЯ ЧАТА", Icons.Default.AutoAwesome, theme) }
@@ -2029,6 +2499,113 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                 Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor))
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        
+        
+        
+        item {
+            var bonusSettingsState by remember { mutableStateOf(repository.getFeedbackBonusSettings()) }
+            
+            
+            LaunchedEffect(showDialog) {
+                if (showDialog == null) bonusSettingsState = repository.getFeedbackBonusSettings()
+            }
+            Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
+                Column {
+                    SettingCard(
+                        "Бонусы за отзыв",
+                        "Отдельные правила-бонусы под разные лоты",
+                        bonusSettingsState.enabled,
+                        Icons.Default.CardGiftcard,
+                        theme
+                    ) {
+                        if (!busySettings.enabled) {
+                            val s = bonusSettingsState.copy(enabled = !bonusSettingsState.enabled)
+                            bonusSettingsState = s
+                            repository.saveFeedbackBonusSettings(s)
+                        }
+                    }
+                    if (bonusSettingsState.enabled) {
+                        Button(
+                            onClick = { if (!busySettings.enabled) showDialog = "feedback_bonus" },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Rule,
+                                    null,
+                                    tint = ThemeManager.parseColor(theme.accentColor),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (bonusSettingsState.rules.isEmpty())
+                                        "Добавить правила"
+                                    else
+                                        "Правил: ${bonusSettingsState.rules.size}",
+                                    color = ThemeManager.parseColor(theme.textPrimaryColor)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
+                shape = RoundedCornerShape(theme.borderRadius.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Нечиталка", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                            Text(
+                                "Детальная настройка, какие сообщения приложению читать, а какие нет",
+                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { showReadMarkDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                        ) { Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
+                shape = RoundedCornerShape(theme.borderRadius.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Psychology, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("ИИ-переменные", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                            Text(
+                                "Управляй данными, которые ИИ видит при переработке текста",
+                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { showAiVarDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                        ) { Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                     }
                 }
             }
@@ -2116,11 +2693,44 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                     }
                     if (raiseEnabled) {
                         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-                            Text("Интервал: $raiseInterval мин", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
-                            Slider(value = raiseInterval.toFloat(), onValueChange = { raiseInterval = it.toInt() },
-                                valueRange = 5f..60f, steps = 10,
-                                onValueChangeFinished = { repository.setRaiseInterval(raiseInterval) },
-                                colors = SliderDefaults.colors(thumbColor = ThemeManager.parseColor(theme.accentColor), activeTrackColor = ThemeManager.parseColor(theme.accentColor)))
+
+                            
+                            
+                            
+                            
+                            val smartRaise = repository.isSmartRaiseEnabled()
+                            val summary = if (smartRaise)
+                                "Выбрано: Умный режим"
+                            else
+                                "Выбрано: Интервал $raiseInterval мин"
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        summary,
+                                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        fontSize = 13.sp, fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        "Нажми, чтобы выбрать режим и интервал.",
+                                        color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                        fontSize = 10.sp, lineHeight = 13.sp
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = { showDialog = "raise_settings" },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = ThemeManager.parseColor(theme.accentColor)
+                                    )
+                                ) {
+                                    Icon(Icons.Default.Tune, null, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Настроить", fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }
@@ -2151,6 +2761,102 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         item { ControlSectionHeader("ИНСТРУМЕНТЫ", Icons.Default.Build, theme) }
 
         item {
+            val floodFolders = remember { ChatFolderManager.getFolders(context) }
+            Card(modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
+                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Секретный чат FunPay", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                            Text(
+                                "Общий чат по ссылке funpay.com/chat/?node=flood. В обычном списке его нет — добавим сами.",
+                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                            )
+                        }
+                        Switch(
+                            checked = floodSettings.enabled,
+                            onCheckedChange = {
+                                floodSettings = floodSettings.copy(enabled = it)
+                                ChatFolderManager.saveFloodChat(context, floodSettings)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
+                            )
+                        )
+                    }
+
+                    if (floodSettings.enabled) {
+                        Spacer(Modifier.height(10.dp))
+
+                        
+                        OutlinedTextField(
+                            value = floodSettings.customDisplayName,
+                            onValueChange = {
+                                floodSettings = floodSettings.copy(customDisplayName = it)
+                                ChatFolderManager.saveFloodChat(context, floodSettings)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Как назвать чат в списке", fontSize = 11.sp) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                cursorColor = ThemeManager.parseColor(theme.accentColor)
+                            )
+                        )
+
+                        Spacer(Modifier.height(4.dp))
+
+                        
+                        Text("Группа (папка):", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilterChip(
+                                selected = floodSettings.folderId == null,
+                                onClick = {
+                                    floodSettings = floodSettings.copy(folderId = null)
+                                    ChatFolderManager.saveFloodChat(context, floodSettings)
+                                },
+                                label = { Text("Без папки", fontSize = 11.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                    selectedLabelColor = Color.White
+                                )
+                            )
+                            floodFolders.filter { !it.isPreset || it.id == "preset_archived" }.forEach { folder ->
+                                FilterChip(
+                                    selected = floodSettings.folderId == folder.id,
+                                    onClick = {
+                                        floodSettings = floodSettings.copy(folderId = folder.id)
+                                        ChatFolderManager.saveFloodChat(context, floodSettings)
+                                    },
+                                    label = { Text(folder.name, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                        selectedLabelColor = Color.White
+                                    )
+                                )
+                            }
+                        }
+                        if (floodFolders.none { !it.isPreset || it.id == "preset_archived" }) {
+                            Text("Создайте папку в списке чатов, чтобы выбрать её здесь.",
+                                fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
             Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
                 shape = RoundedCornerShape(theme.borderRadius.dp)) {
@@ -2165,6 +2871,68 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                     }
                     Spacer(Modifier.height(6.dp))
                     Text("Быстрая вставка готовых фраз в чате", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                }
+            }
+        }
+
+        
+        item {
+            val concurentEnabled = remember { mutableStateOf(ConcurentManager.getSettings(context).enabled) }
+            
+            val prefsLocal = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+            LaunchedEffect(Unit) {
+                if (prefsLocal.getString("concurent_pending_node", null) != null && showDialog == null) {
+                    showDialog = "concurent"
+                }
+            }
+            Card(modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
+                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Campaign, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.width(16.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Concurent", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                            Text(
+                                if (concurentEnabled.value) "Публикации идут по таймеру"
+                                else "Автопубликации в общих чатах FunPay",
+                                fontSize = 12.sp,
+                                color = ThemeManager.parseColor(theme.textSecondaryColor)
+                            )
+                        }
+                        Switch(
+                            checked = concurentEnabled.value,
+                            onCheckedChange = { on ->
+                                concurentEnabled.value = on
+                                val s = ConcurentManager.getSettings(context)
+                                val next = if (on) s.copy(
+                                    enabled = true,
+                                    postsSinceEnable = 0,
+                                    currentMessageIndex = 0,
+                                    currentGameIndex = 0,
+                                    lastPostAt = 0L,
+                                    nextPostAt = System.currentTimeMillis() + s.intervalSeconds * 1000L
+                                ) else s.copy(enabled = false)
+                                ConcurentManager.saveSettings(context, next)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
+                            )
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { showDialog = "concurent" },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                    ) {
+                        Icon(Icons.Default.Tune, null, modifier = Modifier.size(16.dp),
+                            tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Настроить тексты и чаты", color = ThemeManager.parseColor(theme.textPrimaryColor))
+                    }
                 }
             }
         }
@@ -2192,6 +2960,26 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         "commands" -> CommandsDialog(repository, theme) { showDialog = null }
         "greeting" -> GreetingDialog(repository, greetingSettings, theme) { greetingSettings = it; repository.saveGreetingSettings(it); showDialog = null }
         "confirm_settings" -> OrderConfirmDialog(repository, theme) { showDialog = null; confirmSettings = repository.getOrderConfirmSettings() }
+        "concurent" -> {
+            
+            val prefsC = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+            val pendingNode = prefsC.getString("concurent_pending_node", null)
+            val pendingName = prefsC.getString("concurent_pending_name", null)
+            val pending = if (pendingNode != null) pendingNode to (pendingName ?: "") else null
+            ConcurentDialog(
+                repository = repository,
+                theme = theme,
+                onDismiss = { showDialog = null },
+                onOpenBrowser = {
+                    showDialog = null
+                    navController.navigate("funpay_browser_pick")
+                },
+                pendingBrowserResult = pending,
+                onBrowserResultConsume = {
+                    prefsC.edit().remove("concurent_pending_node").remove("concurent_pending_name").apply()
+                }
+            )
+        }
         "review_settings" -> ReviewSettingsDialog(repository = repository, theme = theme,
             onNeedsPro = { showDialog = null; showReviewAiGate = true },
             onDismiss = { showDialog = null; reviewSettings = repository.getReviewReplySettings() })
@@ -2203,6 +2991,15 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             onDismiss = { showDialog = null })
         "order_reminder" -> OrderReminderDialog(settings = reminderSettings, theme = theme,
             onSave = { reminderSettings = it; repository.saveOrderReminderSettings(it); showDialog = null },
+            onDismiss = { showDialog = null })
+        "raise_settings" -> RaiseSettingsDialog(repository = repository, theme = theme,
+            onDismiss = {
+                showDialog = null
+                
+                
+                raiseInterval = repository.getRaiseInterval()
+            })
+        "feedback_bonus" -> FeedbackBonusDialog(repository = repository, theme = theme,
             onDismiss = { showDialog = null })
     }
 }
@@ -2370,6 +3167,675 @@ fun OrderReminderCard(settings: OrderReminderSettings, theme: AppTheme, onToggle
 }
 
 @Composable
+fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
+    var smartMode by remember { mutableStateOf(repository.isSmartRaiseEnabled()) }
+    var interval by remember { mutableIntStateOf(repository.getRaiseInterval()) }
+
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor)
+
+    
+    
+    var nextAtMs by remember { mutableStateOf(repository.prefs.let { p ->
+        SmartRaise.minNextAt(p)
+    }) }
+    LaunchedEffect(smartMode) {
+        while (true) {
+            nextAtMs = SmartRaise.minNextAt(repository.prefs)
+            kotlinx.coroutines.delay(1000L)
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(0.95f).heightIn(max = 640.dp),
+            colors = CardDefaults.cardColors(containerColor = surface),
+            shape = RoundedCornerShape(theme.borderRadius.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "Автоподнятие лотов",
+                        color = textPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null, tint = textPrimary) }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Выбери, как бот решает, когда поднимать лоты.",
+                    color = textSecondary, fontSize = 12.sp, lineHeight = 16.sp
+                )
+
+                Spacer(Modifier.height(14.dp))
+
+                
+                ModeCard(
+                    selected = smartMode,
+                    title = "Умный режим (рекомендуется)",
+                    subtitle = "Бот читает ответ FunPay после каждой попытки («Подождите 15 минут.») и ждёт ровно столько, сколько нужно.",
+                    bullet1 = "• Поднимает лоты сразу, как только FunPay разрешает",
+                    bullet2 = "• Интервал-слайдер ниже игнорируется",
+                    bullet3 = "• Не упирается в CF-блок из-за частых попыток",
+                    accent = accent,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary,
+                    onClick = {
+                        smartMode = true
+                        repository.setSmartRaiseEnabled(true)
+                    }
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                
+                ModeCard(
+                    selected = !smartMode,
+                    title = "Ручной режим",
+                    subtitle = "Бот просто поднимает каждые N минут, независимо от ответа FunPay.",
+                    bullet1 = "• Простой и предсказуемый",
+                    bullet2 = "• Может слать запросы в пустую, если КД ещё не прошёл",
+                    bullet3 = "• Используй, если умный режим почему-то не подходит",
+                    accent = accent,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary,
+                    onClick = {
+                        smartMode = false
+                        repository.setSmartRaiseEnabled(false)
+                    }
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                
+                val sliderAlpha = if (smartMode) 0.35f else 1f
+                Column(modifier = Modifier.alpha(sliderAlpha)) {
+                    Text(
+                        "Интервал ручного режима: $interval мин",
+                        color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium
+                    )
+                    Slider(
+                        value = interval.toFloat(),
+                        onValueChange = { if (!smartMode) interval = it.toInt() },
+                        valueRange = 5f..60f, steps = 10,
+                        enabled = !smartMode,
+                        onValueChangeFinished = { repository.setRaiseInterval(interval) },
+                        colors = SliderDefaults.colors(
+                            thumbColor = accent, activeTrackColor = accent
+                        )
+                    )
+                    if (smartMode) {
+                        Text(
+                            "Отключён: в умном режиме интервал не используется.",
+                            color = textSecondary, fontSize = 10.sp
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.28f)),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.4f))
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "Следующий разрешённый подъём",
+                            color = accent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        val now = System.currentTimeMillis()
+                        val msLeft = nextAtMs?.let { (it - now).coerceAtLeast(0L) } ?: 0L
+                        val statusText = when {
+                            nextAtMs == null -> "Сейчас: можно поднимать (ограничений нет)"
+                            msLeft <= 0 -> "Сейчас: можно поднимать"
+                            else -> {
+                                val min = msLeft / 60_000
+                                val sec = (msLeft / 1000) % 60
+                                "Через: ${min}м ${sec}с"
+                            }
+                        }
+                        Text(statusText, color = textPrimary, fontSize = 13.sp)
+                        Text(
+                            if (smartMode)
+                                "Обновляется после каждого ответа FunPay."
+                            else
+                                "В ручном режиме это информационный показатель; бот всё равно поднимает по своему интервалу.",
+                            color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) { Text("Готово", color = Color.White) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeCard(
+    selected: Boolean,
+    title: String,
+    subtitle: String,
+    bullet1: String,
+    bullet2: String,
+    bullet3: String,
+    accent: Color,
+    textPrimary: Color,
+    textSecondary: Color,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) accent.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.18f)
+        ),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            if (selected) 2.dp else 1.dp,
+            if (selected) accent else Color.White.copy(alpha = 0.12f)
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = onClick,
+                colors = RadioButtonDefaults.colors(selectedColor = accent)
+            )
+            Spacer(Modifier.width(4.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    subtitle,
+                    color = textSecondary, fontSize = 11.sp, lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 3.dp)
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(bullet1, color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp)
+                Text(bullet2, color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp)
+                Text(bullet3, color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
+    var settings by remember { mutableStateOf(repository.getFeedbackBonusSettings()) }
+
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor)
+
+    fun save(newVal: FeedbackBonusSettings) {
+        settings = newVal
+        repository.saveFeedbackBonusSettings(newVal)
+    }
+
+    var editingRuleId by remember { mutableStateOf<String?>(null) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.92f),
+            colors = CardDefaults.cardColors(containerColor = surface),
+            shape = RoundedCornerShape(theme.borderRadius.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "🎁 Бонусы за отзыв",
+                        color = textPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null, tint = textPrimary) }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Отправлять бонусы после ответа на отзыв",
+                            color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            "Срабатывает только после успешного ответа на отзыв; фильтруется по правилам ниже.",
+                            color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp
+                        )
+                    }
+                    Switch(
+                        checked = settings.enabled,
+                        onCheckedChange = { save(settings.copy(enabled = it)) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = accent,
+                            checkedTrackColor = accent.copy(alpha = 0.5f)
+                        )
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = Color.White.copy(0.12f))
+                Spacer(Modifier.height(8.dp))
+
+                
+                OutlinedButton(
+                    onClick = {
+                        val new = FeedbackBonusRule(name = "Правило #${settings.rules.size + 1}")
+                        save(settings.copy(rules = settings.rules + new))
+                        editingRuleId = new.id
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = accent)
+                ) {
+                    Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Добавить правило", fontSize = 13.sp)
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                if (settings.rules.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "Пока нет ни одного правила.\nНажми «Добавить правило», чтобы создать первое.",
+                            color = textSecondary, fontSize = 12.sp, textAlign = TextAlign.Center,
+                            lineHeight = 16.sp
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(settings.rules, key = { it.id }) { rule ->
+                            FeedbackBonusRuleCard(
+                                rule = rule,
+                                isEditing = editingRuleId == rule.id,
+                                accent = accent,
+                                textPrimary = textPrimary,
+                                textSecondary = textSecondary,
+                                onToggleEdit = {
+                                    editingRuleId = if (editingRuleId == rule.id) null else rule.id
+                                },
+                                onUpdate = { updated ->
+                                    val list = settings.rules.map { if (it.id == rule.id) updated else it }
+                                    save(settings.copy(rules = list))
+                                },
+                                onCopy = {
+                                    val clone = rule.copy(
+                                        id = java.util.UUID.randomUUID().toString(),
+                                        name = rule.name + " (копия)"
+                                    )
+                                    
+                                    val idx = settings.rules.indexOfFirst { it.id == rule.id }
+                                    val list = settings.rules.toMutableList()
+                                    list.add(idx + 1, clone)
+                                    save(settings.copy(rules = list))
+                                    editingRuleId = clone.id
+                                },
+                                onDelete = {
+                                    val list = settings.rules.filter { it.id != rule.id }
+                                    save(settings.copy(rules = list))
+                                    if (editingRuleId == rule.id) editingRuleId = null
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeedbackBonusRuleCard(
+    rule: FeedbackBonusRule,
+    isEditing: Boolean,
+    accent: Color,
+    textPrimary: Color,
+    textSecondary: Color,
+    onToggleEdit: () -> Unit,
+    onUpdate: (FeedbackBonusRule) -> Unit,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var imageUri by remember(rule.id) {
+        mutableStateOf<android.net.Uri?>(rule.imageUri?.let { android.net.Uri.parse(it) })
+    }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            imageUri = uri
+            onUpdate(rule.copy(imageUri = uri.toString()))
+        }
+    }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (rule.enabled) Color.Black.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.08f)
+        ),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (isEditing) accent else Color.White.copy(alpha = 0.1f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (isEditing) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    null,
+                    tint = textSecondary,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clickable { onToggleEdit() }
+                )
+                Spacer(Modifier.width(6.dp))
+                Column(modifier = Modifier.weight(1f).clickable { onToggleEdit() }) {
+                    Text(
+                        rule.name.ifBlank { "(без имени)" },
+                        color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        buildString {
+                            append("≥ ${rule.minStars}★")
+                            val filters = mutableListOf<String>()
+                            if (rule.matchLotIds.isNotEmpty()) filters.add("ID: ${rule.matchLotIds.size}")
+                            if (rule.matchLotNameContains.isNotEmpty()) filters.add("по имени: ${rule.matchLotNameContains.size}")
+                            if (rule.matchDescriptionCode.isNotEmpty()) filters.add("по коду: ${rule.matchDescriptionCode.size}")
+                            if (filters.isEmpty()) append(" · для всех лотов")
+                            else {
+                                append(" · фильтры — ")
+                                append(filters.joinToString(", "))
+                            }
+                        },
+                        color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp
+                    )
+                }
+                Switch(
+                    checked = rule.enabled,
+                    onCheckedChange = { onUpdate(rule.copy(enabled = it)) },
+                    modifier = Modifier.scale(0.75f),
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = accent,
+                        checkedTrackColor = accent.copy(alpha = 0.5f)
+                    )
+                )
+            }
+
+            if (isEditing) {
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = Color.White.copy(0.08f))
+                Spacer(Modifier.height(10.dp))
+
+                
+                OutlinedTextField(
+                    value = rule.name,
+                    onValueChange = { onUpdate(rule.copy(name = it)) },
+                    label = { Text("Название правила") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
+                        focusedBorderColor = accent, cursorColor = accent
+                    )
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                
+                Text("Отправлять при оценке ≥ ${rule.minStars}★", color = textPrimary, fontSize = 12.sp)
+                Slider(
+                    value = rule.minStars.toFloat(),
+                    onValueChange = { onUpdate(rule.copy(minStars = it.toInt().coerceIn(1, 5))) },
+                    valueRange = 1f..5f, steps = 3,
+                    colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                )
+
+                
+                Text("Текст бонуса:", color = textPrimary, fontSize = 12.sp)
+                OutlinedTextField(
+                    value = rule.text,
+                    onValueChange = { onUpdate(rule.copy(text = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2, maxLines = 5,
+                    placeholder = {
+                        Text(
+                            "Спасибо, \$username! Промокод XYZ для следующей покупки 🎁",
+                            color = textSecondary
+                        )
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
+                        focusedBorderColor = accent, cursorColor = accent
+                    )
+                )
+
+                
+                var showVarsHelp by remember { mutableStateOf(false) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { showVarsHelp = !showVarsHelp }.padding(vertical = 4.dp)
+                ) {
+                    Icon(
+                        if (showVarsHelp) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        null, tint = accent, modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Переменные", color = accent, fontSize = 11.sp)
+                }
+                if (showVarsHelp) {
+                    Text(
+                        FpPlaceholders.AVAILABLE_HELP_TEXT,
+                        color = textSecondary, fontSize = 10.sp, lineHeight = 14.sp,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    )
+                }
+
+                Spacer(Modifier.height(6.dp))
+
+                
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = {
+                            imagePicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (imageUri == null) "+ Картинка" else "Картинка выбрана",
+                            fontSize = 12.sp
+                        )
+                    }
+                    if (imageUri != null) {
+                        Spacer(Modifier.width(6.dp))
+                        IconButton(onClick = {
+                            imageUri = null
+                            onUpdate(rule.copy(imageUri = null))
+                        }) { Icon(Icons.Default.Close, null, tint = textSecondary) }
+                    }
+                }
+                if (imageUri != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                        Text("Картинка первой", color = textSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = rule.imageFirst,
+                            onCheckedChange = { onUpdate(rule.copy(imageFirst = it)) },
+                            modifier = Modifier.scale(0.7f),
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = accent,
+                                checkedTrackColor = accent.copy(alpha = 0.5f)
+                            )
+                        )
+                    }
+                }
+
+                
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = rule.oncePerOrder,
+                        onCheckedChange = { onUpdate(rule.copy(oncePerOrder = it)) },
+                        colors = CheckboxDefaults.colors(checkedColor = accent)
+                    )
+                    Text("Только один раз на заказ", color = textPrimary, fontSize = 12.sp)
+                }
+
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = Color.White.copy(0.08f))
+                Spacer(Modifier.height(10.dp))
+
+                
+                Text(
+                    "Фильтры по лоту (необязательно)",
+                    color = accent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.5.sp
+                )
+                Text(
+                    "Если задать хоть один фильтр — правило сработает, только если отзыв пришёл на лот, совпавший ХОТЯ БЫ с одним из фильтров.",
+                    color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp
+                )
+                Spacer(Modifier.height(6.dp))
+
+                CommaListField(
+                    label = "ID лотов (через запятую)",
+                    placeholder = "22238017, 22238018, 3934718-168-110-2842-0",
+                    value = rule.matchLotIds,
+                    onChange = { onUpdate(rule.copy(matchLotIds = it)) },
+                    accent = accent, textPrimary = textPrimary, textSecondary = textSecondary
+                )
+                Spacer(Modifier.height(6.dp))
+                CommaListField(
+                    label = "Подстроки в названии лота",
+                    placeholder = "VK Coin, ккк, промо",
+                    value = rule.matchLotNameContains,
+                    onChange = { onUpdate(rule.copy(matchLotNameContains = it)) },
+                    accent = accent, textPrimary = textPrimary, textSecondary = textSecondary
+                )
+                Spacer(Modifier.height(6.dp))
+                CommaListField(
+                    label = "Спец-коды в описании лота",
+                    placeholder = "[BONUS], #promo2026",
+                    value = rule.matchDescriptionCode,
+                    onChange = { onUpdate(rule.copy(matchDescriptionCode = it)) },
+                    accent = accent, textPrimary = textPrimary, textSecondary = textSecondary
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(
+                        onClick = onCopy,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = accent)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Копировать", fontSize = 11.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFE57373))
+                    ) {
+                        Icon(Icons.Default.Delete, null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Удалить", fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Удалить правило?") },
+            text = { Text("Правило «${rule.name}» будет удалено. Это действие нельзя отменить.") },
+            confirmButton = {
+                TextButton(onClick = { showDeleteConfirm = false; onDelete() }) {
+                    Text("Удалить", color = Color(0xFFE57373))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Отмена") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun CommaListField(
+    label: String,
+    placeholder: String,
+    value: List<String>,
+    onChange: (List<String>) -> Unit,
+    accent: Color,
+    textPrimary: Color,
+    textSecondary: Color
+) {
+    var raw by remember(value) { mutableStateOf(value.joinToString(", ")) }
+    OutlinedTextField(
+        value = raw,
+        onValueChange = {
+            raw = it
+            val parsed = it.split(",").map { s -> s.trim() }.filter { s -> s.isNotBlank() }
+            onChange(parsed)
+        },
+        label = { Text(label, fontSize = 11.sp) },
+        placeholder = { Text(placeholder, color = textSecondary, fontSize = 11.sp) },
+        modifier = Modifier.fillMaxWidth(),
+        maxLines = 3,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
+            focusedBorderColor = accent, cursorColor = accent
+        )
+    )
+}
+
+@Composable
 fun OrderReminderDialog(settings: OrderReminderSettings, theme: AppTheme, onSave: (OrderReminderSettings) -> Unit, onDismiss: () -> Unit) {
     var delayHours by remember { mutableIntStateOf(settings.delayHours) }
     var message by remember { mutableStateOf(settings.message) }
@@ -2398,7 +3864,7 @@ fun OrderReminderDialog(settings: OrderReminderSettings, theme: AppTheme, onSave
                         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, focusedTextColor = textPrimary, unfocusedTextColor = textPrimary, cursorColor = accent),
                         placeholder = { Text("Текст напоминания...", color = textSecondary) })
                     Spacer(Modifier.height(4.dp))
-                    Text("Переменные: \$username - ник, \$order_id - номер заказа", fontSize = 10.sp, color = textSecondary)
+                    Text("Переменные: \$username, \$order_id, \$order_link, \$lot_name, \$date, \$time, \$chat_name", fontSize = 10.sp, color = textSecondary, lineHeight = 13.sp)
                 }
             }
         },
@@ -2516,12 +3982,6 @@ fun ImagePickerRow(
     }
 }
 
-/**
- * Селектор порядка: иконки в виде двух вертикальных стопок.
- *   [ 🖼 ]  [ 💬 ]
- *   [ 💬 ]  [ 🖼 ]
- * Показывается только когда есть и текст и картинка.
- */
 @Composable
 fun ImageOrderPicker(
     imageFirst: Boolean,
@@ -2707,6 +4167,10 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
     var newTrigger by remember { mutableStateOf("") }
     var newResponse by remember { mutableStateOf("") }
     var exactMatch by remember { mutableStateOf(false) }
+    var caseSensitive by remember { mutableStateOf(false) }
+    var callMode by remember { mutableStateOf(false) }
+    var callStyle by remember { mutableStateOf("notification") } 
+    var callAutoReplyText by remember { mutableStateOf("Зову хозяина, он ответит в течение часа.") }
     var newImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var newImageFirst by remember { mutableStateOf(true) }
     var editingCmd by remember { mutableStateOf<AutoResponseCommand?>(null) }
@@ -2772,15 +4236,152 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                     maxLines = 4
                 )
                 Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = exactMatch,
-                        onCheckedChange = { exactMatch = it },
-                        colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+
+                
+                var showVarsHelp by remember { mutableStateOf(false) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showVarsHelp = !showVarsHelp }
+                        .padding(vertical = 4.dp)
+                ) {
+                    Icon(
+                        if (showVarsHelp) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        null,
+                        tint = ThemeManager.parseColor(theme.accentColor),
+                        modifier = Modifier.size(18.dp)
                     )
-                    Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Доступные переменные",
+                        color = ThemeManager.parseColor(theme.accentColor),
+                        fontSize = 11.sp, fontWeight = FontWeight.SemiBold
+                    )
+                }
+                if (showVarsHelp) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.25f)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            FpPlaceholders.AVAILABLE_HELP_TEXT,
+                            color = ThemeManager.parseColor(theme.textSecondaryColor),
+                            fontSize = 10.sp, lineHeight = 14.sp,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
                 }
                 Spacer(Modifier.height(6.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f))
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(
+                            if (editingCmd != null) "Параметры этой команды" else "Параметры новой команды",
+                            color = ThemeManager.parseColor(theme.accentColor),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.5.sp
+                        )
+                        Text(
+                            "Действуют только для той команды, которую сейчас создаёшь или редактируешь.",
+                            color = ThemeManager.parseColor(theme.textSecondaryColor),
+                            fontSize = 10.sp, lineHeight = 13.sp
+                        )
+                        Spacer(Modifier.height(6.dp))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = exactMatch,
+                                onCheckedChange = { exactMatch = it },
+                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                            )
+                            Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = caseSensitive,
+                                onCheckedChange = { caseSensitive = it },
+                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                            )
+                            Column {
+                                Text("Учитывать регистр букв", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                Text(
+                                    if (caseSensitive) "'Привет' ≠ 'привет'" else "'Привет' = 'ПРИВЕТ' = 'привет'",
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp
+                                )
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = callMode,
+                                onCheckedChange = { callMode = it },
+                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                            )
+                            Column {
+                                Text("Режим вызова (звонок продавца)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                Text(
+                                    "Срочное уведомление продавцу с кнопкой 'Ответить'. Удобно для !продавец, !позвать.",
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp, lineHeight = 13.sp
+                                )
+                            }
+                        }
+                        if (callMode) {
+                            Spacer(Modifier.height(6.dp))
+                            Text("Как показывать вызов:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.height(4.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FilterChip(
+                                    selected = callStyle == "notification",
+                                    onClick = { callStyle = "notification" },
+                                    label = { Text("Уведомление", fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                        selectedLabelColor = Color.White
+                                    )
+                                )
+                                FilterChip(
+                                    selected = callStyle == "fullscreen",
+                                    onClick = { callStyle = "fullscreen" },
+                                    label = { Text("Имитация звонка", fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                        selectedLabelColor = Color.White
+                                    )
+                                )
+                            }
+                            Text(
+                                if (callStyle == "fullscreen")
+                                    "На весь экран появится экран входящего вызова в стиле iOS — с аватаркой, ником и кнопками 'Ответить/Сбросить'. Работает даже поверх блокировки."
+                                else
+                                    "Обычное пуш-уведомление с рингтоном и кнопками 'Ответить/Отклонить'.",
+                                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                fontSize = 10.sp, lineHeight = 13.sp
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = callAutoReplyText,
+                                onValueChange = { callAutoReplyText = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Автоответ покупателю во время вызова", fontSize = 11.sp) },
+                                placeholder = { Text("Зову хозяина, он ответит в течение часа.", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
+                                maxLines = 3,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                    unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                    focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                    cursorColor = ThemeManager.parseColor(theme.accentColor)
+                                )
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 ImagePickerRow(
                     imageUri = newImageUri,
                     theme = theme,
@@ -2798,6 +4399,9 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                             onClick = {
                                 editingCmd = null
                                 newTrigger = ""; newResponse = ""; exactMatch = false
+                                caseSensitive = false; callMode = false
+                                callStyle = "notification"
+                                callAutoReplyText = "Зову хозяина, он ответит в течение часа."
                                 newImageUri = null; newImageFirst = true
                             },
                             modifier = Modifier.weight(1f)
@@ -2805,14 +4409,18 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                     }
                     Button(
                         onClick = {
-                            val hasContent = newTrigger.isNotBlank() && (newResponse.isNotBlank() || newImageUri != null)
+                            val hasContent = newTrigger.isNotBlank() && (newResponse.isNotBlank() || newImageUri != null || callMode)
                             if (hasContent) {
                                 val cmd = AutoResponseCommand(
                                     trigger = newTrigger.trim(),
                                     response = newResponse.trim(),
                                     exactMatch = exactMatch,
                                     imageUri = newImageUri?.toString(),
-                                    imageFirst = newImageFirst
+                                    imageFirst = newImageFirst,
+                                    caseSensitive = caseSensitive,
+                                    callMode = callMode,
+                                    callStyle = callStyle,
+                                    callAutoReplyTextRaw = callAutoReplyText.trim().ifEmpty { null }
                                 )
                                 commands = if (editingCmd != null) {
                                     commands.map { if (it == editingCmd) cmd else it }
@@ -2822,6 +4430,9 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                                 repository.saveCommands(commands)
                                 editingCmd = null
                                 newTrigger = ""; newResponse = ""; exactMatch = false
+                                caseSensitive = false; callMode = false
+                                callStyle = "notification"
+                                callAutoReplyText = "Зову хозяина, он ответит в течение часа."
                                 newImageUri = null; newImageFirst = true
                             }
                         },
@@ -2866,6 +4477,14 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                                                 Spacer(Modifier.width(4.dp))
                                                 Text("=", color = ThemeManager.parseColor(theme.accentColor), fontSize = 10.sp)
                                             }
+                                            if (cmd.caseSensitive) {
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("Aa", color = ThemeManager.parseColor(theme.accentColor), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                            if (cmd.callMode) {
+                                                Spacer(Modifier.width(4.dp))
+                                                Icon(Icons.Default.Call, null, modifier = Modifier.size(12.dp), tint = Color(0xFF4CAF50))
+                                            }
                                             if (cmd.imageUri != null) {
                                                 Spacer(Modifier.width(4.dp))
                                                 Icon(Icons.Default.Image, null, modifier = Modifier.size(12.dp), tint = ThemeManager.parseColor(theme.accentColor))
@@ -2886,6 +4505,10 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                                         newTrigger = cmd.trigger
                                         newResponse = cmd.response
                                         exactMatch = cmd.exactMatch
+                                        caseSensitive = cmd.caseSensitive
+                                        callMode = cmd.callMode
+                                        callStyle = cmd.callStyle.ifBlank { "notification" }
+                                        callAutoReplyText = cmd.callAutoReplyTextOrDefault
                                         newImageUri = cmd.imageUri?.let { android.net.Uri.parse(it) }
                                         newImageFirst = cmd.imageFirst
                                     }, modifier = Modifier.size(32.dp)) {
@@ -2895,6 +4518,9 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                                         if (editingCmd == cmd) {
                                             editingCmd = null
                                             newTrigger = ""; newResponse = ""; exactMatch = false
+                                            caseSensitive = false; callMode = false
+                                            callStyle = "notification"
+                                            callAutoReplyText = "Зову хозяина, он ответит в течение часа."
                                             newImageUri = null; newImageFirst = true
                                         }
                                         commands = commands.filter { it != cmd }
@@ -2952,7 +4578,11 @@ fun GreetingDialog(repository: FunPayRepository, settings: GreetingSettings, the
                         cursorColor = ThemeManager.parseColor(theme.accentColor)
                     )
                 )
-                Text("Переменные: \$username, \$chat_name", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                Text(
+                    "Переменные: \$username, \$chat_name, \$chat_id, \$date, \$time, \$full_date, \$message_text",
+                    fontSize = 10.sp, lineHeight = 13.sp,
+                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                )
                 Spacer(modifier = Modifier.height(8.dp))
 
                 ImagePickerRow(
@@ -3229,9 +4859,50 @@ fun ReviewSettingsDialog(
                         }
                         HorizontalDivider(color = Color.White.copy(0.1f))
                     }
-                    Text("Переменные: \$username, \$order_id, \$lot_name, \$date", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
-                    Text("(\$date = текущая дата, напр. 25.02.2026)", fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                    
+                    
+                    var showReviewVarsHelp by remember { mutableStateOf(false) }
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showReviewVarsHelp = !showReviewVarsHelp }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Icon(
+                            if (showReviewVarsHelp) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            null,
+                            tint = ThemeManager.parseColor(theme.accentColor),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (showReviewVarsHelp) "Скрыть справку по переменным" else "Показать справку по переменным",
+                            color = ThemeManager.parseColor(theme.accentColor),
+                            fontSize = 11.sp, fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    if (showReviewVarsHelp) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.25f)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                FpPlaceholders.AVAILABLE_HELP_TEXT,
+                                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                fontSize = 10.sp, lineHeight = 14.sp,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
                 }
+
+                
+                
+                
+                
 
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
@@ -3361,6 +5032,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                     val fileId = repository.uploadImage(selectedImageUri!!)
                                     if (fileId != null) {
                                         repository.sendMessage(chatId, "", fileId)
+                                        if (repository.getReadMarkSettings().markAfterManualReply) {
+                                            repository.markChatAsRead(chatId)
+                                        }
                                     }
                                 }
                             },
@@ -3427,10 +5101,39 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         )
                     }
                 }
-                IconButton(onClick = {
-                    navController.navigate("profile/$chatId/$username")
-                }) {
-                    Icon(Icons.Default.AccountCircle, null, tint = ThemeManager.parseColor(theme.accentColor))
+                IconButton(
+                    onClick = {
+                        if (GameChatsRegistry.isSystemChatId(chatId)) {
+                            
+                            try {
+                                val chatUrl = "https://funpay.com/chat/?node=$chatId"
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(chatUrl)))
+                            } catch (_: Exception) {}
+                        } else {
+                            navController.navigate("profile/$chatId/$username")
+                        }
+                    }
+                ) {
+                    Icon(
+                        Icons.Default.AccountCircle, null,
+                        tint = ThemeManager.parseColor(theme.accentColor)
+                    )
+                }
+                
+                if (!GameChatsRegistry.isSystemChatId(chatId)) {
+                    val myId = repository.getMyUserId()
+                    val parts = chatId.removePrefix("users-").split("-")
+                    val otherUid = parts.firstOrNull { it != myId && it.isNotEmpty() } ?: parts.lastOrNull() ?: ""
+                    IconButton(
+                        onClick = {
+                            navController.navigate("buyer_history/${Uri.encode(username)}/${Uri.encode(otherUid)}")
+                        }
+                    ) {
+                        Icon(
+                            Icons.Default.Receipt, null,
+                            tint = ThemeManager.parseColor(theme.accentColor)
+                        )
+                    }
                 }
             }
         }
@@ -3447,10 +5150,12 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         if (info.lookingAtName != null) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().clickable {
-                                    try {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.lookingAtLink))
-                                        context.startActivity(intent)
-                                    } catch (_: Exception) {}
+                                    val link = info.lookingAtLink.orEmpty()
+                                    if (link.isNotEmpty()) {
+                                        try {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
+                                        } catch (_: Exception) {}
+                                    }
                                 },
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -3461,7 +5166,12 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                     color = ThemeManager.parseColor(theme.accentColor),
                                     fontSize = 12.sp,
                                     maxLines = 1,
-                                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                                    modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState())
+                                )
+                                Icon(
+                                    Icons.Default.OpenInBrowser, null,
+                                    tint = ThemeManager.parseColor(theme.textSecondaryColor),
+                                    modifier = Modifier.size(14.dp).padding(start = 2.dp)
                                 )
                             }
                         }
@@ -3562,13 +5272,33 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 val orderId = link.url.substringAfter("orders/").substringBefore("/")
                                 if (orderId.isNotEmpty()) navController.navigate("order/$orderId")
                             }
+                            LinkType.LOT -> {
+                                val lotId = Regex("[?&]id=([A-Za-z0-9\\-]+)")
+                                    .find(link.url)?.groupValues?.getOrNull(1)
+                                if (!lotId.isNullOrBlank()) {
+                                    navController.navigate("lot/$lotId")
+                                } else {
+                                    try {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
+                                    } catch (_: Exception) {}
+                                }
+                            }
                             LinkType.USER, LinkType.EXTERNAL -> {
                                 try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url))) } catch (_: Exception) {}
                             }
                         }
                     },
                     onImageClick = { url -> fullScreenImageUrl = url },
-                    onProfileClick = { _, _ -> navController.navigate("profile/$chatId/$username") },
+                    onProfileClick = { userId, userName ->
+                        
+                        
+                        
+                        val targetId = if (GameChatsRegistry.isSystemChatId(chatId)) userId else chatId
+                        val targetName = if (GameChatsRegistry.isSystemChatId(chatId)) userName.ifBlank { username } else username
+                        if (targetId.isNotBlank()) {
+                            navController.navigate("profile/$targetId/$targetName")
+                        }
+                    },
                     otherUserId = chatId,
                     otherUsername = username
                 )
@@ -3633,7 +5363,8 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                             val contextHistory = messages.takeLast(10).joinToString("\n") {
                                                 "${if(it.isMe) "Продавец" else "Покупатель"}: ${it.text}"
                                             }
-                                            val rewrited = repository.rewriteMessage(inputText, contextHistory)
+                                            val aiChat = ChatItem(id = chatId, username = username, lastMessage = messages.lastOrNull { !it.isMe }?.text ?: "", isUnread = false, avatarUrl = "", date = "")
+                                            val rewrited = repository.rewriteMessage(inputText, contextHistory, chat = aiChat)
                                             if (!rewrited.isNullOrEmpty()) {
                                                 inputText = rewrited
                                             }
@@ -3711,6 +5442,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                             FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
                                             scope.launch {
                                                 repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
+                                                if (repository.getReadMarkSettings().markAfterManualReply) {
+                                                    repository.markChatAsRead(chatId)
+                                                }
                                             }
                                         } else {
                                             inputText = finalText
@@ -3748,6 +5482,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
 
                         scope.launch {
                             repository.sendMessage(chatId, textToSend)
+                            if (repository.getReadMarkSettings().markAfterManualReply) {
+                                repository.markChatAsRead(chatId)
+                            }
                         }
                     }
                 }) {
@@ -4004,7 +5741,14 @@ fun OptimizedMessageBubble(
     } else {
         val isIncoming = !message.isMe
         val profileUserId = if (isIncoming) (message.authorUserId ?: otherUserId) else ""
-        val profileName = if (isIncoming) otherUsername.ifEmpty { message.author } else ""
+        
+        
+        val profileName = when {
+            !isIncoming -> ""
+            !message.authorUserId.isNullOrBlank() && message.authorUserId != otherUserId && message.author.isNotBlank() -> message.author
+            otherUsername.isNotEmpty() -> otherUsername
+            else -> message.author
+        }
         val accentColor = ThemeManager.parseColor(theme.accentColor)
         val isLong = message.text.length > 500
         var expanded by remember { mutableStateOf(false) }
@@ -4198,6 +5942,7 @@ fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayR
             val url = match.value
             val linkType = when {
                 url.contains("/orders/") -> LinkType.ORDER
+                url.contains("/lots/offer") || url.contains("/chips/offer") -> LinkType.LOT
                 url.contains("/users/") -> LinkType.USER
                 else -> LinkType.EXTERNAL
             }
@@ -4215,7 +5960,15 @@ fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayR
             isAdmin = isAdminMsg,
             badge = msg.badge,
             links = links,
-            authorUserId = if (!msg.isMe && !isSystemMsg && otherUserId.isNotEmpty()) otherUserId else null
+            
+            
+            authorUserId = when {
+                msg.isMe || isSystemMsg -> null
+                !msg.authorId.isNullOrBlank() && msg.authorId != "0" -> msg.authorId
+                otherUserId.isNotEmpty() -> otherUserId
+                else -> null
+            },
+            authorAvatarUrl = msg.authorAvatarUrl
         )
     }
 }
@@ -4331,53 +6084,66 @@ fun ConsoleView(logs: List<Pair<String, Boolean>>, theme: AppTheme, navControlle
 }
 
 @Composable
-fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) {
+fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, navController: NavController) {
     val scope = rememberCoroutineScope()
+    var showConfirmOrderDialog by remember { mutableStateOf(false) }
     var orderDetails by remember { mutableStateOf<OrderDetails?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var showRefundDialog by remember { mutableStateOf(false) }
+
+    
     var showReviewReplyDialog by remember { mutableStateOf(false) }
     var showDeleteReplyDialog by remember { mutableStateOf(false) }
     var replyText by remember { mutableStateOf("") }
+
+    
+    var showWriteReviewDialog by remember { mutableStateOf(false) }
+    var showDeleteMyReviewDialog by remember { mutableStateOf(false) }
+    var myReviewText by remember { mutableStateOf("") }
+    var myReviewRating by remember { mutableIntStateOf(5) }
+
+    val context = LocalContext.current
 
     LaunchedEffect(orderId) {
         isLoading = true
         orderDetails = repository.getOrderDetails(orderId)
         isLoading = false
 
-        if (orderDetails?.hasReview == true && orderDetails?.sellerReply?.isNotEmpty() == true) {
-            replyText = orderDetails!!.sellerReply
+        orderDetails?.let { od ->
+            if (od.isBuyer && od.hasReview) {
+                myReviewText   = od.reviewText
+                myReviewRating = od.reviewRating
+            } else if (!od.isBuyer && od.hasReview && od.sellerReply.isNotEmpty()) {
+                replyText = od.sellerReply
+            }
         }
     }
 
-    if (showRefundDialog) {
+    if (showConfirmOrderDialog) {
         AlertDialog(
-            onDismissRequest = { showRefundDialog = false },
-            title = { Text("Возврат средств", color = Color.Red) },
-            text = { Text("Вы уверены, что хотите вернуть деньги покупателю? Это действие необратимо.") },
+            onDismissRequest = { showConfirmOrderDialog = false },
+            title = { Text("Подтвердить заказ", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+            text = { Text("Внимание! Отправлять деньги продавцу необходимо только после выполнения им всех обязательств. Мы уже не сможем вернуть их!") },
             confirmButton = {
                 Button(
                     onClick = {
                         scope.launch {
-                            val success = repository.refundOrder(orderId)
-                            if (success) {
-                                orderDetails = repository.getOrderDetails(orderId)
-                            }
-                            showRefundDialog = false
+                            val success = repository.confirmOrder(orderId)
+                            if (success) { orderDetails = repository.getOrderDetails(orderId) }
+                            showConfirmOrderDialog = false
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
-                ) {
-                    Text("Вернуть деньги")
-                }
+                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                ) { Text("Всё понятно, отправить деньги") }
             },
             dismissButton = {
-                TextButton(onClick = { showRefundDialog = false }) { Text("Отмена") }
+                TextButton(onClick = { showConfirmOrderDialog = false }) { Text("Отмена") }
             },
             containerColor = ThemeManager.parseColor(theme.surfaceColor)
         )
     }
 
+    
     if (showReviewReplyDialog) {
         AlertDialog(
             onDismissRequest = { showReviewReplyDialog = false },
@@ -4395,16 +6161,12 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
                     onClick = {
                         scope.launch {
                             val success = repository.replyToReview(orderId, replyText, 5)
-                            if (success) {
-                                orderDetails = repository.getOrderDetails(orderId)
-                            }
+                            if (success) { orderDetails = repository.getOrderDetails(orderId) }
                             showReviewReplyDialog = false
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                ) {
-                    Text("Отправить")
-                }
+                ) { Text("Отправить") }
             },
             dismissButton = {
                 TextButton(onClick = { showReviewReplyDialog = false }) { Text("Отмена") }
@@ -4413,6 +6175,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
         )
     }
 
+    
     if (showDeleteReplyDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteReplyDialog = false },
@@ -4423,19 +6186,138 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
                     onClick = {
                         scope.launch {
                             val success = repository.deleteReviewReply(orderId)
-                            if (success) {
-                                orderDetails = repository.getOrderDetails(orderId)
-                            }
+                            if (success) { orderDetails = repository.getOrderDetails(orderId) }
                             showDeleteReplyDialog = false
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
-                ) {
-                    Text("Удалить")
-                }
+                ) { Text("Удалить") }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteReplyDialog = false }) { Text("Отмена") }
+            },
+            containerColor = ThemeManager.parseColor(theme.surfaceColor)
+        )
+    }
+
+    
+    if (showWriteReviewDialog) {
+        AlertDialog(
+            onDismissRequest = { showWriteReviewDialog = false },
+            title = {
+                Text(
+                    if (orderDetails?.hasReview == true) "Редактировать отзыв" else "Оставить отзыв",
+                    color = ThemeManager.parseColor(theme.textPrimaryColor)
+                )
+            },
+            text = {
+                Column {
+                    
+                    Text("Оценка:", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        (1..5).forEach { star ->
+                            val starColor = when {
+                                star <= myReviewRating -> when (myReviewRating) {
+                                    5 -> Color(0xFF4CAF50); 4 -> Color(0xFF8BC34A)
+                                    3 -> Color(0xFFFFC107); 2 -> Color(0xFFFF9800)
+                                    else -> Color(0xFFF44336)
+                                }
+                                else -> ThemeManager.parseColor(theme.textSecondaryColor).copy(0.3f)
+                            }
+                            Icon(
+                                if (star <= myReviewRating) Icons.Default.Star else Icons.Default.StarBorder,
+                                contentDescription = null,
+                                tint = starColor,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clickable { myReviewRating = star }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = myReviewText,
+                        onValueChange = { myReviewText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Текст отзыва") },
+                        minLines = 2
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val success = repository.writeReview(orderId, myReviewText, myReviewRating)
+                            if (success) {
+                                orderDetails = repository.getOrderDetails(orderId)
+                                orderDetails?.let {
+                                    myReviewText   = it.reviewText
+                                    myReviewRating = it.reviewRating
+                                }
+                            }
+                            showWriteReviewDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                ) { Text("Отправить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showWriteReviewDialog = false }) { Text("Отмена") }
+            },
+            containerColor = ThemeManager.parseColor(theme.surfaceColor)
+        )
+    }
+
+    
+    if (showDeleteMyReviewDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteMyReviewDialog = false },
+            title = { Text("Удалить отзыв?", color = Color.Red) },
+            text = { Text("Вы уверены, что хотите удалить свой отзыв? Это действие необратимо.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val success = repository.deleteMyReview(orderId)
+                            if (success) {
+                                orderDetails = repository.getOrderDetails(orderId)
+                                myReviewText   = ""
+                                myReviewRating = 5
+                            }
+                            showDeleteMyReviewDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) { Text("Удалить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteMyReviewDialog = false }) { Text("Отмена") }
+            },
+            containerColor = ThemeManager.parseColor(theme.surfaceColor)
+        )
+    }
+
+    if (showRefundDialog) {
+        AlertDialog(
+            onDismissRequest = { showRefundDialog = false },
+            title = { Text("Возврат средств", color = Color.Red) },
+            text = { Text("Вы уверены, что хотите вернуть деньги покупателю? Это действие необратимо.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val success = repository.refundOrder(orderId)
+                            if (success) { orderDetails = repository.getOrderDetails(orderId) }
+                            showRefundDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) { Text("Вернуть деньги") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRefundDialog = false }) { Text("Отмена") }
             },
             containerColor = ThemeManager.parseColor(theme.surfaceColor)
         )
@@ -4492,14 +6374,52 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AsyncImage(
-                                model = order.buyerAvatar,
-                                contentDescription = null,
-                                modifier = Modifier.size(32.dp).clip(CircleShape)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Покупатель: ${order.buyerName}", color = ThemeManager.parseColor(theme.textSecondaryColor))
+                        
+                        val partnerLabel = if (order.isBuyer) "Продавец" else "Покупатель"
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable(enabled = order.buyerId.isNotEmpty()) {
+                                    if (!order.isBuyer && order.buyerId.isNotEmpty()) {
+                                        val safeName = order.buyerName.replace("/", "_")
+                                        navController.navigate("buyer_history/${Uri.encode(safeName)}/${Uri.encode(order.buyerId)}")
+                                    }
+                                }
+                            ) {
+                                AsyncImage(
+                                    model = order.buyerAvatar,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(32.dp).clip(CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "$partnerLabel: ${order.buyerName}",
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                                )
+                            }
+
+                            if (order.buyerId.isNotEmpty()) {
+                                val myUserId = repository.getMyUserId()
+                                val chatId = if (myUserId.isNotEmpty()) "users-$myUserId-${order.buyerId}" else order.buyerId
+                                Button(
+                                    onClick = { navController.navigate("chat/$chatId/${Uri.encode(order.buyerName)}") },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f),
+                                        contentColor = ThemeManager.parseColor(theme.accentColor)
+                                    ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier.height(36.dp)
+                                ) {
+                                    Icon(Icons.Default.Chat, contentDescription = "Чат", modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }
@@ -4516,43 +6436,132 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                if (order.hasReview) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)),
-                        shape = RoundedCornerShape(theme.borderRadius.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Отзыв покупателя (${order.reviewRating}*)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold)
-                            Text(order.reviewText, color = ThemeManager.parseColor(theme.textPrimaryColor), fontStyle = FontStyle.Italic)
-
-                            if (order.sellerReply.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text("Ваш ответ:", color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                Text(order.sellerReply, color = ThemeManager.parseColor(theme.textPrimaryColor))
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { showReviewReplyDialog = true },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                                ) {
-                                    Text(if (order.sellerReply.isNotEmpty()) "Изменить" else "Ответить")
+                
+                if (order.isBuyer) {
+                    
+                    if (order.hasReview) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(theme.borderRadius.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    "Ваш отзыв",
+                                    color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                
+                                Row {
+                                    val starColor = when (order.reviewRating) {
+                                        5 -> Color(0xFF4CAF50); 4 -> Color(0xFF8BC34A)
+                                        3 -> Color(0xFFFFC107); 2 -> Color(0xFFFF9800)
+                                        else -> Color(0xFFF44336)
+                                    }
+                                    repeat(5) { i ->
+                                        Icon(
+                                            if (i < order.reviewRating) Icons.Default.Star else Icons.Default.StarBorder,
+                                            null, tint = if (i < order.reviewRating) starColor
+                                            else ThemeManager.parseColor(theme.textSecondaryColor).copy(0.4f),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                if (order.reviewText.isNotEmpty()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(order.reviewText, color = ThemeManager.parseColor(theme.textPrimaryColor), fontStyle = FontStyle.Italic)
                                 }
                                 if (order.sellerReply.isNotEmpty()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Ответ продавца:", color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text(order.sellerReply, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
-                                        onClick = { showDeleteReplyDialog = true },
+                                        onClick = {
+                                            myReviewText   = order.reviewText
+                                            myReviewRating = order.reviewRating
+                                            showWriteReviewDialog = true
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    ) { Text("Редактировать") }
+                                    Button(
+                                        onClick = { showDeleteMyReviewDialog = true },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.8f))
+                                    ) { Text("Удалить") }
+                                }
+                            }
+                        }
+                    } else {
+                        
+                        Button(
+                            onClick = {
+                                myReviewText   = ""
+                                myReviewRating = 5
+                                showWriteReviewDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Star, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Оставить отзыв")
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else {
+                    
+                    if (order.hasReview) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(theme.borderRadius.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("Отзыв покупателя (${order.reviewRating}★)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold)
+                                Text(order.reviewText, color = ThemeManager.parseColor(theme.textPrimaryColor), fontStyle = FontStyle.Italic)
+
+                                if (order.sellerReply.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Ваш ответ:", color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text(order.sellerReply, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                }
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { showReviewReplyDialog = true },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
                                     ) {
-                                        Text("Удалить")
+                                        Text(if (order.sellerReply.isNotEmpty()) "Изменить" else "Ответить")
+                                    }
+                                    if (order.sellerReply.isNotEmpty()) {
+                                        Button(
+                                            onClick = { showDeleteReplyDialog = true },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.8f))
+                                        ) { Text("Удалить") }
                                     }
                                 }
                             }
                         }
+                        Spacer(modifier = Modifier.height(16.dp))
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                if (order.canConfirm) {
+                    Button(
+                        onClick = { showConfirmOrderDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                    ) {
+                        Text("Подтвердить выполнение заказа", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(8.dp))
                 }
 
                 if (order.canRefund) {
@@ -4564,6 +6573,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme) 
                         Text("Вернуть деньги", color = Color.White)
                     }
                 }
+
             }
         }
     }
@@ -4792,7 +6802,11 @@ fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss:
                     )
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                Text("Переменные: \$username, \$order_id", fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                Text(
+                    "Переменные: \$username, \$order_id, \$order_link, \$chat_name, \$date, \$time",
+                    fontSize = 11.sp, lineHeight = 14.sp,
+                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                )
 
                 Spacer(modifier = Modifier.height(12.dp))
                 ImagePickerRow(
@@ -5647,7 +7661,35 @@ data class BusyModeSettings(
     @SerializedName("keepGreeting") val keepGreeting: Boolean = false,
     @SerializedName("enabledAt") val enabledAt: Long = 0L,
     @SerializedName("imageUri") val imageUri: String? = null,
-    @SerializedName("imageFirst") val imageFirst: Boolean = true
+    @SerializedName("imageFirst") val imageFirst: Boolean = true,
+    
+    @SerializedName("skipRefundIfAutoDelivery") val skipRefundIfAutoDelivery: Boolean = false,
+    @SerializedName("autoDeliveryMessageEnabled") val autoDeliveryMessageEnabled: Boolean = false,
+    @SerializedName("autoDeliveryMessage") val autoDeliveryMessage: String = "Спасибо за заказ! Товар уже выдан автоматически. Если возникнут вопросы — отвечу, как освобожусь."
+)
+
+data class FloodChatSettings(
+    @SerializedName("enabled") val enabled: Boolean = false,
+    @SerializedName("pinFirst") val pinFirst: Boolean = false,
+    @SerializedName("folderId") val folderId: String? = null,
+    @SerializedName("customDisplayName") val customDisplayName: String = "Флудилка"
+)
+
+data class BusyScheduleSlot(
+    @SerializedName("id") val id: String = java.util.UUID.randomUUID().toString(),
+    @SerializedName("name") val name: String = "Рабочее время",
+    @SerializedName("days") val days: List<Int> = listOf(1, 2, 3, 4, 5),
+    @SerializedName("startMinute") val startMinute: Int = 9 * 60,
+    @SerializedName("endMinute") val endMinute: Int = 18 * 60,
+    @SerializedName("overrideMessage") val overrideMessage: Boolean = false,
+    @SerializedName("message") val message: String = "",
+    @SerializedName("overrideCooldown") val overrideCooldown: Boolean = false,
+    @SerializedName("cooldownMinutes") val cooldownMinutes: Int = 60
+)
+
+data class BusyScheduleSettings(
+    @SerializedName("enabled") val enabled: Boolean = false,
+    @SerializedName("slots") val slots: List<BusyScheduleSlot> = emptyList()
 )
 
 object ChatFolderManager {
@@ -5677,6 +7719,47 @@ object ChatFolderManager {
         return try { gson.fromJson(json, BusyModeSettings::class.java) ?: BusyModeSettings() } catch (e: Exception) { BusyModeSettings() }
     }
     fun saveBusyMode(context: Context, v: BusyModeSettings) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("busy_mode", gson.toJson(v)).apply()
+
+    fun getFloodChat(context: Context): FloodChatSettings {
+        val json = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("flood_chat_settings", null) ?: return FloodChatSettings()
+        return try { gson.fromJson(json, FloodChatSettings::class.java) ?: FloodChatSettings() } catch (e: Exception) { FloodChatSettings() }
+    }
+    fun saveFloodChat(context: Context, v: FloodChatSettings) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("flood_chat_settings", gson.toJson(v)).apply()
+
+    fun getBusySchedule(context: Context): BusyScheduleSettings {
+        val json = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("busy_schedule", null) ?: return BusyScheduleSettings()
+        return try { gson.fromJson(json, BusyScheduleSettings::class.java) ?: BusyScheduleSettings() } catch (e: Exception) { BusyScheduleSettings() }
+    }
+    fun saveBusySchedule(context: Context, v: BusyScheduleSettings) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("busy_schedule", gson.toJson(v)).apply()
+
+    fun getActiveScheduleSlot(context: Context, now: java.util.Calendar = java.util.Calendar.getInstance()): BusyScheduleSlot? {
+        val settings = getBusySchedule(context)
+        if (!settings.enabled || settings.slots.isEmpty()) return null
+
+        
+        
+        val rawDow = now.get(java.util.Calendar.DAY_OF_WEEK)
+        val isoToday = if (rawDow == java.util.Calendar.SUNDAY) 7 else rawDow - 1
+        val isoYesterday = if (isoToday == 1) 7 else isoToday - 1
+        val minuteOfDay = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+
+        for (slot in settings.slots) {
+            if (slot.days.isEmpty()) continue
+            val wrapsOverMidnight = slot.endMinute <= slot.startMinute
+
+            if (!wrapsOverMidnight) {
+                if (isoToday in slot.days && minuteOfDay in slot.startMinute until slot.endMinute) {
+                    return slot
+                }
+            } else {
+                
+                val startedYesterday = isoYesterday in slot.days && minuteOfDay < slot.endMinute
+                val startedToday = isoToday in slot.days && minuteOfDay >= slot.startMinute
+                if (startedYesterday || startedToday) return slot
+            }
+        }
+        return null
+    }
 }
 
 @Composable
@@ -5780,6 +7863,9 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
     var keepGreeting by remember { mutableStateOf(settings.keepGreeting) }
     var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
     var imageFirst by remember { mutableStateOf(settings.imageFirst) }
+    var skipRefundIfAutoDelivery by remember { mutableStateOf(settings.skipRefundIfAutoDelivery) }
+    var autoDeliveryMessageEnabled by remember { mutableStateOf(settings.autoDeliveryMessageEnabled) }
+    var autoDeliveryMessage by remember { mutableStateOf(settings.autoDeliveryMessage) }
 
     val context = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -5841,6 +7927,42 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
                     }
                 }
                 item {
+                    Text("Заказы с автовыдачей", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Если товар выдаётся автоматически, возврат деньгами приводит к потерям. Здесь можно запретить возврат именно таких заказов.",
+                        color = textSecondary, fontSize = 11.sp, lineHeight = 15.sp
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Не возвращать заказы с автовыдачей", color = textPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = skipRefundIfAutoDelivery,
+                            onCheckedChange = { skipRefundIfAutoDelivery = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = accent, checkedTrackColor = accent.copy(alpha = 0.4f))
+                        )
+                    }
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Отдельное сообщение для автовыдачи", color = textPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = autoDeliveryMessageEnabled,
+                            onCheckedChange = { autoDeliveryMessageEnabled = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = accent, checkedTrackColor = accent.copy(alpha = 0.4f))
+                        )
+                    }
+                    if (autoDeliveryMessageEnabled) {
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = autoDeliveryMessage,
+                            onValueChange = { autoDeliveryMessage = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Спасибо за заказ! Товар уже выдан автоматически...", color = textSecondary) },
+                            minLines = 2,
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = textSecondary.copy(alpha = 0.4f), focusedTextColor = textPrimary, unfocusedTextColor = textPrimary)
+                        )
+                    }
+                }
+                item {
                     Text("Оставить включёнными", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     Spacer(Modifier.height(4.dp))
                     listOf(
@@ -5860,11 +7982,20 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
                         Button(
                             onClick = {
                                 onSave(BusyModeSettings(
-                                    settings.enabled, message, cooldown,
-                                    autoRefund, autoRefundMessage,
-                                    keepRaise, keepAutoResp, keepGreeting,
-                                    settings.enabledAt,
-                                    imageUri?.toString(), imageFirst
+                                    enabled = settings.enabled,
+                                    message = message,
+                                    cooldownMinutes = cooldown,
+                                    autoRefund = autoRefund,
+                                    autoRefundMessage = autoRefundMessage,
+                                    keepRaise = keepRaise,
+                                    keepAutoResponse = keepAutoResp,
+                                    keepGreeting = keepGreeting,
+                                    enabledAt = settings.enabledAt,
+                                    imageUri = imageUri?.toString(),
+                                    imageFirst = imageFirst,
+                                    skipRefundIfAutoDelivery = skipRefundIfAutoDelivery,
+                                    autoDeliveryMessageEnabled = autoDeliveryMessageEnabled,
+                                    autoDeliveryMessage = autoDeliveryMessage
                                 ))
                                 onDismiss()
                             },
@@ -6368,10 +8499,10 @@ fun DumperLotEditDialog(initialConfig: DumperLotConfig, theme: AppTheme, onSave:
                         }
                     }
                     item {
-                        Text("Интервал обновления: ${config.updateInterval} сек (ставь 10 секунд, если норм батарея)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
+                        Text("Интервал обновления: ${config.updateInterval} сек (1 сек — максимально агрессивно, 10 сек — комфортно по батарее)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
                         Slider(
-                            value = config.updateInterval.toFloat(), onValueChange = { config = config.copy(updateInterval = it.toInt()) },
-                            valueRange = 10f..300f, steps = 29
+                            value = config.updateInterval.toFloat(), onValueChange = { config = config.copy(updateInterval = it.toInt().coerceAtLeast(1)) },
+                            valueRange = 1f..300f, steps = 298
                         )
                     }
                 }
@@ -6465,6 +8596,1638 @@ fun StrictProOnlySettingCard(
                     )
                 }
             }
+        }
+    }
+}
+@Composable
+fun BusyScheduleDialog(
+    settings: BusyScheduleSettings,
+    onSave: (BusyScheduleSettings) -> Unit,
+    onDismiss: () -> Unit,
+    theme: AppTheme
+) {
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+
+    var slots by remember { mutableStateOf(settings.slots) }
+    var editingSlot by remember { mutableStateOf<BusyScheduleSlot?>(null) }
+
+    if (editingSlot != null) {
+        BusyScheduleSlotEditor(
+            slot = editingSlot!!,
+            theme = theme,
+            onSave = { updated ->
+                slots = if (slots.any { it.id == updated.id }) {
+                    slots.map { if (it.id == updated.id) updated else it }
+                } else {
+                    slots + updated
+                }
+                onSave(settings.copy(slots = slots))
+                editingSlot = null
+            },
+            onDismiss = { editingSlot = null },
+            onDelete = {
+                slots = slots.filter { it.id != editingSlot!!.id }
+                onSave(settings.copy(slots = slots))
+                editingSlot = null
+            }
+        )
+        return
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
+            colors = CardDefaults.cardColors(containerColor = surface),
+            shape = RoundedCornerShape(theme.borderRadius.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Расписание занятости", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, null, tint = textPrimary)
+                    }
+                }
+                Text(
+                    "Создавайте слоты: «Рабочее время Пн-Пт 09:00-18:00», «Перерыв 13:00-14:00», «Ночь 22:00-06:00» и так далее. Когда текущее время попадает в слот — режим занятости включается автоматически.",
+                    fontSize = 11.sp, color = textSecondary, lineHeight = 15.sp
+                )
+                Spacer(Modifier.height(12.dp))
+
+                Button(
+                    onClick = { editingSlot = BusyScheduleSlot() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) {
+                    Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Добавить слот", color = Color.White)
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                if (slots.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.Schedule, null, tint = textSecondary.copy(alpha = 0.5f), modifier = Modifier.size(48.dp))
+                            Spacer(Modifier.height(8.dp))
+                            Text("Нет слотов расписания", color = textSecondary, fontSize = 13.sp)
+                        }
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(slots, key = { it.id }) { slot ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable { editingSlot = slot },
+                                colors = CardDefaults.cardColors(containerColor = surface.copy(alpha = 0.6f)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(slot.name.ifBlank { "(без названия)" }, fontWeight = FontWeight.SemiBold, color = textPrimary, fontSize = 14.sp)
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            formatScheduleSlot(slot),
+                                            fontSize = 11.sp, color = textSecondary
+                                        )
+                                        if (slot.overrideMessage && slot.message.isNotBlank()) {
+                                            Text(
+                                                "Сообщение: ${slot.message.take(60)}${if (slot.message.length > 60) "…" else ""}",
+                                                fontSize = 10.sp, color = textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    Icon(Icons.Default.Edit, null, tint = accent, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = surface)
+                ) { Text("Закрыть", color = textPrimary) }
+            }
+        }
+    }
+}
+
+private fun formatScheduleSlot(slot: BusyScheduleSlot): String {
+    val dayNames = arrayOf("", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+    val daysText = if (slot.days.isEmpty()) "—" else slot.days.sorted().joinToString(",") { dayNames.getOrNull(it) ?: "?" }
+    val startH = slot.startMinute / 60
+    val startM = slot.startMinute % 60
+    val endH = slot.endMinute / 60
+    val endM = slot.endMinute % 60
+    val timeText = String.format("%02d:%02d – %02d:%02d", startH, startM, endH, endM)
+    val overnight = if (slot.endMinute <= slot.startMinute) " (через ночь)" else ""
+    return "$daysText · $timeText$overnight"
+}
+
+@Composable
+fun BusyScheduleSlotEditor(
+    slot: BusyScheduleSlot,
+    theme: AppTheme,
+    onSave: (BusyScheduleSlot) -> Unit,
+    onDismiss: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+
+    var name by remember { mutableStateOf(slot.name) }
+    var days by remember { mutableStateOf(slot.days.toSet()) }
+    var startMinute by remember { mutableIntStateOf(slot.startMinute) }
+    var endMinute by remember { mutableIntStateOf(slot.endMinute) }
+    var overrideMessage by remember { mutableStateOf(slot.overrideMessage) }
+    var message by remember { mutableStateOf(slot.message) }
+    var overrideCooldown by remember { mutableStateOf(slot.overrideCooldown) }
+    var cooldownMinutes by remember { mutableIntStateOf(slot.cooldownMinutes) }
+
+    val dayLabels = listOf(
+        1 to "Пн", 2 to "Вт", 3 to "Ср", 4 to "Чт", 5 to "Пт", 6 to "Сб", 7 to "Вс"
+    )
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
+            colors = CardDefaults.cardColors(containerColor = surface),
+            shape = RoundedCornerShape(theme.borderRadius.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Слот расписания", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null, tint = textPrimary) }
+                }
+
+                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item {
+                        OutlinedTextField(
+                            value = name, onValueChange = { name = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Название слота (Рабочее время, Перерыв, Ночь…)") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
+                                focusedBorderColor = accent, cursorColor = accent
+                            )
+                        )
+                    }
+                    item {
+                        Text("Дни недели:", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(4.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            dayLabels.forEach { (num, label) ->
+                                val isSel = days.contains(num)
+                                FilterChip(
+                                    selected = isSel,
+                                    onClick = {
+                                        days = if (isSel) days - num else days + num
+                                    },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    modifier = Modifier.weight(1f),
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = accent,
+                                        selectedLabelColor = Color.White
+                                    )
+                                )
+                            }
+                        }
+                        Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton(onClick = { days = setOf(1, 2, 3, 4, 5) }) { Text("Будни", color = accent, fontSize = 11.sp) }
+                            TextButton(onClick = { days = setOf(6, 7) }) { Text("Выходные", color = accent, fontSize = 11.sp) }
+                            TextButton(onClick = { days = setOf(1, 2, 3, 4, 5, 6, 7) }) { Text("Каждый день", color = accent, fontSize = 11.sp) }
+                        }
+                    }
+
+                    item {
+                        val startH = startMinute / 60
+                        val startM = startMinute % 60
+                        Text("Начало: ${String.format("%02d:%02d", startH, startM)}", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Slider(
+                            value = startMinute.toFloat(),
+                            onValueChange = { startMinute = it.toInt().coerceIn(0, 1439) },
+                            valueRange = 0f..1439f,
+                            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf(0, 6, 9, 12, 14, 18, 22).forEach { h ->
+                                TextButton(onClick = { startMinute = h * 60 }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                                    Text("${h}:00", color = accent, fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        val endH = endMinute / 60
+                        val endM = endMinute % 60
+                        Text("Конец: ${String.format("%02d:%02d", endH, endM)}", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Slider(
+                            value = endMinute.toFloat(),
+                            onValueChange = { endMinute = it.toInt().coerceIn(0, 1439) },
+                            valueRange = 0f..1439f,
+                            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf(6, 9, 12, 14, 18, 22, 23).forEach { h ->
+                                TextButton(onClick = { endMinute = h * 60 }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                                    Text("${h}:00", color = accent, fontSize = 10.sp)
+                                }
+                            }
+                        }
+                        if (endMinute <= startMinute) {
+                            Text("⚠️ Слот перекатывается через полночь: с ${String.format("%02d:%02d", startMinute / 60, startMinute % 60)} до ${String.format("%02d:%02d", endMinute / 60, endMinute % 60)} следующего дня.",
+                                fontSize = 10.sp, color = Color(0xFFFFB74D), lineHeight = 13.sp
+                            )
+                        }
+                    }
+
+                    item {
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Свой текст для этого слота", color = textPrimary, fontSize = 13.sp)
+                                Text("Если выключено — используется текст из основного режима занятости.", color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp)
+                            }
+                            Switch(
+                                checked = overrideMessage,
+                                onCheckedChange = { overrideMessage = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = accent, checkedTrackColor = accent.copy(alpha = 0.4f))
+                            )
+                        }
+                        if (overrideMessage) {
+                            Spacer(Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = message, onValueChange = { message = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Сообщение покупателю", fontSize = 11.sp) },
+                                minLines = 2,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
+                                    focusedBorderColor = accent, cursorColor = accent
+                                )
+                            )
+                        }
+                    }
+
+                    item {
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Свой интервал повтора", color = textPrimary, fontSize = 13.sp)
+                                Text("Если выключено — используется интервал из основного режима.", color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp)
+                            }
+                            Switch(
+                                checked = overrideCooldown,
+                                onCheckedChange = { overrideCooldown = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = accent, checkedTrackColor = accent.copy(alpha = 0.4f))
+                            )
+                        }
+                        if (overrideCooldown) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("Повторять не чаще: $cooldownMinutes мин", color = textPrimary, fontSize = 12.sp)
+                            Slider(
+                                value = cooldownMinutes.toFloat(),
+                                onValueChange = { cooldownMinutes = it.toInt() },
+                                valueRange = 0f..480f, steps = 47,
+                                colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onDelete,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF5252))
+                    ) { Text("Удалить") }
+                    Button(
+                        onClick = {
+                            onSave(
+                                slot.copy(
+                                    name = name.trim().ifBlank { "Слот" },
+                                    days = days.sorted(),
+                                    startMinute = startMinute,
+                                    endMinute = endMinute,
+                                    overrideMessage = overrideMessage,
+                                    message = message,
+                                    overrideCooldown = overrideCooldown,
+                                    cooldownMinutes = cooldownMinutes
+                                )
+                            )
+                        },
+                        modifier = Modifier.weight(2f),
+                        colors = ButtonDefaults.buttonColors(containerColor = accent)
+                    ) { Text("Сохранить", color = Color.White) }
+                }
+            }
+        }
+    }
+}
+
+
+
+@Composable
+fun ReadMarkSettingsDialog(
+    settings: ReadMarkSettings,
+    theme: AppTheme,
+    onSave: (ReadMarkSettings) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    var s by remember { mutableStateOf(settings) }
+
+    @Composable
+    fun ToggleRow(label: String, hint: String, checked: Boolean, onToggle: () -> Unit) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggle() }
+                .padding(vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(label, color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                if (hint.isNotBlank()) Text(hint, color = textSecondary, fontSize = 11.sp, lineHeight = 13.sp)
+            }
+            Spacer(Modifier.width(8.dp))
+            Switch(
+                checked = checked,
+                onCheckedChange = { onToggle() },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = accent,
+                    checkedTrackColor = accent.copy(alpha = 0.4f)
+                )
+            )
+        }
+    }
+
+    Dialog(onDismissRequest = { onSave(s); onDismiss() }) {
+        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface)) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.VisibilityOff, null, tint = accent, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text("Нечиталка", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 16.sp)
+                        Text("Детальная настройка, какие сообщения приложению читать, а какие нет",
+                            fontSize = 11.sp, color = textSecondary, lineHeight = 13.sp)
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()).weight(1f, fill = false)) {
+                    Text("Бот пишет → читать?", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = textSecondary.copy(alpha = 0.2f))
+
+                    ToggleRow("После автоответа на команду",
+                        "Команда покупателя → бот ответил → пометить прочитанным",
+                        s.markAfterAutoReply) { s = s.copy(markAfterAutoReply = !s.markAfterAutoReply) }
+
+                    ToggleRow("После приветствия",
+                        "Бот отправил первое приветствие покупателю",
+                        s.markAfterGreeting) { s = s.copy(markAfterGreeting = !s.markAfterGreeting) }
+
+                    ToggleRow("После ответа в режиме занятости",
+                        "Рекомендуется выкл. — покупатель ждёт, пусть чат остаётся непрочитанным",
+                        s.markAfterBusyReply) { s = s.copy(markAfterBusyReply = !s.markAfterBusyReply) }
+
+                    ToggleRow("После ответа на отзыв",
+                        "Бот ответил на отзыв покупателя",
+                        s.markAfterReviewReply) { s = s.copy(markAfterReviewReply = !s.markAfterReviewReply) }
+
+                    ToggleRow("После просьбы оставить отзыв",
+                        "Бот написал просьбу после подтверждения заказа",
+                        s.markAfterOrderConfirm) { s = s.copy(markAfterOrderConfirm = !s.markAfterOrderConfirm) }
+
+                    ToggleRow("После автовозврата",
+                        "Бот выполнил возврат и написал покупателю",
+                        s.markAfterAutoRefund) { s = s.copy(markAfterAutoRefund = !s.markAfterAutoRefund) }
+
+                    ToggleRow("После напоминания об оплате",
+                        "Бот напомнил покупателю оплатить заказ",
+                        s.markAfterOrderReminder) { s = s.copy(markAfterOrderReminder = !s.markAfterOrderReminder) }
+
+                    ToggleRow("После бонуса за отзыв",
+                        "Бот отправил бонусное сообщение по правилу",
+                        s.markAfterBonusMessage) { s = s.copy(markAfterBonusMessage = !s.markAfterBonusMessage) }
+
+                    Spacer(Modifier.height(10.dp))
+                    Text("Я пишу → читать?", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = textSecondary.copy(alpha = 0.2f))
+
+                    ToggleRow("После моего ручного ответа",
+                        "Ты сам отправил сообщение из приложения",
+                        s.markAfterManualReply) { s = s.copy(markAfterManualReply = !s.markAfterManualReply) }
+
+                    Spacer(Modifier.height(10.dp))
+                    Text("Системные события", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = textSecondary.copy(alpha = 0.2f))
+
+                    ToggleRow("Не читать системные события FunPay",
+                        "Оплата, подтверждение, отзыв, отмена — оставлять непрочитанными",
+                        s.neverMarkSystemEvents) { s = s.copy(neverMarkSystemEvents = !s.neverMarkSystemEvents) }
+                }
+
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = { onSave(s); onDismiss() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) { Text("Сохранить", color = Color.White) }
+            }
+        }
+    }
+}
+
+
+
+
+@Composable
+fun AiVarPermissionsDialog(
+    settings: AiVarPermissions,
+    theme: AppTheme,
+    onSave: (AiVarPermissions) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    var s by remember { mutableStateOf(settings) }
+
+    @Composable
+    fun SectionHeader(title: String, subtitle: String) {
+        Spacer(Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Psychology, null, tint = accent, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Column {
+                Text(title, color = accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(subtitle, color = textSecondary, fontSize = 10.sp, lineHeight = 12.sp)
+            }
+        }
+        HorizontalDivider(modifier = Modifier.padding(top = 4.dp, bottom = 2.dp), color = textSecondary.copy(alpha = 0.2f))
+    }
+
+    @Composable
+    fun VarRow(varName: String, label: String, hint: String, checked: Boolean, onToggle: () -> Unit) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggle() }
+                .padding(vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        varName,
+                        color = accent,
+                        fontSize = 11.sp,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        modifier = Modifier
+                            .background(accent.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(label, color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                }
+                if (hint.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(hint, color = textSecondary, fontSize = 11.sp, lineHeight = 13.sp)
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Switch(
+                checked = checked,
+                onCheckedChange = { onToggle() },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = accent,
+                    checkedTrackColor = accent.copy(alpha = 0.4f)
+                )
+            )
+        }
+    }
+
+    Dialog(onDismissRequest = { onSave(s); onDismiss() }) {
+        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface)) {
+            Column(modifier = Modifier.padding(20.dp)) {
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Psychology, null, tint = accent, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text("ИИ-переменные", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 16.sp)
+                        Text("Управляй тем, какие данные уходят на сервер ИИ",
+                            fontSize = 11.sp, color = textSecondary, lineHeight = 13.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = accent.copy(alpha = 0.1f)),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "⚠️ Данные настройки не рекомендуются модифицировать обычным пользователям.",
+                        modifier = Modifier.padding(10.dp),
+                        fontSize = 11.sp, color = textSecondary, lineHeight = 14.sp
+                    )
+                }
+
+                Column(modifier = Modifier.verticalScroll(rememberScrollState()).weight(1f, fill = false)) {
+
+                    
+                    SectionHeader(
+                        "ИИ-переписыватель (кнопка ✨ в чате)",
+                        "Данные, которые ИИ видит когда ты жмёшь «переписать черновик»"
+                    )
+
+                    VarRow("\$history", "История переписки",
+                        "Последние 10 сообщений чата — контекст разговора",
+                        s.allowChatHistory) { s = s.copy(allowChatHistory = !s.allowChatHistory) }
+
+                    VarRow("\$username", "Имя покупателя",
+                        "Ник собеседника на FunPay",
+                        s.allowUsername) { s = s.copy(allowUsername = !s.allowUsername) }
+
+                    VarRow("\$message_text", "Последнее сообщение",
+                        "Текст входящего сообщения для контекста",
+                        s.allowMessageText) { s = s.copy(allowMessageText = !s.allowMessageText) }
+
+                    VarRow("\$chat_id", "ID чата",
+                        "Числовой идентификатор чата",
+                        s.allowChatId) { s = s.copy(allowChatId = !s.allowChatId) }
+
+                    VarRow("\$order_id", "ID заказа",
+                        "Номер заказа (если есть в контексте)",
+                        s.allowOrderId) { s = s.copy(allowOrderId = !s.allowOrderId) }
+
+                    VarRow("\$lot_name", "Название лота",
+                        "Название товара/услуги из заказа",
+                        s.allowLotName) { s = s.copy(allowLotName = !s.allowLotName) }
+
+                    
+                    SectionHeader(
+                        "ИИ-автоответ на отзывы",
+                        "Данные, которые ИИ видит когда генерирует ответ на отзыв покупателя"
+                    )
+
+                    VarRow("\$review_text", "Текст отзыва",
+                        "Что именно написал покупатель в отзыве",
+                        s.allowReviewText) { s = s.copy(allowReviewText = !s.allowReviewText) }
+
+                    VarRow("\$stars", "Оценка (звёзды)",
+                        "Количество звёзд, которые поставил покупатель (1–5)",
+                        s.allowReviewStars) { s = s.copy(allowReviewStars = !s.allowReviewStars) }
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = textSecondary.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                    ) {
+                        Text(
+                            "ℹ️ Название лота и дата для автоответов на отзывы настраиваются в разделе «Автоответ на отзывы → Настроить»",
+                            modifier = Modifier.padding(10.dp),
+                            fontSize = 10.sp, color = textSecondary, lineHeight = 13.sp
+                        )
+                    }
+                }
+
+
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = { onSave(s); onDismiss() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) { Text("Сохранить", color = Color.White) }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LotScreen(
+    offerId: String,
+    repository: FunPayRepository,
+    theme: AppTheme,
+    navController: NavController
+) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    var lot by remember { mutableStateOf<LotPreview?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+
+    var amountText by remember { mutableStateOf("1") }
+    var amount by remember { mutableStateOf(1) }
+    var selectedMethod by remember { mutableStateOf<PaymentMethod?>(null) }
+
+    var draftOrder by remember { mutableStateOf<DraftOrder?>(null) }
+    var isProcessing by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var externalPayUrl by remember { mutableStateOf<String?>(null) }
+
+    val myUserId = remember { repository.getMyUserId() }
+
+    LaunchedEffect(offerId) {
+        loading = true
+        loadError = null
+        try {
+            lot = repository.fetchLotPreview(offerId)
+            if (lot == null) {
+                loadError = "Лот не найден. Возможно, он удалён или требуется авторизация."
+            } else if (lot?.isAvailable == false) {
+                loadError = lot?.unavailableReason ?: "Покупка сейчас недоступна"
+            } else {
+                selectedMethod = lot?.paymentMethods?.firstOrNull()
+            }
+        } catch (e: Exception) {
+            loadError = "Ошибка: ${e.message}"
+        }
+        loading = false
+    }
+
+    
+    val totalLocalPrice = (selectedMethod?.priceValue ?: 0.0) * amount
+    val localBalance = if (selectedMethod?.unit == "₽" || selectedMethod?.unit == "RUB") lot?.balanceRub ?: 0.0 else lot?.balanceUsd ?: 0.0
+    val localDeducted = minOf(localBalance, totalLocalPrice)
+    val localLeftToPay = totalLocalPrice - localDeducted
+
+    val isMyLot = remember(lot, myUserId) {
+        myUserId.isNotEmpty() && lot?.sellerId?.isNotEmpty() == true && lot?.sellerId == myUserId
+    }
+
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        lot?.title ?: "Лот #$offerId",
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.accentColor))
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+            )
+        }
+    ) { scaffoldPadding ->
+        Box(Modifier.fillMaxSize().padding(scaffoldPadding)) {
+            when {
+                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = ThemeManager.parseColor(theme.accentColor))
+                }
+                isMyLot -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.Store, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(56.dp))
+                        Spacer(Modifier.height(16.dp))
+                        Text("Это ваш лот", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                        Spacer(Modifier.height(8.dp))
+                        Text("Нельзя купить собственный лот", fontSize = 13.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            onClick = { navController.navigate("lot_edit/$offerId") },
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Edit, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Редактировать лот")
+                        }
+                    }
+                }
+                loadError != null && lot == null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(loadError!!, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                    }
+                }
+
+                
+                draftOrder != null -> {
+                    Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(Modifier.padding(20.dp)) {
+                                Text(draftOrder!!.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                Spacer(Modifier.height(16.dp))
+
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("С баланса спишется:", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 14.sp)
+                                    Text(draftOrder!!.deductedFromBalance, color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Останется доплатить:", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 14.sp)
+                                    Text(draftOrder!!.leftToPay, color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                }
+
+                                if (errorMessage != null) {
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(errorMessage!!, color = Color.Red, fontSize = 13.sp)
+                                }
+
+                                Spacer(Modifier.height(24.dp))
+
+                                if (externalPayUrl != null) {
+                                    Button(
+                                        onClick = {
+                                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(externalPayUrl!!))) } catch (_: Exception) {}
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                                    ) { Text("Открыть страницу оплаты", fontWeight = FontWeight.Bold) }
+                                } else {
+                                    Button(
+                                        onClick = {
+                                            if (isProcessing) return@Button
+                                            scope.launch {
+                                                isProcessing = true
+                                                errorMessage = null
+                                                val res = repository.payDraftOrder(draftOrder!!)
+                                                res.onSuccess { result ->
+                                                    if (result is OrderNewResult.Redirect) {
+                                                        if (!result.orderUrl.contains("funpay.com/orders/")) {
+                                                            externalPayUrl = result.orderUrl
+                                                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result.orderUrl))) } catch (_: Exception) {}
+                                                        } else if (result.orderId.isNotEmpty()) {
+                                                            navController.navigate("order/${result.orderId}") {
+                                                                popUpTo("lot/$offerId") { inclusive = true }
+                                                            }
+                                                        }
+                                                    }
+                                                }.onFailure { e ->
+                                                    errorMessage = e.message
+                                                }
+                                                isProcessing = false
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                                        enabled = !isProcessing,
+                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                                    ) {
+                                        if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
+                                        else Text("Оплатить", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    }
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                OutlinedButton(
+                                    onClick = { draftOrder = null; externalPayUrl = null; errorMessage = null },
+                                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                                ) { Text("Отменить", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                            }
+                        }
+                    }
+                }
+
+                
+                lot != null -> {
+                    val l = lot!!
+                    LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        item {
+                            Column {
+                                if (l.shortDesc.isNotBlank()) {
+                                    Text(l.shortDesc, fontSize = 13.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    AsyncImage(model = l.sellerAvatar, contentDescription = null, modifier = Modifier.size(28.dp).clip(CircleShape), contentScale = ContentScale.Crop)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        l.sellerName.ifEmpty { "Продавец" },
+                                        fontSize = 13.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        modifier = Modifier.weight(1f).clickable { if (l.sellerId.isNotEmpty()) navController.navigate("profile/${l.sellerId}/${l.sellerName}") }
+                                    )
+                                    if (l.priceText.isNotBlank()) {
+                                        Text(l.priceText, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = ThemeManager.parseColor(theme.accentColor))
+                                    }
+                                }
+                            }
+                        }
+
+                        if (l.params.isNotEmpty()) {
+                            item {
+                                Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                        l.params.forEach { (k, v) ->
+                                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                                Text(k, modifier = Modifier.weight(1f), fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                                                Text(v, modifier = Modifier.weight(2f), fontSize = 12.sp, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Text("Количество", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp)
+                            OutlinedTextField(
+                                value = amountText,
+                                onValueChange = { new ->
+                                    amountText = new.filter { it.isDigit() }.take(4).ifEmpty { "" }
+                                    amount = amountText.toIntOrNull()?.coerceAtLeast(1) ?: 1
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                    unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                    focusedBorderColor = ThemeManager.parseColor(theme.accentColor)
+                                )
+                            )
+                        }
+
+                        item {
+                            Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f))) {
+                                Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("С баланса спишется:", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp)
+                                        Text("${String.format(Locale.US, "%.2f", localDeducted)} ${selectedMethod?.unit ?: ""}", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text("Останется оплатить:", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp)
+                                        Text("${String.format(Locale.US, "%.2f", localLeftToPay)} ${selectedMethod?.unit ?: ""}", color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Text("Способ оплаты", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                        }
+                        items(l.paymentMethods) { m ->
+                            val selected = selectedMethod?.id == m.id
+                            val bg = if (selected) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f) else ThemeManager.parseColor(theme.surfaceColor)
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable { selectedMethod = m },
+                                colors = CardDefaults.cardColors(containerColor = bg),
+                                shape = RoundedCornerShape(theme.borderRadius.dp),
+                                border = if (selected) androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor)) else null
+                            ) {
+                                Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(m.title, modifier = Modifier.weight(1f), color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                    Text(m.priceStr, color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                }
+                            }
+                        }
+
+                        if (errorMessage != null) {
+                            item {
+                                Card(colors = CardDefaults.cardColors(containerColor = Color.Red.copy(alpha = 0.15f))) {
+                                    Text(errorMessage!!, modifier = Modifier.padding(12.dp), color = Color.Red, fontSize = 12.sp)
+                                }
+                            }
+                        }
+
+                        item {
+                            Button(
+                                onClick = {
+                                    if (isProcessing) return@Button
+                                    val m = selectedMethod ?: run { errorMessage = "Выберите способ оплаты"; return@Button }
+                                    scope.launch {
+                                        isProcessing = true
+                                        errorMessage = null
+                                        val result = repository.checkoutDraftOrder(l, m.id, amount, totalLocalPrice)
+                                        result.onSuccess { draft ->
+                                            draftOrder = draft
+                                        }.onFailure { e ->
+                                            errorMessage = e.message
+                                        }
+                                        isProcessing = false
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                enabled = selectedMethod != null && !isProcessing,
+                                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                            ) {
+                                if (isProcessing) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
+                                else Text("Оформить заказ", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        item { Spacer(Modifier.height(24.dp)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+
+@Composable
+fun BuyerHistoryScreen(
+    partnerName: String,
+    partnerId: String,
+    repository: FunPayRepository,
+    theme: AppTheme,
+    navController: NavController
+) {
+    val scope = rememberCoroutineScope()
+    var items by remember { mutableStateOf<List<FunPayRepository.OrderSummaryItem>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+
+    val accent  = ThemeManager.parseColor(theme.accentColor)
+    val textPri = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSec = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surf    = ThemeManager.parseColor(theme.surfaceColor)
+
+    LaunchedEffect(partnerName) {
+        isLoading  = true
+        loadError  = null
+        try {
+            
+            var result = repository.getOrdersWithBuyer(partnerName, isSales = true)
+            
+            if (result.isEmpty()) result = repository.getOrdersWithBuyer(partnerName, isSales = false)
+            items = result
+        } catch (e: Exception) {
+            loadError = e.message
+        }
+        isLoading = false
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        when {
+            isLoading -> CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center),
+                color = accent
+            )
+            loadError != null -> Column(
+                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(Icons.Default.ErrorOutline, null, tint = Color.Red, modifier = Modifier.size(48.dp))
+                Spacer(Modifier.height(12.dp))
+                Text(loadError!!, color = textSec, fontSize = 14.sp)
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        isLoading = true
+                        loadError = null
+                        scope.launch {
+                            try {
+                                var r = repository.getOrdersWithBuyer(partnerName, isSales = true)
+                                if (r.isEmpty()) r = repository.getOrdersWithBuyer(partnerName, isSales = false)
+                                items = r
+                            } catch (e: Exception) { loadError = e.message }
+                            isLoading = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = accent)
+                ) { Text("Повторить") }
+            }
+            items.isEmpty() -> Column(
+                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(Icons.Default.SearchOff, null, tint = textSec.copy(0.5f), modifier = Modifier.size(56.dp))
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Заказов с $partnerName не найдено",
+                    color = textSec,
+                    fontSize = 15.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    Text(
+                        "Найдено заказов: ${items.size}",
+                        color = textSec,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    )
+                }
+                items(items, key = { it.orderId }) { order ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            navController.navigate("order/${order.orderId}")
+                        },
+                        colors = CardDefaults.cardColors(containerColor = surf),
+                        shape = RoundedCornerShape(theme.borderRadius.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    order.title.ifEmpty { "Заказ #${order.orderId}" },
+                                    color = textPri,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (order.date.isNotEmpty()) {
+                                    Text(order.date, color = textSec, fontSize = 11.sp,
+                                        modifier = Modifier.padding(top = 2.dp))
+                                }
+                                if (order.status.isNotEmpty()) {
+                                    Text(
+                                        order.status,
+                                        color = if (order.status.contains("закрыт", true) ||
+                                            order.status.contains("closed", true))
+                                            Color(0xFF4CAF50) else Color(0xFFFFC107),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    order.price,
+                                    color = accent,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "#${order.orderId}",
+                                    color = textSec,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SalesScreen(
+    repository: FunPayRepository,
+    theme: AppTheme,
+    navController: NavController
+) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences("sales_cache", android.content.Context.MODE_PRIVATE)
+    }
+
+    var allSales   by remember { mutableStateOf(repository.cachedSales) }
+    var isLoading  by remember { mutableStateOf(false) }
+    var isFullLoad by remember { mutableStateOf(repository.isSalesFullLoaded) }
+    var totalLoaded by remember { mutableIntStateOf(repository.cachedSales.size) }
+    var errorMsg   by remember { mutableStateOf<String?>(null) }
+    var filterStatus by remember { mutableStateOf("all") }
+    var filterQuery  by remember { mutableStateOf("") }
+    var showFilter   by remember { mutableStateOf(false) }
+
+    val accent  = ThemeManager.parseColor(theme.accentColor)
+    val textPri = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSec = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surf    = ThemeManager.parseColor(theme.surfaceColor)
+    val bg      = ThemeManager.parseColor(theme.backgroundColor)
+
+    val filteredSales: List<FunPayRepository.SaleItem> = remember(
+        allSales, filterStatus, filterQuery
+    ) {
+        allSales.filter { s ->
+            (filterStatus == "all" || s.status == filterStatus) &&
+                    (filterQuery.isEmpty() ||
+                            s.buyerName.contains(filterQuery, ignoreCase = true) ||
+                            s.description.contains(filterQuery, ignoreCase = true) ||
+                            s.orderId.contains(filterQuery, ignoreCase = true))
+        }
+    }
+
+    val filteredStats: FunPayRepository.SalesStats? = remember(filteredSales) {
+        if (filteredSales.isEmpty()) null
+        else repository.computeSalesStats(filteredSales)
+    }
+
+    fun startLoad(isUserRefresh: Boolean = false) {
+        if (isLoading) return
+
+        val alreadyFull = repository.isSalesFullLoaded
+
+        
+        if (!isUserRefresh && alreadyFull && repository.cachedSales.isNotEmpty()) {
+            allSales = repository.cachedSales
+            isFullLoad = true
+            totalLoaded = allSales.size
+            return
+        }
+
+        scope.launch {
+            isLoading = true
+            errorMsg = null
+
+            
+            val buf = repository.cachedSales.toMutableList()
+            var token: String? = null
+
+            
+            
+            
+            val stopOnDuplicate = alreadyFull
+
+            while (true) {
+                val result = try { repository.fetchSalesPage(token) } catch (e: Exception) {
+                    errorMsg = e.message; null
+                }
+                if (result == null) break
+
+                val page = result.first
+                val next = result.second
+
+                val existingIds = buf.map { it.orderId }.toSet()
+                val newOrders = page.filter { it.orderId !in existingIds }
+
+                if (stopOnDuplicate && newOrders.isEmpty() && page.isNotEmpty()) {
+                    repository.isSalesFullLoaded = true
+                    break
+                }
+
+                if (stopOnDuplicate && newOrders.isNotEmpty()) {
+                    
+                    buf.addAll(0, newOrders)
+                } else {
+                    
+                    buf.addAll(newOrders)
+                }
+
+                
+                allSales = buf.toList()
+                totalLoaded = buf.size
+
+                token = next
+                if (next == null) {
+                    repository.isSalesFullLoaded = true
+                    break
+                }
+                kotlinx.coroutines.delay(400)
+            }
+
+            prefs.edit().putLong("last_load", System.currentTimeMillis()).apply()
+            repository.cachedSales = allSales
+            isFullLoad = repository.isSalesFullLoaded
+            isLoading = false
+        }
+    }
+
+    val lastLoad = remember { prefs.getLong("last_load", 0L) }
+    val hoursAgo: Long = remember(lastLoad) {
+        if (lastLoad == 0L) -1L
+        else (System.currentTimeMillis() - lastLoad) / 3_600_000L
+    }
+
+    
+    LaunchedEffect(Unit) { startLoad(isUserRefresh = false) }
+
+    
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(36_000_000L)
+            startLoad(isUserRefresh = true)
+        }
+    }
+
+    Column(Modifier.fillMaxSize().background(bg)) {
+
+        
+        Surface(color = surf, modifier = Modifier.fillMaxWidth()) {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Мои продажи", fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                        color = textPri, modifier = Modifier.weight(1f)
+                    )
+                    if (isLoading) {
+                        Text(
+                            "$totalLoaded заказов", fontSize = 11.sp, color = textSec,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp), color = accent, strokeWidth = 2.dp
+                        )
+                    } else {
+                        val ageStr = when {
+                            hoursAgo < 0L  -> ""
+                            hoursAgo == 0L -> "только что"
+                            else           -> "${hoursAgo}ч назад"
+                        }
+                        if (ageStr.isNotEmpty()) {
+                            Text(ageStr, fontSize = 10.sp, color = textSec,
+                                modifier = Modifier.padding(end = 6.dp))
+                        }
+                        IconButton(onClick = { startLoad(isUserRefresh = true) }, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Default.Refresh, null, tint = accent,
+                                modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    IconButton(
+                        onClick = { showFilter = !showFilter },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(Icons.Default.Search, null,
+                            tint = if (filterStatus != "all" || filterQuery.isNotEmpty())
+                                accent else textSec,
+                            modifier = Modifier.size(20.dp))
+                    }
+                }
+
+                if (isLoading) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth(),
+                        color = accent, trackColor = surf)
+                }
+
+                AnimatedVisibility(visible = showFilter) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        OutlinedTextField(
+                            value = filterQuery,
+                            onValueChange = { filterQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Покупатель, товар или #заказ", fontSize = 13.sp) },
+                            singleLine = true,
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, null, tint = textSec,
+                                    modifier = Modifier.size(18.dp))
+                            },
+                            trailingIcon = {
+                                if (filterQuery.isNotEmpty()) {
+                                    IconButton(onClick = { filterQuery = "" }) {
+                                        Icon(Icons.Default.Clear, null, tint = textSec,
+                                            modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(
+                                "all" to "Все", "closed" to "Закрыт",
+                                "paid" to "Оплачен", "refunded" to "Возврат"
+                            ).forEach { (key, lbl) ->
+                                FilterChip(
+                                    selected = filterStatus == key,
+                                    onClick = { filterStatus = key },
+                                    label = { Text(lbl, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = accent.copy(alpha = 0.2f),
+                                        selectedLabelColor = accent
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        
+        when {
+            allSales.isEmpty() && isLoading -> {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp)) {
+                        CircularProgressIndicator(color = accent)
+                        Spacer(Modifier.height(20.dp))
+                        Text("Загружаем историю продаж...",
+                            color = textPri, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Процесс идёт в фоне",
+                            color = textSec, fontSize = 12.sp, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Загружено: $totalLoaded", color = accent, fontSize = 13.sp)
+                    }
+                }
+            }
+
+            allSales.isEmpty() && !isLoading -> {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.ShoppingBag, null,
+                            tint = textSec.copy(alpha = 0.4f), modifier = Modifier.size(56.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text(errorMsg ?: "Продаж пока нет", color = textSec)
+                        if (errorMsg != null) {
+                            Spacer(Modifier.height(12.dp))
+                            Button(onClick = { startLoad(true) },
+                                colors = ButtonDefaults.buttonColors(containerColor = accent)) {
+                                Text("Повторить")
+                            }
+                        }
+                    }
+                }
+            }
+
+            else -> {
+                LazyColumn(Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp)) {
+
+                    
+                    filteredStats?.let { st ->
+                        item {
+                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = accent.copy(alpha = 0.12f)),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Row(Modifier.padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically) {
+                                        Text("💰", fontSize = 28.sp)
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                String.format(java.util.Locale.US,
+                                                    "%.2f ₽", st.totalRevenue),
+                                                color = accent, fontSize = 22.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text("Всего заработано (закрытые)",
+                                                color = textSec, fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SalesStatCard(Modifier.weight(1f), "📦",
+                                        "${filteredSales.size}${if (!isFullLoad) "+" else ""}",
+                                        "Заказов", surf, textPri, textSec)
+                                    SalesStatCard(Modifier.weight(1f), "✅",
+                                        "${st.closedOrders}", "Закрыто", surf, textPri, textSec)
+                                    SalesStatCard(Modifier.weight(1f), "⏳",
+                                        "${st.pendingOrders}", "Ожидают", surf, textPri, textSec)
+                                    SalesStatCard(Modifier.weight(1f), "↩️",
+                                        "${st.refundedOrders}", "Возвраты", surf, textPri, textSec)
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SalesStatCard(Modifier.weight(1f), "👥",
+                                        "${st.uniqueBuyers}", "Покупателей", surf, textPri, textSec)
+                                    SalesStatCard(Modifier.weight(1f), "📈",
+                                        String.format(java.util.Locale.US, "%.2f ₽", st.avgCheck),
+                                        "Ср. чек", surf, textPri, textSec)
+                                    SalesStatCard(Modifier.weight(1f), "💎",
+                                        String.format(java.util.Locale.US, "%.2f ₽", st.topSale),
+                                        "Макс.", surf, textPri, textSec)
+                                }
+
+                                if (st.pendingOrders > 0) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Card(Modifier.fillMaxWidth().clickable {
+                                        filterStatus = "paid"
+                                        showFilter = true
+                                    },
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = Color(0xFFFFA000).copy(alpha = 0.12f)),
+                                        shape = RoundedCornerShape(8.dp)) {
+                                        Row(Modifier.padding(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically) {
+                                            Text("⏳", fontSize = 16.sp)
+                                            Spacer(Modifier.width(8.dp))
+                                            Column {
+                                                Text(
+                                                    "Не подтверждено: ${st.unconfirmedCount} шт.",
+                                                    color = Color(0xFFFFA000),
+                                                    fontWeight = FontWeight.Bold, fontSize = 12.sp
+                                                )
+                                                Text(
+                                                    String.format(java.util.Locale.US,
+                                                        "%.2f ₽ — ожидают", st.unconfirmedRevenue),
+                                                    color = textSec, fontSize = 11.sp
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (st.topBuyer.isNotEmpty() || st.popularCategory.isNotEmpty()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Card(Modifier.fillMaxWidth(),
+                                        colors = CardDefaults.cardColors(containerColor = surf),
+                                        shape = RoundedCornerShape(8.dp)) {
+                                        Column(Modifier.padding(10.dp)) {
+                                            if (st.topBuyer.isNotEmpty()) {
+                                                Row(Modifier.fillMaxWidth()) {
+                                                    Text("🏆 ", fontSize = 13.sp)
+                                                    Text("Лучший покупатель: ",
+                                                        color = textSec, fontSize = 12.sp)
+                                                    Text(st.topBuyer, color = accent,
+                                                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                                                        modifier = Modifier.weight(1f), maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis)
+                                                }
+                                            }
+                                            if (st.popularCategory.isNotEmpty()) {
+                                                Row(Modifier.fillMaxWidth()) {
+                                                    Text("🎮 ", fontSize = 13.sp)
+                                                    Text("Топ категория: ",
+                                                        color = textSec, fontSize = 12.sp)
+                                                    Text(st.popularCategory, color = textPri,
+                                                        fontSize = 12.sp,
+                                                        modifier = Modifier.weight(1f), maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis)
+                                                }
+                                            }
+                                            if (st.popularProduct.isNotEmpty()) {
+                                                Row(Modifier.fillMaxWidth()) {
+                                                    Text("🔥 ", fontSize = 13.sp)
+                                                    Text("Топ товар: ",
+                                                        color = textSec, fontSize = 12.sp)
+                                                    Text(st.popularProduct.take(60),
+                                                        color = textPri, fontSize = 12.sp,
+                                                        modifier = Modifier.weight(1f), maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalDivider(color = textSec.copy(alpha = 0.1f))
+                        }
+                    }
+
+                    
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Заказы (${filteredSales.size}${if (!isFullLoad) "+" else ""})",
+                                color = textPri, fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp, modifier = Modifier.weight(1f)
+                            )
+                            if (!isFullLoad && !isLoading) {
+                                Text("ожидает догрузки...", color = textSec, fontSize = 11.sp)
+                            }
+                        }
+                    }
+
+                    
+                    items(
+                        items = filteredSales,
+                        key = { saleItem: FunPayRepository.SaleItem -> saleItem.orderId }
+                    ) { sale: FunPayRepository.SaleItem ->
+                        val statusColor = when (sale.status) {
+                            "closed"   -> Color(0xFF4CAF50)
+                            "paid"     -> Color(0xFFFFA000)
+                            "refunded" -> Color(0xFFFF5722)
+                            else       -> textSec
+                        }
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 3.dp)
+                                .clickable { navController.navigate("order/${sale.orderId}") },
+                            colors = CardDefaults.cardColors(containerColor = surf),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                if (sale.buyerAvatar.isNotEmpty()) {
+                                    AsyncImage(
+                                        model = sale.buyerAvatar, contentDescription = null,
+                                        modifier = Modifier.size(36.dp).clip(CircleShape),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Box(
+                                        Modifier.size(36.dp).clip(CircleShape)
+                                            .background(accent.copy(alpha = 0.2f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(sale.buyerName.take(1).uppercase(),
+                                            color = accent, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(sale.buyerName, color = accent,
+                                            fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(sale.statusText, color = statusColor,
+                                            fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                    val desc: String =
+                                        if (sale.description.isNotEmpty()) sale.description
+                                        else sale.title
+                                    Text(desc, color = textPri, fontSize = 11.sp,
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    if (sale.game.isNotEmpty()) {
+                                        Text("${sale.game}, ${sale.category}",
+                                            color = textSec, fontSize = 10.sp)
+                                    }
+                                    Text(sale.date, color = textSec, fontSize = 10.sp)
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        sale.price,
+                                        color = if (sale.status == "refunded")
+                                            Color(0xFFFF5722) else textPri,
+                                        fontWeight = FontWeight.Bold, fontSize = 13.sp
+                                    )
+                                    Text("#${sale.orderId}", color = textSec, fontSize = 9.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    if (isLoading && allSales.isNotEmpty()) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp),
+                                contentAlignment = Alignment.Center) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(Modifier.size(16.dp),
+                                        color = accent, strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Догружаем историю... ($totalLoaded)",
+                                        color = textSec, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    item { Spacer(Modifier.height(80.dp)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SalesStatCard(
+    modifier: Modifier = Modifier,
+    icon: String,
+    value: String,
+    label: String,
+    surf: Color,
+    textPri: Color,
+    textSec: Color
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = surf),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(Modifier.padding(8.dp)) {
+            Text(icon, fontSize = 16.sp)
+            Text(value, color = textPri, fontWeight = FontWeight.Bold,
+                fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, color = textSec, fontSize = 10.sp)
         }
     }
 }

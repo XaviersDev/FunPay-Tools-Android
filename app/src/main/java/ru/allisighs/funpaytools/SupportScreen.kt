@@ -1117,7 +1117,7 @@ fun NotificationSettingsDialog(support: FunPaySupport, theme: AppTheme, onDismis
                     Row(modifier = Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
                         Icon(Icons.Default.Email, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(15.dp))
                         Text(
-                            "Уведомления отправляются на электронную почту, а не в это приложение.",
+                            "Уведомления в приложении невозможны, поэтому Вы можете включить здесь уведомления, а они будут отправляются на вашу электронную почту, с которой вы зарегистрированы на FunPay.",
                             fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 17.sp
                         )
                     }
