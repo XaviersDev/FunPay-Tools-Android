@@ -1,4 +1,8 @@
-
+// @name 🌈 RainbowBot ULTRA
+// @author XaviersDev
+// @version 6.6.6
+// @description Полноценный чатбот: ASCII-анимации, мини-игры, радуга, кубик, рулетка, змейка и ещё куча всего. Просто напиши !help в чате.
+// @banner https://www.freeiconspng.com/uploads/rainbow-png-16.png
 
 
 
