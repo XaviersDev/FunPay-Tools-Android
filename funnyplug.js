@@ -310,7 +310,7 @@ fpt.on("onNewMessage", async function(msgData) {
     if (msgData.isMe) return;
 
     const chatId = msgData.chatId;
-    const raw    = (msgData.text || "").trim();
+    const raw = (msgData.text || "").replace(/[\u200B-\u200D\uFEFF\u2060\u00AD]/g, "").trim();
     const text   = raw.toLowerCase();
 
     if (hangmanGames[chatId] && !text.startsWith("!")) {
