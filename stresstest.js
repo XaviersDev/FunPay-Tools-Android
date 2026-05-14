@@ -1,109 +1,309 @@
-// @name UI Stress Tester MAX
+// @name Advanced Commands GUI
 // @author AI Assistant
-// @version 1.0
-// @description Максимальный стресс-тест UI и API FunPay Tools
-// @banner https://i.imgur.com/example.png
+// @version 2.0
+// @description GUI система кастомных команд
+// @banner https://raw.githubusercontent.com/XaviersDev/FunPayTools-Site/refs/heads/main/default-banner.jpeg
 
-var key = "ui_stress_test_state";
+var storageKey = "advanced_commands_gui";
 
-// состояние
-function getState() {
+// =======================
+// STORAGE
+// =======================
+
+function loadCommands() {
     try {
-        return JSON.parse(fpt.storage.get(key) || "{}");
+        var raw = fpt.storage.get(storageKey);
+        if (!raw) return [];
+        return JSON.parse(raw);
     } catch (e) {
-        return {};
+        return [];
     }
 }
 
-function setState(s) {
-    fpt.storage.set(key, JSON.stringify(s));
+function saveCommands(cmds) {
+    fpt.storage.set(storageKey, JSON.stringify(cmds));
 }
 
-// лог ошибок безопасно
-function safe(fn, name) {
-    try {
-        fn();
-        fpt.app.log("OK: " + name);
-    } catch (e) {
-        fpt.app.log("FAIL: " + name + " -> " + e);
+// =======================
+// HELPERS
+// =======================
+
+function findCommand(trigger) {
+    var cmds = loadCommands();
+
+    for (var i = 0; i < cmds.length; i++) {
+        if (cmds[i].trigger === trigger) {
+            return cmds[i];
+        }
     }
+
+    return null;
 }
 
-// ==========================
-// 🔥 UI RENDER
-// ==========================
-function render() {
-    var ui = {
-        type: "Card",
-        children: [
-            {
-                type: "Text",
-                text: "UI STRESS TESTER",
-                bold: true,
-                fontSize: 18.0
-            },
-            {
-                type: "Text",
-                text: "Тестирует UI / Storage / Chat / App API"
-            },
+// =======================
+// MESSAGE HANDLER
+// =======================
 
-            {
-                type: "Button",
-                text: "▶ Запустить полный тест",
-                onClick: "runFullTest()"
-            },
+fpt.on("onNewMessage", function(msg) {
 
-            {
-                type: "Button",
-                text: "⚡ UI Spam Test",
-                onClick: "uiSpam()"
-            },
+    if (msg.isMe) return;
 
-            {
-                type: "Button",
-                text: "💾 Storage Test",
-                onClick: "storageTest()"
-            },
+    var enabled = fpt.ui.getState("commands_enabled");
 
-            {
-                type: "Button",
-                text: "💬 Chat API Test",
-                onClick: "chatTest()"
-            },
+    if (enabled !== "true") return;
 
-            {
-                type: "Button",
-                text: "📱 App API Test",
-                onClick: "appTest()"
-            }
-        ]
-    };
+    var text = msg.text;
 
-    fpt.ui.setSlot("settings_ui_stress", ui);
-}
+    if (!text) return;
 
-// ==========================
-// ⚡ FULL TEST
-// ==========================
-window.runFullTest = function () {
-    fpt.app.toast("Запуск UI стресс теста...");
+    if (text.charAt(0) !== "!") return;
 
-    safe(uiSpam, "uiSpam");
-    safe(storageTest, "storageTest");
-    safe(chatTest, "chatTest");
-    safe(appTest, "appTest");
+    var trigger = text.split(" ")[0].substring(1);
 
-    fpt.app.notify("UI Test", "Тест завершён. Смотри лог.");
+    var args = text.split(" ").slice(1).join(" ");
+
+    var cmd = findCommand(trigger);
+
+    if (!cmd) return;
+
+    var response = cmd.response;
+
+    response = response.replace("{args}", args);
+
+    if (response.length > 2000) {
+        response = response.substring(0, 1990);
+    }
+
+    fpt.chat.send(msg.chatId, response);
+});
+
+// =======================
+// ADD COMMAND
+// =======================
+
+window.addCommand = function() {
+
+    var trigger = fpt.ui.getState("cmd_trigger");
+    var response = fpt.ui.getState("cmd_response");
+
+    if (!trigger || !response) {
+        fpt.app.toast("Заполни поля");
+        return;
+    }
+
+    trigger = trigger.replace("!", "").trim();
+
+    var cmds = loadCommands();
+
+    cmds.push({
+        trigger: trigger,
+        response: response
+    });
+
+    saveCommands(cmds);
+
+    fpt.app.toast("Команда !" + trigger + " добавлена");
+
+    renderUi();
 };
 
-// ==========================
-// ⚡ UI TESTS
-// ==========================
-window.uiSpam = function () {
-    for (var i = 0; i < 5; i++) {
-        fpt.ui.setSlot("stress_" + i, {
+// =======================
+// DELETE COMMAND
+// =======================
+
+window.deleteCommand = function() {
+
+    var trigger = fpt.ui.getState("delete_trigger");
+
+    if (!trigger) {
+        fpt.app.toast("Введите команду");
+        return;
+    }
+
+    trigger = trigger.replace("!", "").trim();
+
+    var cmds = loadCommands();
+
+    var newCmds = [];
+
+    for (var i = 0; i < cmds.length; i++) {
+        if (cmds[i].trigger !== trigger) {
+            newCmds.push(cmds[i]);
+        }
+    }
+
+    saveCommands(newCmds);
+
+    fpt.app.toast("Команда удалена");
+
+    renderUi();
+};
+
+// =======================
+// DEMO COMMANDS
+// =======================
+
+window.installDemo = function() {
+
+    var cmds = [
+        {
+            trigger: "ping",
+            response: "Pong!"
+        },
+        {
+            trigger: "echo",
+            response: "{args}"
+        },
+        {
+            trigger: "hi",
+            response: "Привет 👋"
+        }
+    ];
+
+    saveCommands(cmds);
+
+    fpt.app.toast("Демо команды установлены");
+
+    renderUi();
+};
+
+// =======================
+// UI
+// =======================
+
+function renderUi() {
+
+    var cmds = loadCommands();
+
+    var children = [
+
+        {
+            type: "Text",
+            text: "Advanced Commands GUI",
+            bold: true,
+            fontSize: 18.0
+        },
+
+        {
+            type: "Spacer",
+            size: 8
+        },
+
+        {
+            type: "Checkbox",
+            text: "Включить систему команд",
+            stateKey: "commands_enabled"
+        },
+
+        {
+            type: "Divider",
+            padding: 6
+        },
+
+        {
+            type: "Text",
+            text: "Создать команду"
+        },
+
+        {
+            type: "Input",
+            stateKey: "cmd_trigger",
+            label: "Команда без !",
+            singleLine: true
+        },
+
+        {
+            type: "Input",
+            stateKey: "cmd_response",
+            label: "Ответ команды",
+            singleLine: false
+        },
+
+        {
+            type: "Button",
+            text: "➕ Добавить команду",
+            onClick: "addCommand()"
+        },
+
+        {
+            type: "Divider",
+            padding: 6
+        },
+
+        {
+            type: "Text",
+            text: "Удаление команды"
+        },
+
+        {
+            type: "Input",
+            stateKey: "delete_trigger",
+            label: "Название команды",
+            singleLine: true
+        },
+
+        {
+            type: "Button",
+            text: "❌ Удалить команду",
+            onClick: "deleteCommand()"
+        },
+
+        {
+            type: "Divider",
+            padding: 6
+        },
+
+        {
+            type: "Button",
+            text: "⚡ Установить демо команды",
+            onClick: "installDemo()"
+        },
+
+        {
+            type: "Spacer",
+            size: 10
+        },
+
+        {
+            type: "Text",
+            text: "Список команд:"
+        }
+    ];
+
+    // список команд
+    for (var i = 0; i < cmds.length; i++) {
+
+        children.push({
             type: "Card",
             children: [
+                {
+                    type: "Text",
+                    text: "!" + cmds[i].trigger,
+                    bold: true
+                },
+                {
+                    type: "Text",
+                    text: cmds[i].response
+                }
+            ]
+        });
+    }
+
+    var ui = {
+        type: "Card",
+        children: children
+    };
+
+    fpt.ui.setSlot("settings_" + storageKey, ui);
+}
+
+// =======================
+// INIT
+// =======================
+
+renderUi();
+
+fpt.app.log("Advanced Commands GUI loaded");            children: [
                 { type: "Text", text: "Stress UI #" + i }
             ]
         });
