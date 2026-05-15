@@ -25,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -40,9 +41,10 @@ fun AccountsSelectorScreen(
     currentTheme: AppTheme
 ) {
     var accounts by remember { mutableStateOf(repository.getAllAccounts()) }
-    
+
     var activeAccount by remember { mutableStateOf(repository.getActiveAccount()) }
     var showDeleteDialog by remember { mutableStateOf<Account?>(null) }
+    var showProxyDialog by remember { mutableStateOf<Account?>(null) }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -116,14 +118,14 @@ fun AccountsSelectorScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "При использовании нескольких аккаунтов задержка автоподнятия увеличится в 2 раза для предотвращения блокировки IP",
+                            "Вы можете включить фоновую работу для дополнительных аккаунтов. Настоятельно рекомендуем настроить прокси (🔑) для фоновых аккаунтов, чтобы избежать бана за частые запросы с одного IP.",
                             color = ThemeManager.parseColor(currentTheme.textSecondaryColor),
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            lineHeight = 15.sp
                         )
                     }
                 }
             }
-
 
             if (accounts.isEmpty()) {
                 Box(
@@ -167,11 +169,20 @@ fun AccountsSelectorScreen(
                             onActivate = {
                                 repository.setActiveAccount(account.id)
                                 accounts = repository.getAllAccounts()
-                                
                                 activeAccount = repository.getActiveAccount()
                             },
                             onDelete = {
                                 showDeleteDialog = account
+                            },
+                            onEditProxy = {
+                                showProxyDialog = account
+                            },
+                            onToggleBackground = { isEnabled ->
+                                val updatedAcc = account.copy(runInBackground = isEnabled)
+                                val accountsData = repository.getAccountsData()
+                                val newList = accountsData.accounts.map { if (it.id == updatedAcc.id) updatedAcc else it }
+                                repository.saveAccountsData(accountsData.copy(accounts = newList))
+                                accounts = repository.getAllAccounts()
                             }
                         )
                     }
@@ -180,6 +191,23 @@ fun AccountsSelectorScreen(
         }
     }
 
+    showProxyDialog?.let { account ->
+        ProxyDialog(
+            account = account,
+            theme = currentTheme,
+            onSave = { updatedAcc ->
+                val accountsData = repository.getAccountsData()
+                val newList = accountsData.accounts.map { if (it.id == updatedAcc.id) updatedAcc else it }
+                repository.saveAccountsData(accountsData.copy(accounts = newList))
+                accounts = repository.getAllAccounts()
+                if (activeAccount?.id == updatedAcc.id) {
+                    activeAccount = updatedAcc
+                }
+                showProxyDialog = null
+            },
+            onDismiss = { showProxyDialog = null }
+        )
+    }
 
     showDeleteDialog?.let { account ->
         AlertDialog(
@@ -201,7 +229,7 @@ fun AccountsSelectorScreen(
                     onClick = {
                         repository.deleteAccount(account.id)
                         accounts = repository.getAllAccounts()
-                        activeAccount = repository.getActiveAccount() 
+                        activeAccount = repository.getActiveAccount()
                         showDeleteDialog = null
                     }
                 ) {
@@ -228,7 +256,9 @@ fun AccountCard(
     isActive: Boolean,
     theme: AppTheme,
     onActivate: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onEditProxy: () -> Unit,
+    onToggleBackground: (Boolean) -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -243,19 +273,13 @@ fun AccountCard(
         ),
         shape = RoundedCornerShape(theme.borderRadius.dp),
         border = if (isActive) {
-            androidx.compose.foundation.BorderStroke(
-                2.dp,
-                ThemeManager.parseColor(theme.accentColor)
-            )
+            androidx.compose.foundation.BorderStroke(2.dp, ThemeManager.parseColor(theme.accentColor))
         } else null
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-
             Box {
                 if (account.avatarUrl.isNotEmpty()) {
                     AsyncImage(
@@ -285,15 +309,9 @@ fun AccountCard(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            Icons.Default.Person,
-                            contentDescription = null,
-                            tint = ThemeManager.parseColor(theme.accentColor),
-                            modifier = Modifier.size(32.dp)
-                        )
+                        Icon(Icons.Default.Person, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
                     }
                 }
-
 
                 if (isActive) {
                     Box(
@@ -304,20 +322,12 @@ fun AccountCard(
                             .border(2.dp, Color.White, CircleShape)
                             .align(Alignment.BottomEnd)
                     ) {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier
-                                .size(12.dp)
-                                .align(Alignment.Center)
-                        )
+                        Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(12.dp).align(Alignment.Center))
                     }
                 }
             }
 
             Spacer(modifier = Modifier.width(16.dp))
-
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -332,28 +342,130 @@ fun AccountCard(
                     fontSize = 12.sp,
                     color = ThemeManager.parseColor(theme.textSecondaryColor)
                 )
+
                 if (isActive) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "АКТИВЕН",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = ThemeManager.parseColor(theme.accentColor)
-                    )
+                    Text("ОСНОВНОЙ", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.accentColor))
+                } else {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { onToggleBackground(!account.runInBackground) }
+                    ) {
+                        Switch(
+                            checked = account.runInBackground,
+                            onCheckedChange = { onToggleBackground(it) },
+                            modifier = Modifier.scale(0.7f),
+                            colors = SwitchDefaults.colors(checkedThumbColor = ThemeManager.parseColor(theme.accentColor))
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Работа в фоне",
+                            fontSize = 12.sp,
+                            color = if (account.runInBackground) ThemeManager.parseColor(theme.accentColor) else ThemeManager.parseColor(theme.textSecondaryColor)
+                        )
+                    }
                 }
             }
 
-
-            IconButton(
-                onClick = onDelete,
-                modifier = Modifier.size(40.dp)
-            ) {
+            IconButton(onClick = onEditProxy, modifier = Modifier.size(40.dp)) {
                 Icon(
-                    Icons.Default.Delete,
-                    contentDescription = "Удалить",
-                    tint = Color.Red.copy(alpha = 0.7f)
+                    Icons.Default.VpnKey,
+                    contentDescription = "Прокси",
+                    tint = if (!account.proxyHost.isNullOrBlank()) ThemeManager.parseColor(theme.accentColor) else ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.5f)
                 )
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Default.Delete, "Удалить", tint = Color.Red.copy(alpha = 0.7f))
             }
         }
     }
+}
+
+@Composable
+fun ProxyDialog(
+    account: Account,
+    theme: AppTheme,
+    onSave: (Account) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var proxyType by remember { mutableStateOf(if (!account.proxyType.isNullOrBlank()) account.proxyType else "HTTP") }
+    var proxyHost by remember { mutableStateOf(account.proxyHost ?: "") }
+    var proxyPort by remember { mutableStateOf(if ((account.proxyPort ?: 0) > 0) account.proxyPort.toString() else "") }
+    var proxyUsername by remember { mutableStateOf(account.proxyUsername ?: "") }
+    var proxyPassword by remember { mutableStateOf(account.proxyPassword ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Настройка прокси", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+        text = {
+            Column {
+                Text("Прокси нужен для параллельной работы этого аккаунта в фоне, но не обязателен.",
+                    fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = proxyType == "HTTP",
+                        onClick = { proxyType = "HTTP" },
+                        label = { Text("HTTP(S)") }
+                    )
+                    FilterChip(
+                        selected = proxyType == "SOCKS",
+                        onClick = { proxyType = "SOCKS" },
+                        label = { Text("SOCKS5") }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = proxyHost,
+                    onValueChange = { proxyHost = it },
+                    label = { Text("Хост/IP") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = proxyPort,
+                    onValueChange = { proxyPort = it.filter { c -> c.isDigit() } },
+                    label = { Text("Порт") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = proxyUsername,
+                    onValueChange = { proxyUsername = it },
+                    label = { Text("Логин (необязательно)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = proxyPassword,
+                    onValueChange = { proxyPassword = it },
+                    label = { Text("Пароль (необязательно)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(account.copy(
+                        proxyType = proxyType,
+                        proxyHost = proxyHost.trim(),
+                        proxyPort = proxyPort.toIntOrNull() ?: 0,
+                        proxyUsername = proxyUsername.trim(),
+                        proxyPassword = proxyPassword.trim()
+                    ))
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+            ) { Text("Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+        },
+        containerColor = ThemeManager.parseColor(theme.surfaceColor)
+    )
 }

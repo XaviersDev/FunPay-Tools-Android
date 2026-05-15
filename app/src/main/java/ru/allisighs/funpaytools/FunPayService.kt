@@ -16,9 +16,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.RemoteInput
 import android.app.Service
-import android.app.AlarmManager
 import android.content.ContentResolver
-import android.os.SystemClock
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
@@ -30,28 +28,35 @@ import kotlinx.coroutines.*
 
 class FunPayService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private lateinit var repository: FunPayRepository
+    private lateinit var mainRepository: FunPayRepository
+    private val lastMessageHashes = mutableMapOf<String, Int>()
+
     private var wakeLock: PowerManager.WakeLock? = null
     private val processedMessagesCache = mutableMapOf<String, String>()
+
+    
+    private val accountJobs = mutableMapOf<String, Job>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        repository = FunPayRepository(this)
+        
+        mainRepository = FunPayRepository(this)
 
         
-        
-        
-        
+        try {
+            PluginEngine.init(this, mainRepository)
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Ошибка инициализации плагинов: ${e.message}")
+        }
+
         val prefs = getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
         if (prefs.getBoolean("app_fully_disabled", false)) {
             LogManager.addLog("⏸ SERVICE: Приложение выключено полностью — сервис не запускается")
             try {
-                
                 getSystemService(NotificationManager::class.java)?.cancel(1)
             } catch (_: Exception) {}
-            
             stopSelf()
             return
         }
@@ -75,7 +80,7 @@ class FunPayService : Service() {
 
         createNotificationChannel()
         startForeground(1, createNotification("FunPay Tools работает"))
-        LogManager.addLog("✅ SERVICE: Запущен")
+        LogManager.addLog("✅ SERVICE: Запущен менеджер мультиаккаунтов")
         startWorkLoop()
     }
 
@@ -85,99 +90,147 @@ class FunPayService : Service() {
 
     private fun startWorkLoop() {
         serviceScope.launch {
-            LogManager.addLog("🛠️ SERVICE: Цикл started")
-            var lastCleanup = 0L
-            var lastWidgetUpdate = 0L
-            var lastOnlinePing = 0L
             while (isActive) {
                 if (!isNetworkAvailable(this@FunPayService)) {
-                    LogManager.addLogDebug("📶 Нет интернета. Сплю...")
                     updateNotification("Ожидание сети...")
                     delay(25000)
                     continue
                 }
-                if (repository.hasAuth()) {
-                    try {
-                        val chats = repository.getChats()
-                        var busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
 
-                        
-                        
-                        
-                        
-                        val activeSlot = try {
-                            ChatFolderManager.getActiveScheduleSlot(this@FunPayService)
-                        } catch (_: Exception) { null }
+                val allAccounts = mainRepository.getAllAccounts()
 
-                        if (activeSlot != null && !busySettings.enabled) {
-                            
-                            
-                            
-                            val cal = java.util.Calendar.getInstance()
-                            val dayStamp = cal.get(java.util.Calendar.YEAR) * 10000L +
-                                    cal.get(java.util.Calendar.MONTH) * 100L +
-                                    cal.get(java.util.Calendar.DAY_OF_MONTH)
-                            val slotStamp = (activeSlot.id.hashCode().toLong() and 0xFFFFFFFFL)
-                            val scheduledEnabledAt = dayStamp * 1_000_000_000L + slotStamp
+                
+                val validAccounts = allAccounts.filter { it.isActive || it.runInBackground }
 
-                            busySettings = busySettings.copy(
-                                enabled = true,
-                                enabledAt = scheduledEnabledAt,
-                                message = if (activeSlot.overrideMessage && activeSlot.message.isNotBlank())
-                                    activeSlot.message
-                                else busySettings.message,
-                                cooldownMinutes = if (activeSlot.overrideCooldown)
-                                    activeSlot.cooldownMinutes
-                                else busySettings.cooldownMinutes
-                            )
-                            LogManager.addLogDebug("📅 Расписание активно: '${activeSlot.name}'")
-                        }
+                for (account in validAccounts) {
+                    if (accountJobs[account.id]?.isActive != true) {
+                        LogManager.addLogDebug("🚀 Запуск фонового потока для аккаунта: ${account.username}")
+                        accountJobs[account.id] = launchAccountLoop(account.id)
+                    }
+                }
 
-                        if (busySettings.enabled) {
-                            repository.checkBusyModeReplies(chats, busySettings)
-                            if (busySettings.keepRaise) repository.raiseAllLots()
-                            if (busySettings.keepAutoResponse) repository.checkAutoResponse(chats)
-                            if (busySettings.keepGreeting) repository.checkGreetings(chats)
-                        } else {
-                            resolveNewUnreadChats(chats)
-                            repository.checkAutoResponse(chats)
-                            repository.checkGreetings(chats)
-                            repository.raiseAllLots()
-                            repository.checkOrderConfirmations(chats)
-                            repository.checkAutoRefund(chats)
-                            repository.checkReviewReplies(chats)
-                            repository.runDumperCycle()
-                            repository.checkOrderReminders(chats)
-                            repository.checkAutoTicketCycle()
-                        }
+                
+                val validIds = validAccounts.map { it.id }
+                accountJobs.keys.toList().forEach { id ->
+                    if (id !in validIds) {
+                        LogManager.addLogDebug("🛑 Остановка фонового потока для аккаунта: $id")
+                        accountJobs[id]?.cancel()
+                        accountJobs.remove(id)
+                    }
+                }
 
-                        
-                        
-                        
-                        try {
-                            ConcurentManager.tick(this@FunPayService, repository)
-                        } catch (e: Exception) {
-                            LogManager.addLogDebug("⚠️ Concurent tick error: ${e.message}")
-                        }
+                delay(20000)
+            }
+        }
+    }
 
-                        if (repository.getSetting("push_notifications")) {
-                            checkPushNotifications(chats)
-                        }
+    private fun launchAccountLoop(accountId: String): Job = serviceScope.launch {
+        val repository = FunPayRepository(this@FunPayService, targetAccountId = accountId)
+        val accName = repository.getActiveAccount()?.username ?: accountId
 
-                        
-                        if (repository.getSetting("always_online")) {
-                            if (System.currentTimeMillis() - lastOnlinePing > 4 * 60 * 1000L) {
-                                repository.pingOnlineStatus()
-                                lastOnlinePing = System.currentTimeMillis()
+        var lastCleanup = 0L
+        var lastWidgetUpdate = 0L
+        var lastOnlinePing = 0L
+
+        while (isActive) {
+            if (!isNetworkAvailable(this@FunPayService)) {
+                delay(25000)
+                continue
+            }
+            val account = repository.getActiveAccount()
+            if (account != null) {
+                try {
+                    val chats = repository.getChats()
+                    chats.forEach { chat ->
+                        val msgHash = chat.lastMessage.hashCode()
+                        if (lastMessageHashes[chat.id] != msgHash) {
+                            lastMessageHashes[chat.id] = msgHash
+
+                            val lastSent = FunPayRepository.lastOutgoingMessages[chat.id]
+                            // Игнорируем эхо FunPay (когда отправлена картинка, а в чате надпись "Изображение")
+                            val isImageEcho = (lastSent == "__image__" && (chat.lastMessage.contains("Изображение", ignoreCase = true) || chat.lastMessage.contains("Image", ignoreCase = true)))
+
+                            if (lastSent != chat.lastMessage && !isImageEcho) {
+                                val safeText = chat.lastMessage.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+                                // Передаем isMe: false, так как это точно входящее сообщение от собеседника (или от системы)
+                                PluginEngine.dispatchEvent("onNewMessage", """{"chatId": "${chat.id}", "username": "${chat.username}", "text": "$safeText", "isMe": false}""")
                             }
                         }
+                    }
 
-                        if (System.currentTimeMillis() - lastCleanup > 24 * 60 * 60 * 1000L) {
-                            repository.cleanupOldProcessedEvents()
-                            lastCleanup = System.currentTimeMillis()
+                    var busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
+
+                    val activeSlot = try {
+                        ChatFolderManager.getActiveScheduleSlot(this@FunPayService)
+                    } catch (_: Exception) { null }
+
+                    if (activeSlot != null && !busySettings.enabled) {
+                        val cal = java.util.Calendar.getInstance()
+                        val dayStamp = cal.get(java.util.Calendar.YEAR) * 10000L +
+                                cal.get(java.util.Calendar.MONTH) * 100L +
+                                cal.get(java.util.Calendar.DAY_OF_MONTH)
+                        val slotStamp = (activeSlot.id.hashCode().toLong() and 0xFFFFFFFFL)
+                        val scheduledEnabledAt = dayStamp * 1_000_000_000L + slotStamp
+
+                        busySettings = busySettings.copy(
+                            enabled = true,
+                            enabledAt = scheduledEnabledAt,
+                            message = if (activeSlot.overrideMessage && activeSlot.message.isNotBlank())
+                                activeSlot.message
+                            else busySettings.message,
+                            cooldownMinutes = if (activeSlot.overrideCooldown)
+                                activeSlot.cooldownMinutes
+                            else busySettings.cooldownMinutes
+                        )
+                    }
+
+                    if (busySettings.enabled) {
+                        repository.checkBusyModeReplies(chats, busySettings)
+                        if (busySettings.keepRaise) repository.raiseAllLots()
+                        if (busySettings.keepAutoResponse) repository.checkAutoResponse(chats)
+                        if (busySettings.keepGreeting) repository.checkGreetings(chats)
+                    } else {
+                        resolveNewUnreadChats(chats, repository)
+                        val unreadChatsForDelivery = chats.filter { it.isUnread }
+                        for (c in unreadChatsForDelivery) {
+                            AutoDeliveryManager.checkAutoDelivery(c, repository, this@FunPayService)
                         }
+                        repository.checkAutoResponse(chats)
+                        repository.checkGreetings(chats)
+                        repository.raiseAllLots()
+                        repository.checkOrderConfirmations(chats)
+                        repository.checkAutoRefund(chats)
+                        repository.checkReviewReplies(chats)
+                        repository.runDumperCycle()
+                        repository.checkOrderReminders(chats)
+                        repository.checkAutoTicketCycle()
+                    }
 
+                    try {
+                        
+                        if (account.isActive) {
+                            ConcurentManager.tick(this@FunPayService, repository)
+                        }
+                    } catch (e: Exception) { }
 
+                    if (repository.getSetting("push_notifications")) {
+                        checkPushNotifications(chats)
+                    }
+
+                    if (repository.getSetting("always_online")) {
+                        if (System.currentTimeMillis() - lastOnlinePing > 4 * 60 * 1000L) {
+                            repository.pingOnlineStatus()
+                            lastOnlinePing = System.currentTimeMillis()
+                        }
+                    }
+
+                    if (System.currentTimeMillis() - lastCleanup > 24 * 60 * 60 * 1000L) {
+                        repository.cleanupOldProcessedEvents()
+                        lastCleanup = System.currentTimeMillis()
+                    }
+
+                    
+                    if (account.isActive) {
                         if (System.currentTimeMillis() - lastWidgetUpdate > 5 * 60 * 1000L) {
                             try {
                                 val profile = repository.getSelfProfile()
@@ -185,80 +238,70 @@ class FunPayService : Service() {
                                     WidgetManager.saveProfileCache(this@FunPayService, profile)
                                 }
                                 WidgetManager.updateAllWidgets(this@FunPayService)
-                            } catch (e: Exception) {
-                                LogManager.addLogDebug("⚠️ Widget update error: ${e.message}")
-                            }
+                            } catch (e: Exception) { }
                             lastWidgetUpdate = System.currentTimeMillis()
                         }
 
                         val unread = chats.count { it.isUnread }
                         val status = if (unread > 0) "Непрочитанных: $unread" else "Работает"
                         updateNotification(status)
-
-                    } catch (e: Exception) {
-                        LogManager.addLog("❌ SERVICE CRASH: ${e.message}")
-                        e.printStackTrace()
                     }
+
+                } catch (e: Exception) {
+                    LogManager.addLog("❌ Ошибка в потоке [$accName]: ${e.message}")
+                    e.printStackTrace()
                 }
-                val calendar = java.util.Calendar.getInstance()
-                val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
-                val isNight = hour in 2..6
-
-                
-                
-                
-                val dumperMinIntervalSec: Int = try {
-                    val dumper = repository.getDumperSettings()
-                    if (dumper.enabled && dumper.lots.isNotEmpty()) {
-                        dumper.lots.filter { it.enabled }
-                            .minOfOrNull { it.updateInterval.coerceAtLeast(1) }
-                            ?: Int.MAX_VALUE
-                    } else Int.MAX_VALUE
-                } catch (_: Exception) { Int.MAX_VALUE }
-
-                
-                
-                
-                
-                val concurentMinSec: Int = try {
-                    val cs = ConcurentManager.getSettings(this@FunPayService)
-                    if (cs.enabled) {
-                        val leftMs = cs.nextPostAt - System.currentTimeMillis()
-                        if (leftMs <= 0) 1
-                        else (leftMs / 1000).toInt().coerceAtLeast(1)
-                    } else Int.MAX_VALUE
-                } catch (_: Exception) { Int.MAX_VALUE }
-
-                val defaultDelay = if (isNight) 15000L else 6513L
-                val tightest = minOf(dumperMinIntervalSec, concurentMinSec)
-                val delayTime = if (tightest < Int.MAX_VALUE) {
-                    (tightest * 1000L).coerceAtMost(defaultDelay).coerceAtLeast(1000L)
-                } else defaultDelay
-
-                delay(delayTime)
             }
+
+            val calendar = java.util.Calendar.getInstance()
+            val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
+            val isNight = hour in 2..6
+
+            val dumperMinIntervalSec: Int = try {
+                val dumper = repository.getDumperSettings()
+                if (dumper.enabled && dumper.lots.isNotEmpty()) {
+                    dumper.lots.filter { it.enabled }
+                        .minOfOrNull { it.updateInterval.coerceAtLeast(1) }
+                        ?: Int.MAX_VALUE
+                } else Int.MAX_VALUE
+            } catch (_: Exception) { Int.MAX_VALUE }
+
+            val concurentMinSec: Int = try {
+                val cs = ConcurentManager.getSettings(this@FunPayService)
+                if (cs.enabled) {
+                    val leftMs = cs.nextPostAt - System.currentTimeMillis()
+                    if (leftMs <= 0) 1
+                    else (leftMs / 1000).toInt().coerceAtLeast(1)
+                } else Int.MAX_VALUE
+            } catch (_: Exception) { Int.MAX_VALUE }
+
+            val defaultDelay = if (isNight) 15000L else 6513L
+            val tightest = minOf(dumperMinIntervalSec, concurentMinSec)
+            val delayTime = if (tightest < Int.MAX_VALUE) {
+                (tightest * 1000L).coerceAtMost(defaultDelay).coerceAtLeast(1000L)
+            } else defaultDelay
+
+            delay(delayTime)
         }
     }
 
-    private suspend fun resolveNewUnreadChats(chats: List<ChatItem>) {
-        val (_, userId) = repository.getCsrfAndId() ?: return
+    private suspend fun resolveNewUnreadChats(chats: List<ChatItem>, repo: FunPayRepository) {
+        val authData = repo.getCsrfAndId() ?: return
 
         val newlyUnread = chats.filter { chat ->
             chat.isUnread &&
                     !FunPayRepository.lastOutgoingMessages.containsKey(chat.id) &&
-                    !repository.knownUnreadChats.contains(chat.id)
+                    !repo.knownUnreadChats.contains(chat.id)
         }
 
         for (chat in newlyUnread) {
-
-
-
-            repository.knownUnreadChats.add(chat.id)
+            repo.knownUnreadChats.add(chat.id)
         }
 
 
+
         val unreadIds = chats.filter { it.isUnread }.map { it.id }.toSet()
-        repository.knownUnreadChats.retainAll(unreadIds)
+        repo.knownUnreadChats.retainAll(unreadIds)
     }
 
     private fun checkPushNotifications(chats: List<ChatItem>) {
@@ -266,11 +309,12 @@ class FunPayService : Service() {
             if (chat.isUnread) {
                 val lastMsg = chat.lastMessage
 
+                val safeText = lastMsg.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+                PluginEngine.dispatchEvent("onNewMessage", """{"chatId": "${chat.id}", "username": "${chat.username}", "text": "$safeText"}""")
 
                 val lastSelf = FunPayRepository.lastOutgoingMessages[chat.id]
 
                 if (lastSelf != null) {
-
                     if (lastSelf == "__image__") {
                         FunPayRepository.lastOutgoingMessages.remove(chat.id)
                         continue
@@ -420,7 +464,6 @@ class FunPayService : Service() {
         manager.notify(1, createNotification(text))
     }
 
-
     override fun onDestroy() {
         serviceScope.cancel()
         try {
@@ -439,8 +482,7 @@ class FunPayService : Service() {
         }
 
         LogManager.addLog("🛑 SERVICE: Убит системой, запускаю дефибриллятор")
-        if (repository.getSetting("auto_start_on_boot")) {
-
+        if (mainRepository.getSetting("auto_start_on_boot")) {
             val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {
                 action = "ru.allisighs.funpaytools.RESTART_SERVICE"
             }
@@ -468,7 +510,7 @@ class FunPayService : Service() {
             return
         }
 
-        if (repository.getSetting("auto_start_on_boot")) {
+        if (mainRepository.getSetting("auto_start_on_boot")) {
             val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {
                 action = "ru.allisighs.funpaytools.RESTART_SERVICE"
             }
@@ -500,5 +542,4 @@ class FunPayService : Service() {
             return networkInfo.isConnected
         }
     }
-
 }

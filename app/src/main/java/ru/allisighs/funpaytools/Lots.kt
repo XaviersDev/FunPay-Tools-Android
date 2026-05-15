@@ -180,7 +180,7 @@ class LotsViewModel(
     private val _selectedIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedIds: StateFlow<Set<String>> = _selectedIds.asStateFlow()
 
-    // ID аккаунта, для которого загружены лоты
+    
     var loadedForAccountId: String? = null
         private set
 
@@ -339,7 +339,7 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
             val (_, userId) = getCsrfAndId() ?: return@withContext emptyList()
             val cookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
 
-            val response = RetrofitInstance.api.getUserProfile(userId, cookie, "Mozilla/5.0")
+            val response = api.getUserProfile(userId, cookie, "Mozilla/5.0")
             val html = response.body()?.string() ?: return@withContext emptyList()
             val doc = Jsoup.parse(html)
 
@@ -350,9 +350,9 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
                     val categoryName = categoryLink.text().trim()
                     val categoryHref = categoryLink.attr("href")
 
-                    // Сначала пытаемся достать nodeId через LotUrlParser — он понимает
-                    // и /lots/168/, и /lots/lot-name/ (именованные категории), и
-                    // /chips/168/; если не получилось — fallback на старый regex.
+                    
+                    
+                    
                     val parsedCat = LotUrlParser.parse(categoryHref)
                     val nodeId = parsedCat?.nodeId
                         ?: parsedCat?.id?.takeIf { it.all { ch -> ch.isDigit() } }
@@ -364,10 +364,10 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
                         val href = row.attr("href")
                         val parsed = LotUrlParser.parse(href)
 
-                        // Правильный ID:
-                        //   - для обычного лота (/lots/offer?id=22238017) → "22238017";
-                        //   - для чипа (/chips/offer?id=3934718-168-110-2842-0) → весь компаунд;
-                        //   - для edit-URL (/lots/offerEdit?offer=...) тоже ок.
+                        
+                        
+                        
+                        
                         val id = parsed?.id
                             ?: Regex("""(?:offer=|id=)([0-9A-Za-z\-]+)""")
                                 .find(href)?.groupValues?.get(1)
@@ -399,7 +399,7 @@ suspend fun FunPayRepository.getLotFields(lotId: String): LotFieldsData {
     return withContext(Dispatchers.IO) {
         val currentCookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
 
-        val response = RetrofitInstance.api.getChatPage(
+        val response = api.getChatPage(
             "https://funpay.com/lots/offerEdit?offer=$lotId",
             currentCookie,
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
@@ -517,7 +517,7 @@ suspend fun FunPayRepository.getLotFields(lotId: String): LotFieldsData {
             fields[name] = LotField(name, "select", value, label, options, locale)
         }
 
-        // Если node_id не нашли в hidden inputs — вытаскиваем из ссылки "Назад" на странице
+        
         if (!fields.containsKey("node_id") || fields["node_id"]?.value.isNullOrEmpty()) {
             val backLink = doc.select("a.js-back-link, a[href*='/lots/'][href$='/trade']").firstOrNull()
                 ?: doc.select("a[href*='/lots/']").firstOrNull { it.attr("href").matches(Regex(".*/lots/\\d+/.*")) }
@@ -529,7 +529,7 @@ suspend fun FunPayRepository.getLotFields(lotId: String): LotFieldsData {
             }
         }
 
-        // Если game не нашли — вытаскиваем из data-game атрибута showcase на странице
+        
         if (!fields.containsKey("game") || fields["game"]?.value.isNullOrEmpty()) {
             val gameId = doc.select("[data-game]").firstOrNull()?.attr("data-game")
             if (!gameId.isNullOrEmpty()) {
@@ -658,7 +658,7 @@ suspend fun FunPayRepository.saveLot(
 suspend fun FunPayRepository.deleteLot(lotId: String): Boolean {
     return withContext(Dispatchers.IO) {
         try {
-            // Берём CSRF из формы редактирования лота — как Cardinal
+            
             val fieldsData = getLotFields(lotId)
             val csrf = fieldsData.csrfToken
             val cookie = fieldsData.activeCookies
@@ -780,7 +780,7 @@ suspend fun FunPayRepository.toggleLotStatus(lotId: String, forceState: Boolean?
                 updatedFields.remove("active")
             }
 
-            // Если node_id не вытащился из формы — берём из getMyLots() как надёжный fallback
+            
             if (updatedFields["node_id"].isNullOrEmpty()) {
                 val lot = getMyLots().find { it.id == lotId }
                 if (lot != null) updatedFields["node_id"] = lot.nodeId
@@ -805,7 +805,7 @@ suspend fun FunPayRepository.copyLot(
             var currentCookie = originalData.activeCookies
             var currentCsrf = originalData.csrfToken
 
-            // Берём node_id из полей формы; если нет — из getMyLots() как fallback
+            
             val nodeIdFromForm = originalFields["node_id"]?.takeIf { it.isNotEmpty() }
             val nodeId = targetNodeId
                 ?: nodeIdFromForm
@@ -813,7 +813,7 @@ suspend fun FunPayRepository.copyLot(
                 ?: return@withContext Pair(false, "Не удалось определить категорию")
 
             val finalFields = if (targetNodeId != null && targetNodeId != originalFields["node_id"]) {
-                val newCategoryResponse = RetrofitInstance.api.getChatPage(
+                val newCategoryResponse = api.getChatPage(
                     "https://funpay.com/lots/offerEdit?node=$targetNodeId",
                     currentCookie,
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
@@ -878,7 +878,7 @@ fun LotsScreen(navController: NavController, repository: FunPayRepository, theme
     val selectionMode by viewModel.selectionMode.collectAsState()
     val selectedIds by viewModel.selectedIds.collectAsState()
 
-    // Перезагружаем лоты при возврате на экран если аккаунт сменился
+    
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -1721,15 +1721,15 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                 }
                             }
 
-                            // Кнопка автоперевода RU→EN: берёт все значения RU-полей,
-                            // переводит через Google Translate с защитой эмодзи/
-                            // спецсимволов (см. FpTranslate в FpExtensions.kt) и
-                            // подставляет в соответствующие EN-поля.
+                            
+                            
+                            
+                            
                             //
-                            // RU и EN поля у FunPay называются одинаково, отличаются только
-                            // суффиксом locale ([ru]/[en]); а также у некоторых полей
-                            // совсем нет суффикса, но их locale всё равно отмечен в
-                            // LotField.locale. Мэппинг строим по имени БЕЗ суффикса.
+                            
+                            
+                            
+                            
                             if (ruFields.isNotEmpty() && enFields.isNotEmpty()) {
                                 var isTranslating by remember { mutableStateOf(false) }
                                 Button(
@@ -1747,9 +1747,9 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                                     val ruValue = fieldValues[ruName] ?: ruField.value
                                                     if (ruValue.isBlank()) continue
 
-                                                    // Пытаемся найти EN-пару несколькими способами:
-                                                    //   1) прямая замена [ru]→[en], _ru→_en, -ru→-en;
-                                                    //   2) совпадение по «ядру имени» без суффикса локали.
+                                                    
+                                                    
+                                                    
                                                     val enKey1 = stripLocale(ruName)
                                                     val enTarget = when {
                                                         enFields.containsKey(enKey1) -> enKey1
@@ -1779,8 +1779,8 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                                         "Переведено: ${updates.size} полей",
                                                         Toast.LENGTH_SHORT
                                                     ).show()
-                                                    // Автоматически переключаемся на EN-таб, чтобы
-                                                    // пользователь увидел результат.
+                                                    
+                                                    
                                                     selectedTab = 2
                                                 } else {
                                                     Toast.makeText(

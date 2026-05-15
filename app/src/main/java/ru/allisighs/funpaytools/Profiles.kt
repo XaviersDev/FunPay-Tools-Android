@@ -1,7 +1,10 @@
 package ru.allisighs.funpaytools
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
@@ -29,12 +32,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.jsoup.Jsoup
+import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import org.jsoup.Jsoup
 
 data class FunPayUserProfile(
     val userId: String,
@@ -46,7 +54,8 @@ data class FunPayUserProfile(
     val reviewCount: String?,
     val reviewCountShort: String?,
     val offerGroups: List<ProfileOfferGroup>,
-    val reviews: List<ProfileReview>
+    val reviews: List<ProfileReview>,
+    val continueToken: String? 
 )
 
 data class ProfileOfferGroup(
@@ -78,7 +87,9 @@ sealed class ProfileUiState {
 }
 
 
-
+enum class SubmitState {
+    IDLE, LOADING, SUCCESS, ERROR
+}
 
 private suspend fun FunPayRepository.resolveUserIdFromNode(nodeId: String): String {
     return withContext(Dispatchers.IO) {
@@ -99,27 +110,40 @@ private suspend fun FunPayRepository.resolveUserIdFromNode(nodeId: String): Stri
         val dataName = chatEl?.attr("data-name") ?: ""
         val myUserId = chatEl?.attr("data-user")?.trim() ?: ""
 
-
         val ids = Regex("""\d+""").findAll(dataName).map { it.value }.toList()
-
-
         ids.firstOrNull { it != myUserId && it.isNotEmpty() } ?: ""
     }
 }
 
-private suspend fun FunPayRepository.fetchReviewsPage(userId: String, page: Int): List<ProfileReview> {
+
+private suspend fun FunPayRepository.fetchMoreReviews(userId: String, continueToken: String): Pair<List<ProfileReview>, String?> {
     return withContext(Dispatchers.IO) {
         val cookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
         val client = OkHttpClient()
-        val url = if (page <= 1) "https://funpay.com/users/$userId/" else "https://funpay.com/users/$userId/?page=$page"
-        val request = Request.Builder()
-            .url(url)
-            .header("Cookie", cookie)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+
+        val requestBody = FormBody.Builder()
+            .add("user_id", userId)
+            .add("continue", continueToken)
+            .add("filter", "")
             .build()
 
-        val html = client.newCall(request).execute().body?.string() ?: return@withContext emptyList()
-        parseReviewsFromHtml(html)
+        val request = Request.Builder()
+            .url("https://funpay.com/users/reviews")
+            .header("Cookie", cookie)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .header("X-Requested-With", "XMLHttpRequest") 
+            .post(requestBody)
+            .build()
+
+        val response = client.newCall(request).execute()
+        val html = response.body?.string() ?: return@withContext Pair(emptyList(), null)
+
+        val doc = Jsoup.parse(html)
+        val newReviews = parseReviewsFromHtml(html)
+        
+        val nextToken = doc.select("input[name=continue]").firstOrNull()?.attr("value")?.ifEmpty { null }
+
+        Pair(newReviews, nextToken)
     }
 }
 
@@ -167,7 +191,6 @@ suspend fun FunPayRepository.getUserProfile(userId: String): FunPayUserProfile {
         val registrationDate = doc.select(".param-item .text-nowrap").firstOrNull()
             ?.text()?.trim()?.lines()?.firstOrNull()?.trim()
 
-
         val ratingValue = doc.select(".rating-value .big").first()?.text()?.trim()?.ifEmpty { null }
         val reviewCountRaw = doc.select(".rating-full-count a").text().trim()
         val reviewCountShort = reviewCountRaw.replace("\n", " ").replace("\\s+".toRegex(), " ").ifEmpty { null }
@@ -194,6 +217,9 @@ suspend fun FunPayRepository.getUserProfile(userId: String): FunPayUserProfile {
 
         val reviews = parseReviewsFromHtml(html)
 
+        
+        val continueToken = doc.select("input[name=continue]").firstOrNull()?.attr("value")?.ifEmpty { null }
+
         FunPayUserProfile(
             userId = userId,
             username = username,
@@ -204,8 +230,73 @@ suspend fun FunPayRepository.getUserProfile(userId: String): FunPayUserProfile {
             reviewCount = reviewCountRaw,
             reviewCountShort = reviewCountShort,
             offerGroups = offerGroups,
-            reviews = reviews
+            reviews = reviews,
+            continueToken = continueToken
         )
+    }
+}
+
+
+
+
+private suspend fun sendReviewToFeed(
+    context: Context,
+    profile: FunPayUserProfile,
+    review: ProfileReview
+): Result<String> {
+    return withContext(Dispatchers.IO) {
+        try {
+            var gameName = ""
+            var price = ""
+            val detailStr = review.detail ?: ""
+            val lastCommaIdx = detailStr.lastIndexOf(',')
+
+            if (lastCommaIdx != -1) {
+                gameName = detailStr.substring(0, lastCommaIdx).trim()
+                price = detailStr.substring(lastCommaIdx + 1).trim()
+            } else {
+                gameName = detailStr
+            }
+
+            val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown_device"
+
+            val json = JSONObject().apply {
+                put("seller_name", profile.username)
+                put("seller_url", "https://funpay.com/users/${profile.userId}/")
+                put("reviewer_name", "Аноним")
+                put("review_text", review.text)
+                put("rating", review.rating)
+                put("device_id", androidId)
+                put("time_ago", review.date)
+                put("game_name", gameName)
+                put("price", price)
+                put("seller_response", review.sellerReply ?: "")
+            }
+
+            val body = json.toString().toRequestBody("application/json".toMediaTypeOrNull())
+            val request = Request.Builder()
+                .url("https://funpay.tools/api/reviews")
+                .header("Authorization", "Bearer fptoolsdim")
+                .post(body)
+                .build()
+
+            val client = OkHttpClient()
+            val response = client.newCall(request).execute()
+            val responseBody = response.body?.string() ?: ""
+
+            if (response.isSuccessful) {
+                Result.success("Отзыв успешно добавлен в ленту!")
+            } else {
+                val errorMsg = try {
+                    JSONObject(responseBody).getString("error")
+                } catch (e: Exception) {
+                    "Ошибка сервера: ${response.code}"
+                }
+                Result.failure(Exception(errorMsg))
+            }
+        } catch (e: Exception) {
+            Result.failure(Exception("Ошибка сети: ${e.message}"))
+        }
     }
 }
 
@@ -317,15 +408,17 @@ private fun ProfileContent(
     assignedLabels: List<ChatLabel>,
     theme: AppTheme,
     repository: FunPayRepository,
-    scope: kotlinx.coroutines.CoroutineScope,
-    context: android.content.Context,
+    scope: CoroutineScope,
+    context: Context,
     navController: NavController
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     var reviews by remember { mutableStateOf(profile.reviews) }
-    var currentPage by remember { mutableStateOf(1) }
+
+    
+    var currentToken by remember { mutableStateOf(profile.continueToken) }
     var isLoadingMore by remember { mutableStateOf(false) }
-    var noMoreReviews by remember { mutableStateOf(profile.reviews.size < 20) }
+    var noMoreReviews by remember { mutableStateOf(profile.continueToken == null) }
 
     val tabs = buildList {
         add("Предложения")
@@ -380,7 +473,7 @@ private fun ProfileContent(
                     }
                 } else {
                     itemsIndexed(reviews, key = { index, review -> "review_${index}_${review.date}_${review.text.take(20)}" }) { _, review ->
-                        ReviewCard(review, theme)
+                        ReviewCard(review, profile, theme, context, scope)
                     }
 
                     if (!noMoreReviews) {
@@ -395,19 +488,21 @@ private fun ProfileContent(
                                 } else {
                                     OutlinedButton(
                                         onClick = {
+                                            if (currentToken == null) return@OutlinedButton
                                             isLoadingMore = true
+
                                             scope.launch {
                                                 try {
-                                                    val nextPage = currentPage + 1
-                                                    val newReviews = repository.fetchReviewsPage(profile.userId, nextPage)
-
-                                                    if (newReviews.isEmpty() || newReviews.size < 20) {
-                                                        noMoreReviews = true
-                                                    }
+                                                    
+                                                    val (newReviews, nextToken) = repository.fetchMoreReviews(profile.userId, currentToken!!)
 
                                                     if (newReviews.isNotEmpty()) {
                                                         reviews = reviews + newReviews
-                                                        currentPage = nextPage
+                                                    }
+
+                                                    currentToken = nextToken
+                                                    if (nextToken == null || newReviews.isEmpty()) {
+                                                        noMoreReviews = true
                                                     }
                                                 } catch (_: Exception) {
                                                     noMoreReviews = true
@@ -436,7 +531,7 @@ private fun ProfileHeader(
     profile: FunPayUserProfile,
     assignedLabels: List<ChatLabel>,
     theme: AppTheme,
-    context: android.content.Context
+    context: Context
 ) {
     val onlineColor by animateColorAsState(
         if (profile.isOnline) Color(0xFF4CAF50) else Color(0xFF9E9E9E),
@@ -481,7 +576,6 @@ private fun ProfileHeader(
                 Spacer(Modifier.height(16.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (profile.ratingValue != null) {
-
                         StatChip(Icons.Default.Star, "${profile.ratingValue}/5", "Рейтинг", theme, Color(0xFFFFC107), Modifier.weight(1f))
                     }
                     if (profile.reviewCountShort != null) {
@@ -537,7 +631,7 @@ private fun StatChip(icon: androidx.compose.ui.graphics.vector.ImageVector, valu
 }
 
 @Composable
-private fun OfferRow(offer: ProfileOffer, theme: AppTheme, context: android.content.Context, navController: NavController) {
+private fun OfferRow(offer: ProfileOffer, theme: AppTheme, context: Context, navController: NavController) {
     Surface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp).clickable {
             val lotId = Regex("[?&]id=([A-Za-z0-9\\-]+)").find(offer.url)?.groupValues?.get(1)
@@ -560,7 +654,7 @@ private fun OfferRow(offer: ProfileOffer, theme: AppTheme, context: android.cont
             }
             Spacer(Modifier.width(12.dp))
             Text(offer.price, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.accentColor))
-            
+
             IconButton(
                 onClick = {
                     try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(offer.url))) } catch (_: Exception) {}
@@ -577,11 +671,102 @@ private fun OfferRow(offer: ProfileOffer, theme: AppTheme, context: android.cont
 }
 
 @Composable
-private fun ReviewCard(review: ProfileReview, theme: AppTheme) {
+private fun ReviewCard(
+    review: ProfileReview,
+    profile: FunPayUserProfile,
+    theme: AppTheme,
+    context: Context,
+    scope: CoroutineScope
+) {
+    
+    var clickCount by remember { mutableIntStateOf(0) }
+    var showDialog by remember { mutableStateOf(false) }
+    var submitState by remember { mutableStateOf(SubmitState.IDLE) }
+    var errorMsg by remember { mutableStateOf("") }
+
     val starColor = when (review.rating) {
         5 -> Color(0xFF4CAF50); 4 -> Color(0xFF8BC34A); 3 -> Color(0xFFFFC107); 2 -> Color(0xFFFF9800)
         else -> Color(0xFFF44336)
     }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (submitState != SubmitState.LOADING) {
+                    showDialog = false
+                    clickCount = 0
+                    submitState = SubmitState.IDLE
+                }
+            },
+            title = {
+                Text(
+                    text = when (submitState) {
+                        SubmitState.IDLE -> "Смешной отзыв?"
+                        SubmitState.LOADING -> "Отправка..."
+                        SubmitState.SUCCESS -> "Готово!"
+                        SubmitState.ERROR -> "Ошибка"
+                    },
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                when (submitState) {
+                    SubmitState.IDLE -> Text("Добавить этот отзыв в публичную ленту смешных отзывов на сайт funpay.tools/feed ?\n\n(Только 1 отзыв в день)")
+                    SubmitState.LOADING -> {
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = ThemeManager.parseColor(theme.accentColor))
+                        }
+                    }
+                    SubmitState.SUCCESS -> Text("Отзыв успешно добавлен в публичную ленту! Вы можете посмотреть его прямо сейчас.")
+                    SubmitState.ERROR -> Text(errorMsg)
+                }
+            },
+            confirmButton = {
+                if (submitState == SubmitState.IDLE) {
+                    TextButton(
+                        onClick = {
+                            submitState = SubmitState.LOADING
+                            scope.launch {
+                                val result = sendReviewToFeed(context, profile, review)
+                                withContext(Dispatchers.Main) {
+                                    if (result.isSuccess) {
+                                        submitState = SubmitState.SUCCESS
+                                    } else {
+                                        errorMsg = result.exceptionOrNull()?.message ?: "Неизвестная ошибка"
+                                        submitState = SubmitState.ERROR
+                                    }
+                                }
+                            }
+                        }
+                    ) { Text("Добавить", color = ThemeManager.parseColor(theme.accentColor)) }
+                } else if (submitState == SubmitState.SUCCESS) {
+                    Button(
+                        onClick = {
+                            showDialog = false
+                            clickCount = 0
+                            submitState = SubmitState.IDLE
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://funpay.tools/feed"))
+                            context.startActivity(intent)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                    ) { Text("Открыть сайт") }
+                }
+            },
+            dismissButton = {
+                if (submitState == SubmitState.IDLE || submitState == SubmitState.ERROR) {
+                    TextButton(onClick = {
+                        showDialog = false
+                        clickCount = 0
+                        submitState = SubmitState.IDLE
+                    }) { Text("Закрыть", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                }
+            },
+            containerColor = ThemeManager.parseColor(theme.surfaceColor),
+            titleContentColor = ThemeManager.parseColor(theme.textPrimaryColor),
+            textContentColor = ThemeManager.parseColor(theme.textSecondaryColor)
+        )
+    }
+
     Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), shape = RoundedCornerShape(12.dp), color = ThemeManager.parseColor(theme.surfaceColor)) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -594,7 +779,30 @@ private fun ReviewCard(review: ProfileReview, theme: AppTheme) {
                         )
                     }
                 }
-                Text(review.date, fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+
+                
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(review.date, fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+
+                    IconButton(
+                        onClick = {
+                            clickCount++
+                            if (clickCount >= 2) {
+                                showDialog = true
+                            } else {
+                                Toast.makeText(context, "Нажмите ещё раз, чтобы добавить в ленту", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mood,
+                            contentDescription = "В ленту",
+                            tint = ThemeManager.parseColor(theme.accentColor),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
             if (review.detail != null) {
                 Text(review.detail, fontSize = 11.sp, color = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.padding(top = 4.dp))

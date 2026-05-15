@@ -302,8 +302,7 @@ object LogManager {
     }
 }
 
-class FunPayRepository(private val context: Context) {
-
+class FunPayRepository(private val context: Context, val targetAccountId: String? = null) {
     val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
     val banInfo = MutableStateFlow<BanInfo?>(null)
     private val extraCookies = mutableMapOf<String, String>()
@@ -359,13 +358,8 @@ class FunPayRepository(private val context: Context) {
 
     val rawChatResponses = mutableMapOf<String, String>()
 
-    val repoClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .build()
+    val repoClient by lazy { ApiFactory.createClient(getActiveAccount()) }
+    val api by lazy { ApiFactory.create(getActiveAccount()) }
 
     init {
 
@@ -574,6 +568,9 @@ class FunPayRepository(private val context: Context) {
     }
     fun getActiveAccount(): Account? {
         val data = getAccountsData()
+        if (targetAccountId != null) {
+            return data.accounts.find { it.id == targetAccountId }
+        }
         return data.accounts.find { it.id == data.activeAccountId }
     }
 
@@ -631,6 +628,49 @@ class FunPayRepository(private val context: Context) {
         }
     }
 
+    suspend fun toggleLotState(lotId: String, active: Boolean): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val appData = getCsrfAndId() ?: return@withContext false
+            val (csrf, _) = appData
+
+            val form = okhttp3.FormBody.Builder()
+                .add("offer_id", lotId)
+                .add("csrf_token", csrf)
+
+            if (active) {
+                form.add("active", "on")
+            } else {
+                form.add("deleted", "1")
+            }
+
+            val req = okhttp3.Request.Builder()
+                .url("https://funpay.com/lots/offerSave")
+                .post(form.build())
+                .header("Cookie", getCookieString())
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
+                .header("X-Requested-With", "XMLHttpRequest")
+                .build()
+
+            val resp = repoClient.newCall(req).execute()
+            updateSession(resp)
+
+            
+            val body = resp.body?.string() ?: ""
+            val json = try { org.json.JSONObject(body) } catch (e: Exception) { org.json.JSONObject() }
+
+            if (!json.optBoolean("error", false)) {
+                LogManager.addLog("✅ Лот $lotId успешно ${if (active) "активирован" else "деактивирован"}.")
+                return@withContext true
+            } else {
+                LogManager.addLog("❌ Ошибка изменения статуса лота $lotId: ${json.optString("msg", "Unknown error")}")
+                return@withContext false
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Исключение при изменении статуса лота $lotId: ${e.message}")
+            return@withContext false
+        }
+    }
+
     suspend fun loadAccountProfile(accountId: String) {
         val data = getAccountsData()
         val account = data.accounts.find { it.id == accountId } ?: return
@@ -639,7 +679,7 @@ class FunPayRepository(private val context: Context) {
             val cookie = "golden_key=${account.goldenKey}; PHPSESSID=${account.phpSessionId}"
 
 
-            val mainResponse = RetrofitInstance.api.getMainPage(cookie, userAgent)
+            val mainResponse = api.getMainPage(cookie, userAgent)
             val html = mainResponse.body()?.string() ?: return
 
             val doc = Jsoup.parse(html)
@@ -666,7 +706,7 @@ class FunPayRepository(private val context: Context) {
             if (userId.isEmpty()) return
 
 
-            val profileResponse = RetrofitInstance.api.getUserProfile(userId, cookie, userAgent)
+            val profileResponse = api.getUserProfile(userId, cookie, userAgent)
             val profileHtml = profileResponse.body()?.string() ?: ""
             val profileDoc = Jsoup.parse(profileHtml)
 
@@ -825,7 +865,7 @@ class FunPayRepository(private val context: Context) {
             val (csrf, _) = getCsrfAndId() ?: return
             val objects = "[{\"type\":\"chat_node\",\"id\":\"$nodeId\",\"tag\":\"00000000\"," +
                     "\"data\":{\"node\":\"$nodeId\",\"last_message\":-1,\"content\":\"\"}}]"
-            RetrofitInstance.api.runnerGet(
+            api.runnerGet(
                 cookie = getCookieString(),
                 userAgent = userAgent,
                 objects = objects,
@@ -843,7 +883,7 @@ class FunPayRepository(private val context: Context) {
         try {
             val cookie = getCookieString()
             if (cookie.isBlank()) return
-            val resp = RetrofitInstance.api.getMainPage(cookie, userAgent)
+            val resp = api.getMainPage(cookie, userAgent)
             updateSession(resp)
             LogManager.addLogDebug("🟢 Онлайн-пинг OK")
         } catch (e: Exception) {
@@ -1086,7 +1126,7 @@ class FunPayRepository(private val context: Context) {
 
                 LogManager.addLog("⭐ Обнаружен новый отзыв к заказу #$orderId...")
 
-                val response = RetrofitInstance.api.getOrder(orderId, getCookieString(), userAgent)
+                val response = api.getOrder(orderId, getCookieString(), userAgent)
                 updateSession(response)
                 val html = readBodySilent(response)
                 if (html.isEmpty()) {
@@ -1309,7 +1349,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
                 val body = payload.toString().toRequestBody("application/json".toMediaTypeOrNull())
 
-                val response = RetrofitInstance.api.rewriteText(
+                val response = api.rewriteText(
                     auth = "Bearer fptoolsdim",
                     body = body
                 )
@@ -1350,7 +1390,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                     return@withContext false
                 }
 
-                val response = RetrofitInstance.api.replyToReview(
+                val response = api.replyToReview(
                     cookie = getCookieString(),
                     userAgent = userAgent,
                     csrfToken = csrf,
@@ -1477,7 +1517,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
     private suspend fun updateGameData() {
         try {
-            val response = RetrofitInstance.api.getMainPage(getCookieString(), userAgent)
+            val response = api.getMainPage(getCookieString(), userAgent)
             updateSession(response)
             val html = readBodySilent(response)
             if (isCloudflare(html)) return
@@ -1511,7 +1551,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         repeat(3) { attempt ->
             try {
                 val response = withContext(Dispatchers.IO) {
-                    RetrofitInstance.api.getMainPage(getCookieString(), userAgent)
+                    api.getMainPage(getCookieString(), userAgent)
                 }
 
                 updateSession(response)
@@ -1664,7 +1704,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
             val fileIdBody = "0".toRequestBody("text/plain".toMediaTypeOrNull())
 
-            val response = RetrofitInstance.api.uploadChatImage(
+            val response = api.uploadChatImage(
                 cookie = getCookieString(),
                 userAgent = userAgent,
                 file = body,
@@ -1965,7 +2005,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
             requestJson.put("data", dataJson)
 
-            val resp = RetrofitInstance.api.runnerSend(
+            val resp = api.runnerSend(
                 cookie = getCookieString(), userAgent = userAgent, request = requestJson.toString(), csrfToken = csrf, objects = "[]"
             )
             updateSession(resp)
@@ -2041,7 +2081,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             val body = payload.toString().toRequestBody("application/json".toMediaTypeOrNull())
 
 
-            val response = RetrofitInstance.api.rewriteText(
+            val response = api.rewriteText(
                 auth = "Bearer fptoolsdim",
                 body = body
             )
@@ -2089,7 +2129,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             val authData = getCsrfAndId() ?: return
             val userId = authData.second
 
-            val profileResponse = RetrofitInstance.api.getUserProfile(userId, getCookieString(), userAgent)
+            val profileResponse = api.getUserProfile(userId, getCookieString(), userAgent)
             updateSession(profileResponse)
             val html = readBodySilent(profileResponse)
 
@@ -2119,7 +2159,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                         continue
                     }
 
-                    val resp1 = RetrofitInstance.api.raiseLotInitial(
+                    val resp1 = api.raiseLotInitial(
                         cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId
                     )
                     updateSession(resp1)
@@ -2134,7 +2174,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                         while (matcher.find()) { matcher.group(1)?.toIntOrNull()?.let { nodeIds.add(it) } }
 
                         if (nodeIds.isNotEmpty()) {
-                            val resp2 = RetrofitInstance.api.raiseLotCommit(
+                            val resp2 = api.raiseLotCommit(
                                 cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId, nodeIds = nodeIds
                             )
                             updateSession(resp2)
@@ -2142,7 +2182,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                             
                             delay(1000)
 
-                            val resp3 = RetrofitInstance.api.raiseLotCommit(
+                            val resp3 = api.raiseLotCommit(
                                 cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId, nodeIds = nodeIds
                             )
                             updateSession(resp3)
@@ -2184,7 +2224,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                             LogManager.addLog("⏳ Smart raise: '$msg1' → ждём ${waitSec}с для game $gameId")
                         } else {
                             delay(1000)
-                            val respRetry = RetrofitInstance.api.raiseLotInitial(
+                            val respRetry = api.raiseLotInitial(
                                 cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId
                             )
                             updateSession(respRetry)
@@ -2222,7 +2262,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                     val objects = "[{\"type\":\"chat_bookmarks\",\"id\":\"$userId\",\"tag\":\"00000000\",\"data\":false}]"
 
                     val response = withContext(Dispatchers.IO) {
-                        RetrofitInstance.api.runnerGet(
+                        api.runnerGet(
                             cookie = getCookieString(),
                             userAgent = userAgent,
                             objects = objects,
@@ -2339,7 +2379,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
         try {
             val url = "https://funpay.com/chat/?node=$chatId"
-            val response = RetrofitInstance.api.getChatPage(url, getCookieString(), userAgent)
+            val response = api.getChatPage(url, getCookieString(), userAgent)
             updateSession(response)
             val html = readBodySilent(response)
 
@@ -2389,7 +2429,13 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                     currentTime = dateEl.attr("title").ifEmpty { dateEl.text() }
                 }
 
-                val text = itemDiv.select(".chat-msg-text").text().trim()
+                val textEl = itemDiv.selectFirst(".chat-msg-text")
+                val text = if (textEl != null) {
+                    
+                    textEl.wholeText().trim('\n', '\r', ' ')
+                } else {
+                    ""
+                }
 
                 var imageUrl: String? = null
                 val imgLink = itemDiv.selectFirst(".chat-img-link")
@@ -2432,7 +2478,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         if (!chatId.startsWith("users-")) {
             try {
                 val url = "https://funpay.com/chat/history?node=$chatId&last_message=0"
-                val resp = RetrofitInstance.api.getChatHistory(url, getCookieString(), userAgent, "XMLHttpRequest")
+                val resp = api.getChatHistory(url, getCookieString(), userAgent, "XMLHttpRequest")
                 val jsonStr = readBodySilent(resp)
                 if (jsonStr.isNotEmpty()) {
                     val json = JSONObject(jsonStr)
@@ -2446,7 +2492,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
         try {
             val url = "https://funpay.com/chat/history?node=$nodeName&last_message=$beforeMessageId"
-            val response = RetrofitInstance.api.getChatHistory(url, getCookieString(), userAgent, "XMLHttpRequest")
+            val response = api.getChatHistory(url, getCookieString(), userAgent, "XMLHttpRequest")
             updateSession(response)
             val jsonStr = readBodySilent(response)
 
@@ -2504,8 +2550,16 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                     currentTime = dateEl.attr("title").ifEmpty { dateEl.text() }
                 }
 
-                val text = itemDiv.select(".chat-msg-text").text().trim()
-
+                val textEl = itemDiv.selectFirst(".chat-msg-text")
+                val text = if (textEl != null) {
+                    val htmlContent = textEl.html()
+                    
+                    val withLineBreaks = htmlContent.replace("(?i)<br[^>]*>".toRegex(), "\n").replace("(?i)</p>".toRegex(), "\n")
+                    
+                    org.jsoup.Jsoup.clean(withLineBreaks, org.jsoup.safety.Safelist.none()).trim()
+                } else {
+                    ""
+                }
                 var imageUrl: String? = null
                 val imgLink = itemDiv.selectFirst(".chat-img-link")
                 if (imgLink != null) {
@@ -2543,7 +2597,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         return withContext(Dispatchers.IO) {
             try {
                 val url = "https://funpay.com/chat/?node=$chatId"
-                val response = RetrofitInstance.api.getChatPage(url, getCookieString(), userAgent)
+                val response = api.getChatPage(url, getCookieString(), userAgent)
                 val html = readBodySilent(response)
                 if (html.isEmpty()) return@withContext null
 
@@ -2597,7 +2651,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
     suspend fun getOrderDetails(orderId: String): OrderDetails? {
         return withContext(Dispatchers.IO) {
             try {
-                val response = RetrofitInstance.api.getOrder(orderId, getCookieString(), userAgent)
+                val response = api.getOrder(orderId, getCookieString(), userAgent)
                 updateSession(response)
                 val html = readBodySilent(response)
                 val doc = Jsoup.parse(html)
@@ -2726,7 +2780,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         val (csrf, _) = appData
         return try {
             LogManager.addLog("💸 Возврат средств по заказу $orderId...")
-            val response = RetrofitInstance.api.refundOrder(
+            val response = api.refundOrder(
                 cookie = getCookieString(),
                 userAgent = userAgent,
                 csrfToken = csrf,
@@ -2747,7 +2801,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         val (csrf, userId) = appData
         return try {
             LogManager.addLog("🗑️ Удаление ответа на отзыв (заказ $orderId)...")
-            val response = RetrofitInstance.api.deleteReviewReply(
+            val response = api.deleteReviewReply(
                 cookie = getCookieString(),
                 userAgent = userAgent,
                 csrfToken = csrf,
@@ -3469,7 +3523,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             val settings = getReviewReplySettings()
             if (!settings.enabled) return
 
-            val response = RetrofitInstance.api.getOrder(orderId, getCookieString(), userAgent)
+            val response = api.getOrder(orderId, getCookieString(), userAgent)
             updateSession(response)
             val html = readBodySilent(response)
             if (html.isEmpty()) return
@@ -3584,7 +3638,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             if (finalReplyText != null && finalReplyText!!.isNotEmpty()) {
                 LogManager.addLog("📤 Отправка ответа: '$finalReplyText'")
 
-                val replyResponse = RetrofitInstance.api.replyToReview(
+                val replyResponse = api.replyToReview(
                     cookie = getCookieString(),
                     userAgent = userAgent,
                     csrfToken = csrf,
@@ -3747,7 +3801,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
             val body = payload.toString().toRequestBody("application/json".toMediaTypeOrNull())
 
-            val response = RetrofitInstance.api.rewriteText(
+            val response = api.rewriteText(
                 auth = "Bearer fptoolsdim",
                 body = body
             )
@@ -4288,6 +4342,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             val lastMsgLower = chat.lastMessage.lowercase()
             if (!newOrderPhrases.any { lastMsgLower.contains(it) }) continue
             val orderId = Regex("#([A-Za-z0-9]+)").find(chat.lastMessage)?.groupValues?.get(1) ?: continue
+            PluginEngine.dispatchEvent("onNewOrder", """{"orderId": "$orderId", "chatId": "${chat.id}", "buyerName": "${chat.username}"}""")
             if (orderId in existingOrderIds) continue
             if (wasEventProcessed(chat.id, orderId, "reminder_scheduled")) continue
             val remindAt = currentTime + settings.delayHours * 3600_000L
@@ -4350,7 +4405,7 @@ suspend fun FunPayRepository.getSelfProfile(): UserProfile? {
         try {
             val (csrf, userId) = getCsrfAndId() ?: return@withContext null
 
-            val mainResponse = RetrofitInstance.api.getMainPage(getGoldenKey()?.let { "golden_key=$it; PHPSESSID=${getPhpSessionId()}" } ?: "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
+            val mainResponse = api.getMainPage(getGoldenKey()?.let { "golden_key=$it; PHPSESSID=${getPhpSessionId()}" } ?: "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
             val mainHtml = mainResponse.body()?.string() ?: ""
             val mainDoc = Jsoup.parse(mainHtml)
 
@@ -4358,7 +4413,7 @@ suspend fun FunPayRepository.getSelfProfile(): UserProfile? {
             val activeSales = mainDoc.select(".badge-trade").text().toIntOrNull() ?: 0
             val activePurchases = mainDoc.select(".badge-orders").text().toIntOrNull() ?: 0
 
-            val profileResponse = RetrofitInstance.api.getUserProfile(userId, getGoldenKey()?.let { "golden_key=$it; PHPSESSID=${getPhpSessionId()}" } ?: "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
+            val profileResponse = api.getUserProfile(userId, getGoldenKey()?.let { "golden_key=$it; PHPSESSID=${getPhpSessionId()}" } ?: "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
             val profileHtml = profileResponse.body()?.string() ?: ""
             val profileDoc = Jsoup.parse(profileHtml)
 
@@ -4855,7 +4910,7 @@ suspend fun FunPayRepository.fetchLotPreview(offerId: String): LotPreview? =
     withContext(Dispatchers.IO) {
         try {
             val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
-            val resp = RetrofitInstance.api.getLotPage(offerId, getCookieString(), ua)
+            val resp = api.getLotPage(offerId, getCookieString(), ua)
             val html = resp.body()?.string().orEmpty()
             if (html.isBlank()) return@withContext null
 

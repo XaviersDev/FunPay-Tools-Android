@@ -123,7 +123,7 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
 
     Box(modifier = Modifier.fillMaxSize().background(AppGradient)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Топбар: только стрелка назад + контекстный заголовок + колокол
+            
             Surface(
                 color = ThemeManager.parseColor(currentTheme.surfaceColor),
                 shadowElevation = 4.dp
@@ -196,7 +196,7 @@ fun SupportScreenView(repository: FunPayRepository, currentTheme: AppTheme, onBa
                             }
                         }
                     )
-                    // FABs — обновить и создать в правом нижнем углу
+                    
                     Column(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
@@ -547,7 +547,7 @@ fun TicketDetailsView(
     var showInfoPanel by remember { mutableStateOf(false) }
     var isClosing by remember { mutableStateOf(false) }
     var isUploadingAttachment by remember { mutableStateOf(false) }
-    var actionError by remember { mutableStateOf<String?>(null) } // Текст ошибки от сервера
+    var actionError by remember { mutableStateOf<String?>(null) } 
     var pendingAttachmentIds by remember { mutableStateOf<List<String>>(emptyList()) }
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -586,7 +586,7 @@ fun TicketDetailsView(
         }
     }
 
-    // Окно сообщения об ошибке
+    
     if (actionError != null) {
         AlertDialog(
             onDismissRequest = { actionError = null },
@@ -711,7 +711,7 @@ fun TicketDetailsView(
                                     onUpdate()
                                 }
                             } catch (e: Exception) {
-                                // ПОЙМАЛИ ОШИБКУ ОТ FunPay
+                                
                                 actionError = e.message
                             } finally {
                                 isSending = false
@@ -857,14 +857,14 @@ fun CommentBubble(comment: TicketComment, theme: AppTheme) {
 
                 SelectionContainer {
                     val annotatedText = buildAnnotatedString {
-                        // Нормализуем HTML: убираем лишние переносы перед парсингом
+                        
                         val rawHtml = comment.htmlText.ifEmpty { comment.text }
                         val htmlSource = rawHtml
-                            // <p><br></p> и <p></p> — пустые параграфы
+                            
                             .replace(Regex("<p>\\s*(<br\\s*/?>)?\\s*</p>"), "")
-                            // Пробельные символы между тегами — whitespace TextNodes
+                            
                             .replace(Regex(">\\s+<"), "><")
-                            // Несколько br подряд → один
+                            
                             .replace(Regex("(<br\\s*/?>){2,}"), "<br>")
                             .trim()
                         val linkColor = if (comment.isMyComment) Color.White else ThemeManager.parseColor(theme.accentColor)
@@ -889,7 +889,7 @@ fun CommentBubble(comment: TicketComment, theme: AppTheme) {
                                     when (tag) {
                                         "br" -> append("\n")
                                         "p", "div" -> {
-                                            // Только если перед нами уже что-то есть — разделяем одним переносом
+                                            
                                             if (length > 0 && toString().last() != '\n') append("\n")
                                             node.childNodes().forEach { appendNode(it, nb, ni, nu) }
                                         }
@@ -983,7 +983,7 @@ fun MessageInputWithFormatting(
     val canSend = (hasText || pendingAttachmentCount > 0) && !isSending && !isUploadingAttachment
 
     Column(modifier = Modifier.padding(bottom = 8.dp)) {
-        // Индикатор загруженных вложений
+        
         if (pendingAttachmentCount > 0 || isUploadingAttachment) {
             Row(
                 modifier = Modifier
@@ -1009,7 +1009,7 @@ fun MessageInputWithFormatting(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Кнопка вложений
+            
             if (onAttach != null) {
                 Box(
                     modifier = Modifier
@@ -1028,7 +1028,7 @@ fun MessageInputWithFormatting(
                 }
             }
 
-            // Поле ввода в пузыре
+            
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
@@ -1051,7 +1051,7 @@ fun MessageInputWithFormatting(
                 modifier = Modifier.weight(1f)
             )
 
-            // Кнопка отправки — иконка в круге
+            
             Box(
                 modifier = Modifier
                     .size(44.dp)
@@ -1079,8 +1079,8 @@ fun MessageInputWithFormatting(
                     )
                 }
             }
-        } // end Row
-    } // end Column
+        } 
+    } 
 }
 
 @Composable
@@ -1090,7 +1090,7 @@ fun NotificationSettingsDialog(support: FunPaySupport, theme: AppTheme, onDismis
     var isSaving by remember { mutableStateOf(false) }
     var emailEnabled by remember { mutableStateOf(false) }
     var csrfToken by remember { mutableStateOf<String?>(null) }
-    var statusMsg by remember { mutableStateOf<Pair<Boolean, String>?>(null) } // true=ok, false=err
+    var statusMsg by remember { mutableStateOf<Pair<Boolean, String>?>(null) } 
 
     LaunchedEffect(Unit) {
         val (checked, token) = support.getNotificationSettings()

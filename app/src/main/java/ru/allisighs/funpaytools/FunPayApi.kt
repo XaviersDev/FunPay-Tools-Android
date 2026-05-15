@@ -179,18 +179,63 @@ interface FunPayApi {
     ): Response<ResponseBody>
 }
 
-object RetrofitInstance {
-    private val client = okhttp3.OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
-        .hostnameVerifier { _, _ -> true }
-        .build()
+object GlobalProxyAuthenticator : java.net.Authenticator() {
+    val proxyCredentials = java.util.concurrent.ConcurrentHashMap<String, java.net.PasswordAuthentication>()
+    override fun getPasswordAuthentication(): java.net.PasswordAuthentication? {
+        val host = requestingHost ?: requestingSite?.hostName ?: return null
+        return proxyCredentials["$host:$requestingPort"]
+    }
+}
 
-    val api: FunPayApi by lazy {
-        Retrofit.Builder()
+object ApiFactory {
+    private var authenticatorSet = false
+
+    fun createClient(account: Account?): okhttp3.OkHttpClient {
+        val builder = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .hostnameVerifier { _, _ -> true }
+
+        val pHost = account?.proxyHost ?: ""
+        val pPort = account?.proxyPort ?: 0
+        if (account != null && pHost.isNotBlank() && pPort > 0) {
+            try {
+                val proxyType = if (account.proxyType == "SOCKS") java.net.Proxy.Type.SOCKS else java.net.Proxy.Type.HTTP
+                val proxyAddress = java.net.InetSocketAddress(pHost, pPort)
+                builder.proxy(java.net.Proxy(proxyType, proxyAddress))
+
+                val pUser = account.proxyUsername ?: ""
+                val pPass = account.proxyPassword ?: ""
+                if (pUser.isNotBlank()) {
+                    if (proxyType == java.net.Proxy.Type.SOCKS) {
+                        GlobalProxyAuthenticator.proxyCredentials["${pHost}:${pPort}"] =
+                            java.net.PasswordAuthentication(pUser, pPass.toCharArray())
+                        if (!authenticatorSet) {
+                            java.net.Authenticator.setDefault(GlobalProxyAuthenticator)
+                            authenticatorSet = true
+                        }
+                    } else {
+                        builder.proxyAuthenticator { _, response ->
+                            val credential = okhttp3.Credentials.basic(pUser, pPass)
+                            response.request.newBuilder()
+                                .header("Proxy-Authorization", credential)
+                                .build()
+                        }
+                    }
+                }
+                android.util.Log.d("FPC_DBG", "Установлен прокси ${account.proxyType} для ${account.username}")
+            } catch (e: Exception) {
+                android.util.Log.e("FPC_LOG", "Ошибка прокси для ${account.username}: ${e.message}")
+            }
+        }
+        return builder.build()
+    }
+
+    fun create(account: Account? = null): FunPayApi {
+        return Retrofit.Builder()
             .baseUrl("https://funpay.com/")
-            .client(client)
+            .client(createClient(account))
             .addConverterFactory(ScalarsConverterFactory.create())
             .addConverterFactory(GsonConverterFactory.create())
             .build()

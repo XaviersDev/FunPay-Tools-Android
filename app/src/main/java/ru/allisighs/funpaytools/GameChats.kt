@@ -14,6 +14,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -74,9 +76,9 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.Locale
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Из GameChatsRegistry.kt
-// ═══════════════════════════════════════════════════════════════════════════
+
+
+
 
 data class GameChat(
     @SerializedName("name") val name: String = "",
@@ -119,7 +121,7 @@ data class GameChat(
             for (kw in known) {
                 if (lower.endsWith(" $kw")) return kw
             }
-            // составные: "game pass", "battle royale", "prime", "vhs", "pve", "play", "premium", "кубков", "карты", "(прочие)", "прочее"
+            
             val tails = listOf(
                 "game pass", "battle royale", "prime", "vhs", "pve", "play",
                 "premium", "кубков", "карты", "прочее", "(прочие)"
@@ -162,7 +164,7 @@ object GameChatsRegistry {
                 }
                 val type = object : TypeToken<List<GameChat>>() {}.type
                 val parsed: List<GameChat> = gson.fromJson(json, type) ?: emptyList()
-                // Отсекаем мусор и дубликаты по nodeId
+                
                 parsed
                     .filter { it.nodeId.isNotBlank() && it.name.isNotBlank() }
                     .distinctBy { it.nodeId }
@@ -224,7 +226,7 @@ object GameChatsRegistry {
         return id == "flood" || id.startsWith("game-")
     }
 
-    // ── Транслит ────────────────────────────────────────────────────────────
+    
 
     private val ruToEn: Map<Char, String> = mapOf(
         'а' to "a", 'б' to "b", 'в' to "v", 'г' to "g", 'д' to "d", 'е' to "e",
@@ -235,7 +237,7 @@ object GameChatsRegistry {
         'э' to "e", 'ю' to "yu", 'я' to "ya"
     )
 
-    // упрощённая обратная: en-буквы → ru. Однозначных соответствий нет, делаем "лучше что-то".
+    
     private val enToRu: Map<String, String> = linkedMapOf(
         "sch" to "щ", "shch" to "щ", "zh" to "ж", "ts" to "ц", "ch" to "ч",
         "sh" to "ш", "yu" to "ю", "ya" to "я", "yo" to "ё", "kh" to "х",
@@ -263,16 +265,12 @@ object GameChatsRegistry {
         return s
     }
 }
-// ═══════════════════════════════════════════════════════════════════════════
-// Из GameChatsUi.kt
-// ═══════════════════════════════════════════════════════════════════════════
+
+
+
 
 enum class ChatListMode { PERSONAL, GAMES }
 
-/**
- * Сегмент-контрол Личные/Игровые. Компактный, встраивается над ChatFolderTabs.
- * Анимированный подсвеченный indicator.
- */
 @Composable
 fun ChatModeSegmentedControl(
     mode: ChatListMode,
@@ -283,62 +281,65 @@ fun ChatModeSegmentedControl(
     val accent = ThemeManager.parseColor(theme.accentColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
-    // Очень тонкая плашка, плотно к топбару (padding сверху 2dp, снизу 0).
-    // Внешний фон убран — чтобы не занимала визуальный «блок».
-    // Индикатор выбранного — просто подчёркивание accent-цветом под текстом.
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .padding(top = 2.dp),
+            
+            .padding(horizontal = 16.dp, vertical = 0.dp)
+            .padding(top = 2.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
         listOf(
-            ChatListMode.PERSONAL to "Личные",
-            ChatListMode.GAMES to "Игровые"
+            ChatListMode.PERSONAL to "ЛИЧНЫЕ",
+            ChatListMode.GAMES to "ИГРОВЫЕ"
         ).forEachIndexed { idx, pair ->
             val (m, label) = pair
-            val selected = mode == m
-            val tc by animateColorAsState(
-                if (selected) accent else textSecondary.copy(alpha = 0.7f),
-                animationSpec = tween(160), label = "segtc"
-            )
-            val indicatorAlpha by animateColorAsState(
-                if (selected) accent else Color.Transparent,
-                animationSpec = tween(160), label = "segind"
-            )
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable { onModeChanged(m) }
-                    .padding(horizontal = 10.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    label,
-                    color = tc,
-                    fontSize = 11.sp,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 1
+
+            key(m) {
+                val selected = mode == m
+                val tc by animateColorAsState(
+                    targetValue = if (selected) accent else textSecondary.copy(alpha = 0.4f),
+                    animationSpec = tween(160),
+                    label = "segtc"
                 )
-                Spacer(Modifier.height(2.dp))
+
                 Box(
                     modifier = Modifier
-                        .width(18.dp)
-                        .height(1.5.dp)
-                        .background(indicatorAlpha, RoundedCornerShape(1.dp))
-                )
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable { onModeChanged(m) }
+                        
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        color = tc,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .layout { measurable, constraints ->
+                                val placeable = measurable.measure(constraints)
+                                val scaledWidth = (placeable.width * 1.6f).toInt()
+                                layout(scaledWidth, placeable.height) {
+                                    placeable.placeRelative((scaledWidth - placeable.width) / 2, 0)
+                                }
+                            }
+                            .graphicsLayer { scaleX = 1.6f }
+                    )
+                }
+
+                if (idx == 0) Spacer(Modifier.width(16.dp))
             }
-            if (idx == 0) Spacer(Modifier.width(6.dp))
         }
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 2. ТОНКИЙ ПОИСК ДЛЯ ПАПОК (используется и в личных, и в игровых).
-//    Невероятно тонкий: иконка-лупа, по тапу разворачивается в inline поле.
-// ═══════════════════════════════════════════════════════════════════════════
+
+
+
+
 
 @Composable
 fun ThinChatSearch(
@@ -369,7 +370,7 @@ fun ThinChatSearch(
         modifier = modifier.height(26.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Кнопка-лупа; при раскрытии остаётся слева от поля как "иконка поиска".
+        
         Box(
             modifier = Modifier
                 .size(26.dp)
@@ -447,9 +448,9 @@ fun ThinChatSearch(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 3. СПИСОК ИГРОВЫХ ЧАТОВ — основной экран при выборе "Игровые" в сегменте.
-// ═══════════════════════════════════════════════════════════════════════════
+
+
+
 
 /**
  * Общая иконка общих чатов FunPay (как у Флудилки). Один URL на весь список.
@@ -473,7 +474,7 @@ fun GameChatsView(
 
     Column(modifier = Modifier.fillMaxSize()) {
 
-        // Верхняя строка: табы групп + лупа-поиск.
+        
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -531,8 +532,8 @@ fun GameChatsView(
             ) {
                 items(filtered, key = { it.nodeId }) { game ->
                     GameChatRow(game = game, theme = theme, onOpen = {
-                        // Открываем как обычный чат: тот же роут, что и для Flood.
-                        // Repository кладёт chatId в URL как node, бэк отдаёт историю.
+                        
+                        
                         navController.navigate("chat/${game.nodeId}/${game.baseName.ifBlank { game.name }}")
                     })
                 }
@@ -686,7 +687,7 @@ private fun GameChatRow(
                     }
                 }
             }
-            // Быстрая кнопка «скопировать ссылку на чат».
+            
             Box(
                 modifier = Modifier
                     .size(32.dp)
@@ -701,7 +702,7 @@ private fun GameChatRow(
                     modifier = Modifier.size(17.dp)
                 )
             }
-            // Троеточие справа — все действия.
+            
             Box(
                 modifier = Modifier
                     .size(28.dp)
@@ -819,9 +820,9 @@ private fun ActionRow(
         }
     }
 }
-// ═══════════════════════════════════════════════════════════════════════════
-// Из ConcurentGamePicker.kt
-// ═══════════════════════════════════════════════════════════════════════════
+
+
+
 
 @Composable
 fun ConcurentGamePickerDialog(
@@ -861,7 +862,7 @@ fun ConcurentGamePickerDialog(
                 .fillMaxHeight(0.85f)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                // Заголовок
+                
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "Поиск по каталогу",
@@ -886,7 +887,7 @@ fun ConcurentGamePickerDialog(
 
                 Spacer(Modifier.height(12.dp))
 
-                // Поле поиска — крупное, сразу в фокусе
+                
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -938,7 +939,7 @@ fun ConcurentGamePickerDialog(
 
                 Spacer(Modifier.height(10.dp))
 
-                // Табы групп
+                
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

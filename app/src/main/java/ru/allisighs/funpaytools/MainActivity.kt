@@ -54,6 +54,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -129,6 +131,13 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import org.json.JSONArray
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.math.roundToInt
 
 data class ParsedMessage(
@@ -248,6 +257,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+var SharedCatalogPack: CatalogPack? = null
 
 
 @Composable
@@ -331,10 +341,27 @@ fun FunPayToolsApp(
 
                     composable("dashboard") { DashboardScreen(navController, repository, currentTheme, onThemeChanged) }
 
+                    composable("plugins") {
+                        PluginsMainScreen(navController, repository, currentTheme)
+                    }
+
                     composable("donations") {
                         AppScaffold("Тарифы", navController, currentTheme) {
                             DonationScreen(currentTheme)
                         }
+                    }
+                    composable("aos_settings") {
+                        AppScaffold("Настройки AOD дисплея", navController, currentTheme) {
+                            AosSettingsScreen(navController, currentTheme)
+                        }
+                    }
+
+                    composable("aos_display") {
+                        AosDisplayScreen(navController, repository, currentTheme)
+                    }
+
+                    composable("aos_constructor") {
+                        AosConstructorScreen(navController, currentTheme)
                     }
 
                     composable("lots") {
@@ -348,6 +375,22 @@ fun FunPayToolsApp(
                     composable("lot_edit/{lotId}") { backStackEntry ->
                         val lotId = backStackEntry.arguments?.getString("lotId") ?: ""
                         LotEditScreen(
+                            lotId = lotId,
+                            navController = navController,
+                            repository = repository,
+                            theme = currentTheme
+                        )
+                    }
+                    composable("xd_dumper") {
+                        XDDumperMainScreen(
+                            navController = navController,
+                            repository = repository,
+                            theme = currentTheme
+                        )
+                    }
+                    composable("xd_dumper_edit/{lotId}") { backStackEntry ->
+                        val lotId = backStackEntry.arguments?.getString("lotId") ?: ""
+                        XDDumperLotEditScreen(
                             lotId = lotId,
                             navController = navController,
                             repository = repository,
@@ -450,6 +493,16 @@ fun FunPayToolsApp(
                             theme = currentTheme,
                             navController = navController
                         )
+                    }
+
+                    composable("catalog") {
+                        CatalogMainScreen(navController = navController, theme = currentTheme)
+                    }
+                    composable("catalog_import") {
+                        CatalogImportScreen(navController = navController, repository = repository, theme = currentTheme)
+                    }
+                    composable("catalog_export") {
+                        CatalogExportScreen(navController = navController, repository = repository, theme = currentTheme)
                     }
                 }
             }
@@ -1634,46 +1687,64 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = ThemeManager.parseColor(currentTheme.surfaceColor))
                 )
             },
+
             bottomBar = {
-                NavigationBar(containerColor = ThemeManager.parseColor(currentTheme.surfaceColor)) {
-                    val unreadCount = chats.count { it.isUnread }
-                    listOf(
-                        Triple(0, Icons.Default.Chat, "Чаты"),
-                        Triple(1, Icons.Default.Tune, "Управление"),
-                        Triple(2, Icons.Default.Person, "Профиль"),
-                        Triple(5, Icons.Default.ShoppingBag, "Продажи"),
-                        Triple(3, Icons.Default.Support, "Поддержка"),
-                        Triple(4, Icons.Default.Terminal, "Консоль")
-                    ).forEach { (index, icon, label) ->
-                        NavigationBarItem(
-                            selected = selectedTab == index,
-                            onClick = { selectedTab = index },
-                            icon = {
-                                if (index == 0 && unreadCount > 0) {
-                                    BadgedBox(badge = {
-                                        Badge(containerColor = ThemeManager.parseColor(currentTheme.accentColor)) {
-                                            Text(
-                                                text = if (unreadCount > 99) "99+" else unreadCount.toString(),
-                                                fontSize = 9.sp,
-                                                color = Color.White
-                                            )
-                                        }
-                                    }) { Icon(icon, null) }
-                                } else {
-                                    Icon(icon, null)
+                Surface(
+                    color = ThemeManager.parseColor(currentTheme.surfaceColor),
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .height(56.dp)
+                            .padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val unreadCount = chats.count { it.isUnread }
+                        listOf(
+                            0 to Icons.Default.Chat,
+                            1 to Icons.Default.Tune,
+                            6 to Icons.Default.DynamicFeed,
+                            2 to Icons.Default.Person,
+                            5 to Icons.Default.ShoppingBag,
+                            3 to Icons.Default.Support,
+                            7 to Icons.Default.Extension,
+                            4 to Icons.Default.Terminal
+                        ).forEach { (index, icon) ->
+                            val isSelected = selectedTab == index
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .clickable(
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                        indication = null 
+                                    ) { selectedTab = index },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isSelected) ThemeManager.parseColor(currentTheme.accentColor).copy(alpha = 0.2f) else Color.Transparent),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    val iconTint = if (isSelected) ThemeManager.parseColor(currentTheme.accentColor) else ThemeManager.parseColor(currentTheme.textSecondaryColor)
+                                    if (index == 0 && unreadCount > 0) {
+                                        BadgedBox(badge = {
+                                            Badge(containerColor = ThemeManager.parseColor(currentTheme.accentColor)) {
+                                                Text(if (unreadCount > 99) "99+" else unreadCount.toString(), fontSize = 9.sp, color = Color.White)
+                                            }
+                                        }) { Icon(icon, null, tint = iconTint) }
+                                    } else {
+                                        Icon(icon, null, tint = iconTint)
+                                    }
                                 }
-                            },
-                            label = {
-                                Text(label, maxLines = 1, fontSize = 9.sp, softWrap = false)
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = ThemeManager.parseColor(currentTheme.accentColor),
-                                selectedTextColor = ThemeManager.parseColor(currentTheme.accentColor),
-                                indicatorColor = ThemeManager.parseColor(currentTheme.accentColor).copy(alpha = 0.2f),
-                                unselectedIconColor = ThemeManager.parseColor(currentTheme.textSecondaryColor),
-                                unselectedTextColor = ThemeManager.parseColor(currentTheme.textSecondaryColor)
-                            )
-                        )
+                            }
+                        }
                     }
                 }
             }
@@ -1713,6 +1784,8 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                     3 -> SupportScreenView(repository, currentTheme) { selectedTab = 0 }
                     4 -> ConsoleView(logs, currentTheme, navController)
                     5 -> SalesScreen(repository = repository, theme = currentTheme, navController = navController)
+                    6 -> FeedScreen(navController, repository, currentTheme)
+                    7 -> PluginsMainScreen(navController, repository, currentTheme, isTab = true)
                 }
             }
         }
@@ -2315,7 +2388,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         }
 
         item {
-            
+
             Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
                 shape = RoundedCornerShape(theme.borderRadius.dp)) {
@@ -2361,7 +2434,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         }
 
         item {
-            
+
             Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = if (appFullyDisabled)
@@ -2394,14 +2467,14 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                 prefs.edit().putBoolean("app_fully_disabled", newValue).apply()
 
                                 if (newValue) {
-                                    
-                                    
+
+
                                     prefs.edit()
                                         .putBoolean("app_fully_disabled_prev_autostart", autoStartOnBoot)
                                         .putBoolean("app_fully_disabled_prev_push", pushNotifications)
                                         .apply()
 
-                                    
+
                                     try {
                                         context.stopService(Intent(context, FunPayService::class.java))
                                     } catch (_: Exception) {}
@@ -2415,8 +2488,8 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                     } catch (_: Exception) {}
                                     Toast.makeText(context, "Приложение выключено. Фон и уведомления отключены.", Toast.LENGTH_LONG).show()
                                 } else {
-                                    
-                                    
+
+
                                     val prevAutoStart = prefs.getBoolean("app_fully_disabled_prev_autostart", true)
                                     val prevPush = prefs.getBoolean("app_fully_disabled_prev_push", true)
                                     autoStartOnBoot = prevAutoStart
@@ -2504,13 +2577,13 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             }
         }
 
-        
-        
-        
+
+
+
         item {
             var bonusSettingsState by remember { mutableStateOf(repository.getFeedbackBonusSettings()) }
-            
-            
+
+
             LaunchedEffect(showDialog) {
                 if (showDialog == null) bonusSettingsState = repository.getFeedbackBonusSettings()
             }
@@ -2694,10 +2767,10 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                     if (raiseEnabled) {
                         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
 
-                            
-                            
-                            
-                            
+
+
+
+
                             val smartRaise = repository.isSmartRaiseEnabled()
                             val summary = if (smartRaise)
                                 "Выбрано: Умный режим"
@@ -2738,6 +2811,21 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         }
 
         item {
+            var autoDeliverySettings by remember { mutableStateOf(AutoDeliveryManager.getSettings(context)) }
+
+            AutoDeliveryCard(
+                settings = autoDeliverySettings,
+                theme = theme,
+                onToggle = {
+                    val newSt = autoDeliverySettings.copy(enabled = !autoDeliverySettings.enabled)
+                    autoDeliverySettings = newSt
+                    AutoDeliveryManager.saveSettings(context, newSt)
+                },
+                onConfigure = { showDialog = "auto_delivery" }
+            )
+        }
+
+        item {
             Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
                 Column {
                     StrictProOnlySettingCard(
@@ -2749,7 +2837,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                         onProRequired = { navController.navigate("donations"); Toast.makeText(context, "Эта функция доступна только в PRO версии!", Toast.LENGTH_SHORT).show() }
                     )
                     if (dumperSettings.enabled && LicenseManager.isProActive()) {
-                        Button(onClick = { if (!busySettings.enabled) showDialog = "dumper_settings" },
+                        Button(onClick = { if (!busySettings.enabled) navController.navigate("xd_dumper") },
                             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
                         ) { Text("Настроить лоты для демпинга", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
@@ -2758,7 +2846,91 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             }
         }
 
+
+        item {
+            val concurentEnabled = remember { mutableStateOf(ConcurentManager.getSettings(context).enabled) }
+
+            val prefsLocal = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+            LaunchedEffect(Unit) {
+                if (prefsLocal.getString("concurent_pending_node", null) != null && showDialog == null) {
+                    showDialog = "concurent"
+                }
+            }
+            Card(modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
+                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Campaign, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.width(16.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Concurent", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                            Text(
+                                if (concurentEnabled.value) "Публикации идут по таймеру"
+                                else "Автопубликации в общих чатах FunPay",
+                                fontSize = 12.sp,
+                                color = ThemeManager.parseColor(theme.textSecondaryColor)
+                            )
+                        }
+                        Switch(
+                            checked = concurentEnabled.value,
+                            onCheckedChange = { on ->
+                                concurentEnabled.value = on
+                                val s = ConcurentManager.getSettings(context)
+                                val next = if (on) s.copy(
+                                    enabled = true,
+                                    postsSinceEnable = 0,
+                                    currentMessageIndex = 0,
+                                    currentGameIndex = 0,
+                                    lastPostAt = 0L,
+                                    nextPostAt = System.currentTimeMillis() + s.intervalSeconds * 1000L
+                                ) else s.copy(enabled = false)
+                                ConcurentManager.saveSettings(context, next)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
+                            )
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { showDialog = "concurent" },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                    ) {
+                        Icon(Icons.Default.Tune, null, modifier = Modifier.size(16.dp),
+                            tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Настроить тексты и чаты", color = ThemeManager.parseColor(theme.textPrimaryColor))
+                    }
+                }
+            }
+        }
+
+
+
+
         item { ControlSectionHeader("ИНСТРУМЕНТЫ", Icons.Default.Build, theme) }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth().clickable { navController.navigate("catalog") },
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
+                shape = RoundedCornerShape(theme.borderRadius.dp),
+                border = BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.3f))
+            ) {
+                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CloudDownload, contentDescription = null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Каталог готовых шаблонов", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                        Text("Скачивай и делись автоответами, шаблонами, настройками ИИ и оформлениями текстов.", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp)
+                    }
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
+                }
+            }
+        }
 
         item {
             val floodFolders = remember { ChatFolderManager.getFolders(context) }
@@ -2875,67 +3047,22 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             }
         }
 
-        
         item {
-            val concurentEnabled = remember { mutableStateOf(ConcurentManager.getSettings(context).enabled) }
-            
-            val prefsLocal = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
-            LaunchedEffect(Unit) {
-                if (prefsLocal.getString("concurent_pending_node", null) != null && showDialog == null) {
-                    showDialog = "concurent"
-                }
-            }
-            Card(modifier = Modifier.fillMaxWidth(),
+            Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("aos_settings") },
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
                 shape = RoundedCornerShape(theme.borderRadius.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Campaign, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
-                        Spacer(Modifier.width(16.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Concurent", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
-                            Text(
-                                if (concurentEnabled.value) "Публикации идут по таймеру"
-                                else "Автопубликации в общих чатах FunPay",
-                                fontSize = 12.sp,
-                                color = ThemeManager.parseColor(theme.textSecondaryColor)
-                            )
-                        }
-                        Switch(
-                            checked = concurentEnabled.value,
-                            onCheckedChange = { on ->
-                                concurentEnabled.value = on
-                                val s = ConcurentManager.getSettings(context)
-                                val next = if (on) s.copy(
-                                    enabled = true,
-                                    postsSinceEnable = 0,
-                                    currentMessageIndex = 0,
-                                    currentGameIndex = 0,
-                                    lastPostAt = 0L,
-                                    nextPostAt = System.currentTimeMillis() + s.intervalSeconds * 1000L
-                                ) else s.copy(enabled = false)
-                                ConcurentManager.saveSettings(context, next)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
-                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
-                            )
-                        )
+                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(32.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Always On Screen (AOS)", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                        Text("Использовать старый телефон как дисплей статистики", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { showDialog = "concurent" },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                    ) {
-                        Icon(Icons.Default.Tune, null, modifier = Modifier.size(16.dp),
-                            tint = ThemeManager.parseColor(theme.textPrimaryColor))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Настроить тексты и чаты", color = ThemeManager.parseColor(theme.textPrimaryColor))
-                    }
+                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
                 }
             }
         }
+
 
         item {
             Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("rmthub_search") },
@@ -2960,6 +3087,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         "commands" -> CommandsDialog(repository, theme) { showDialog = null }
         "greeting" -> GreetingDialog(repository, greetingSettings, theme) { greetingSettings = it; repository.saveGreetingSettings(it); showDialog = null }
         "confirm_settings" -> OrderConfirmDialog(repository, theme) { showDialog = null; confirmSettings = repository.getOrderConfirmSettings() }
+        "auto_delivery" -> AutoDeliverySettingsDialog(theme = theme) { showDialog = null }
         "concurent" -> {
             
             val prefsC = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
@@ -2984,7 +3112,6 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             onNeedsPro = { showDialog = null; showReviewAiGate = true },
             onDismiss = { showDialog = null; reviewSettings = repository.getReviewReplySettings() })
         "refund_settings" -> AutoRefundDialog(repository, theme) { showDialog = null; refundSettings = repository.getAutoRefundSettings() }
-        "dumper_settings" -> DumperSettingsDialog(repository, theme) { showDialog = null; dumperSettings = repository.getDumperSettings() }
         "templates" -> TemplatesDialog(repository, theme) { showDialog = null }
         "auto_ticket" -> AutoTicketDialog(settings = autoTicketSettings, theme = theme,
             onSave = { autoTicketSettings = it; repository.saveAutoTicketSettings(it); showDialog = null },
@@ -5305,6 +5432,19 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             }
         }
 
+
+        var validationError by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(inputText) {
+            val lines = inputText.split("\n")
+            val hasLongWord = inputText.split(Regex("\\s+")).any { !it.startsWith("http") && it.length > 160 }
+            validationError = when {
+                inputText.length > 2000 -> "Лимит 2000 символов!"
+                lines.size > 20 -> "Лимит 20 строк!"
+                hasLongWord -> "Слово > 160 символов!"
+                else -> null
+            }
+        }
+
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -5312,183 +5452,206 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(24.dp)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = {
-                    photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                }) {
-                    Icon(Icons.Default.Add, contentDescription = "Attach", tint = ThemeManager.parseColor(theme.textPrimaryColor))
+            Column(modifier = Modifier.fillMaxWidth()) {
+                
+                if (validationError != null) {
+                    Text(
+                        text = validationError!!,
+                        color = Color.Red,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 24.dp, top = 8.dp)
+                    )
                 }
 
-                Box(modifier = Modifier.weight(1f)) {
-                    OutlinedTextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Сообщение...", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                            unfocusedBorderColor = Color.Transparent,
-                            focusedContainerColor = Color.Black.copy(alpha = 0.3f),
-                            unfocusedContainerColor = Color.Black.copy(alpha = 0.3f),
-                            cursorColor = ThemeManager.parseColor(theme.accentColor)
-                        ),
-                        shape = RoundedCornerShape(24.dp),
-                        trailingIcon = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(end = 4.dp)
-                            ) {
-                                IconButton(onClick = { showTemplatesMenu = true }) {
-                                    Icon(
-                                        Icons.Default.ShortText,
-                                        contentDescription = "Templates",
-                                        tint = ThemeManager.parseColor(theme.accentColor)
-                                    )
-                                }
-                                IconButton(onClick = {
-                                    if (inputText.isNotBlank() && !isAiProcessing) {
-                                        if (!LicenseManager.consumeAiClick()) {
-                                            showAiLimit = true
-                                            return@IconButton
-                                        }
-                                        isAiProcessing = true
-                                        scope.launch {
-                                            val contextHistory = messages.takeLast(10).joinToString("\n") {
-                                                "${if(it.isMe) "Продавец" else "Покупатель"}: ${it.text}"
-                                            }
-                                            val aiChat = ChatItem(id = chatId, username = username, lastMessage = messages.lastOrNull { !it.isMe }?.text ?: "", isUnread = false, avatarUrl = "", date = "")
-                                            val rewrited = repository.rewriteMessage(inputText, contextHistory, chat = aiChat)
-                                            if (!rewrited.isNullOrEmpty()) {
-                                                inputText = rewrited
-                                            }
-                                            isAiProcessing = false
-                                        }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.Bottom 
+                ) {
+                    IconButton(onClick = {
+                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }) {
+                        Icon(Icons.Default.Add, contentDescription = "Attach", tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                    }
+
+                    Box(modifier = Modifier.weight(1f)) {
+                        OutlinedTextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Сообщение...", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                focusedBorderColor = if (validationError != null) Color.Red else ThemeManager.parseColor(theme.accentColor),
+                                unfocusedBorderColor = Color.Transparent,
+                                focusedContainerColor = Color.Black.copy(alpha = 0.3f),
+                                unfocusedContainerColor = Color.Black.copy(alpha = 0.3f),
+                                cursorColor = ThemeManager.parseColor(theme.accentColor)
+                            ),
+                            shape = RoundedCornerShape(24.dp),
+                            maxLines = 6, 
+                            trailingIcon = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(end = 4.dp)
+                                ) {
+                                    IconButton(onClick = { showTemplatesMenu = true }) {
+                                        Icon(
+                                            Icons.Default.ShortText,
+                                            contentDescription = "Templates",
+                                            tint = ThemeManager.parseColor(theme.accentColor)
+                                        )
                                     }
-                                }) {
-                                    if (isAiProcessing) {
-                                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = ThemeManager.parseColor(theme.accentColor))
-                                    } else {
-                                        Icon(Icons.Default.AutoAwesome, contentDescription = "AI Rewrite", tint = ThemeManager.parseColor(theme.accentColor))
+                                    IconButton(onClick = {
+                                        if (inputText.isNotBlank() && !isAiProcessing && validationError == null) {
+                                            if (!LicenseManager.consumeAiClick()) {
+                                                showAiLimit = true
+                                                return@IconButton
+                                            }
+                                            isAiProcessing = true
+                                            scope.launch {
+                                                val contextHistory = messages.takeLast(10).joinToString("\n") {
+                                                    "${if(it.isMe) "Продавец" else "Покупатель"}: ${it.text}"
+                                                }
+                                                val aiChat = ChatItem(id = chatId, username = username, lastMessage = messages.lastOrNull { !it.isMe }?.text ?: "", isUnread = false, avatarUrl = "", date = "")
+                                                val rewrited = repository.rewriteMessage(inputText, contextHistory, chat = aiChat)
+                                                if (!rewrited.isNullOrEmpty()) {
+                                                    inputText = rewrited
+                                                }
+                                                isAiProcessing = false
+                                            }
+                                        }
+                                    }) {
+                                        if (isAiProcessing) {
+                                            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = ThemeManager.parseColor(theme.accentColor))
+                                        } else {
+                                            Icon(Icons.Default.AutoAwesome, contentDescription = "AI Rewrite", tint = ThemeManager.parseColor(theme.accentColor))
+                                        }
                                     }
                                 }
                             }
-                        }
-                    )
+                        )
 
-                    DropdownMenu(
-                        expanded = showTemplatesMenu,
-                        onDismissRequest = { showTemplatesMenu = false },
-                        modifier = Modifier.background(ThemeManager.parseColor(theme.surfaceColor))
-                    ) {
-                        val templates = repository.getMessageTemplates()
-                        val templateSettings = repository.getTemplateSettings()
+                        DropdownMenu(
+                            expanded = showTemplatesMenu,
+                            onDismissRequest = { showTemplatesMenu = false },
+                            modifier = Modifier.background(ThemeManager.parseColor(theme.surfaceColor))
+                        ) {
+                            val templates = repository.getMessageTemplates()
+                            val templateSettings = repository.getTemplateSettings()
 
-                        if (templates.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text("Нет шаблонов", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
-                                onClick = { showTemplatesMenu = false }
-                            )
-                        } else {
-                            templates.forEach { template ->
+                            if (templates.isEmpty()) {
                                 DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(
-                                                template.name,
-                                                color = ThemeManager.parseColor(theme.textPrimaryColor),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 13.sp
-                                            )
-                                            Text(
-                                                template.text,
-                                                color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                                fontSize = 11.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        val finalText = processTemplateVariables(template.text, username)
-
-                                        if (templateSettings.sendImmediately) {
-                                            if (finalText.isNotBlank()) {
-                                                val newMessage = MessageItem(
-                                                    id = System.currentTimeMillis().toString(),
-                                                    author = "Вы",
-                                                    text = finalText,
-                                                    isMe = true,
-                                                    time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                                    imageUrl = null
+                                    text = { Text("Нет шаблонов", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
+                                    onClick = { showTemplatesMenu = false }
+                                )
+                            } else {
+                                templates.forEach { template ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(
+                                                    template.name,
+                                                    color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp
                                                 )
-                                                messages = messages + newMessage
-                                                val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
-                                                parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
-                                                previousMessageCount = messages.size
-                                                scope.launch {
-                                                    if (allMessages.isNotEmpty()) {
-                                                        try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
+                                                Text(
+                                                    template.text,
+                                                    color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                                    fontSize = 11.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            val finalText = processTemplateVariables(template.text, username)
+
+                                            if (templateSettings.sendImmediately) {
+                                                if (finalText.isNotBlank()) {
+                                                    val newMessage = MessageItem(
+                                                        id = System.currentTimeMillis().toString(),
+                                                        author = "Вы",
+                                                        text = finalText,
+                                                        isMe = true,
+                                                        time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                                        imageUrl = null
+                                                    )
+                                                    messages = messages + newMessage
+                                                    val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
+                                                    parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
+                                                    previousMessageCount = messages.size
+                                                    scope.launch {
+                                                        if (allMessages.isNotEmpty()) {
+                                                            try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
+                                                        }
                                                     }
                                                 }
-                                            }
 
-                                            FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
-                                            scope.launch {
-                                                repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
-                                                if (repository.getReadMarkSettings().markAfterManualReply) {
-                                                    repository.markChatAsRead(chatId)
+                                                FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
+                                                scope.launch {
+                                                    repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
+                                                    if (repository.getReadMarkSettings().markAfterManualReply) {
+                                                        repository.markChatAsRead(chatId)
+                                                    }
                                                 }
+                                            } else {
+                                                inputText = finalText
                                             }
-                                        } else {
-                                            inputText = finalText
+                                            showTemplatesMenu = false
                                         }
-                                        showTemplatesMenu = false
-                                    }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    
+                    IconButton(
+                        onClick = {
+                            if (inputText.isNotBlank() && validationError == null) {
+                                val textToSend = inputText
+                                inputText = ""
+
+                                val newMessage = MessageItem(
+                                    id = System.currentTimeMillis().toString(),
+                                    author = "Вы",
+                                    text = textToSend,
+                                    isMe = true,
+                                    time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                    imageUrl = null
                                 )
+                                messages = messages + newMessage
+                                val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
+                                parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
+                                previousMessageCount = messages.size
+                                scope.launch {
+                                    if (allMessages.isNotEmpty()) {
+                                        try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
+                                    }
+                                }
+
+                                scope.launch {
+                                    repository.sendMessage(chatId, textToSend)
+                                    if (repository.getReadMarkSettings().markAfterManualReply) {
+                                        repository.markChatAsRead(chatId)
+                                    }
+                                }
                             }
-                        }
-                    }
-                }
-
-                IconButton(onClick = {
-                    if (inputText.isNotBlank()) {
-                        val textToSend = inputText
-                        inputText = ""
-
-                        val newMessage = MessageItem(
-                            id = System.currentTimeMillis().toString(),
-                            author = "Вы",
-                            text = textToSend,
-                            isMe = true,
-                            time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                            imageUrl = null
+                        },
+                        
+                        enabled = inputText.isNotBlank() && validationError == null
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = if (inputText.isNotBlank() && validationError == null) ThemeManager.parseColor(theme.accentColor) else ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.5f)
                         )
-                        messages = messages + newMessage
-                        val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
-                        parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
-                        previousMessageCount = messages.size
-                        scope.launch {
-                            if (allMessages.isNotEmpty()) {
-                                try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
-                            }
-                        }
-
-                        scope.launch {
-                            repository.sendMessage(chatId, textToSend)
-                            if (repository.getReadMarkSettings().markAfterManualReply) {
-                                repository.markChatAsRead(chatId)
-                            }
-                        }
                     }
-                }) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = ThemeManager.parseColor(theme.accentColor))
                 }
             }
         }
@@ -8316,208 +8479,6 @@ fun ManageLabelsDialog(
 }
 
 @Composable
-fun DumperSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
-    var settings by remember { mutableStateOf(repository.getDumperSettings()) }
-    var editingLot by remember { mutableStateOf<DumperLotConfig?>(null) }
-
-    if (editingLot != null) {
-        DumperLotEditDialog(
-            initialConfig = editingLot!!,
-            theme = theme,
-            onSave = { updatedLot ->
-                val newLots = settings.lots.filter { it.id != updatedLot.id }.toMutableList()
-                newLots.add(updatedLot)
-                settings = settings.copy(lots = newLots)
-                repository.saveDumperSettings(settings)
-                editingLot = null
-            },
-            onDismiss = { editingLot = null }
-        )
-    } else {
-        Dialog(onDismissRequest = onDismiss) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                shape = RoundedCornerShape(theme.borderRadius.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("XD Dumper - Управление", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = { editingLot = DumperLotConfig() },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                    ) {
-                        Icon(Icons.Default.Add, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Добавить лот")
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    LazyColumn(modifier = Modifier.weight(1f, false)) {
-                        if (settings.lots.isEmpty()) {
-                            item { Text("Нет настроенных лотов.", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 14.sp) }
-                        }
-                        items(settings.lots) { lot ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { editingLot = lot },
-                                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.2f))
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text("Лот ID: ${lot.lotId}", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold)
-                                        Text("Категория: ${lot.categoryId}", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp)
-                                    }
-                                    Switch(
-                                        checked = lot.enabled,
-                                        onCheckedChange = { isEnabled ->
-                                            val updated = lot.copy(enabled = isEnabled)
-                                            val newLots = settings.lots.map { if (it.id == lot.id) updated else it }
-                                            settings = settings.copy(lots = newLots)
-                                            repository.saveDumperSettings(settings)
-                                        },
-                                        modifier = Modifier.scale(0.8f),
-                                        colors = SwitchDefaults.colors(checkedThumbColor = ThemeManager.parseColor(theme.accentColor))
-                                    )
-                                    IconButton(onClick = {
-                                        val newLots = settings.lots.filter { it.id != lot.id }
-                                        settings = settings.copy(lots = newLots)
-                                        repository.saveDumperSettings(settings)
-                                    }) {
-                                        Icon(Icons.Default.Delete, null, tint = Color.Red)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun DumperLotEditDialog(initialConfig: DumperLotConfig, theme: AppTheme, onSave: (DumperLotConfig) -> Unit, onDismiss: () -> Unit) {
-    var config by remember { mutableStateOf(initialConfig) }
-
-    Dialog(onDismissRequest = onDismiss, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp),
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Настройка Лота", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
-                Spacer(modifier = Modifier.height(16.dp))
-
-                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    item {
-                        OutlinedTextField(
-                            value = config.lotId, onValueChange = { config = config.copy(lotId = it) },
-                            label = { Text("ID вашего Лота (только цифры)") }, modifier = Modifier.fillMaxWidth(),
-                            keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
-                        )
-                    }
-                    item {
-                        OutlinedTextField(
-                            value = config.categoryId, onValueChange = { config = config.copy(categoryId = it) },
-                            label = { Text("ID Категории (node, просим его, ибо парсинг категории с лота жрёт батарею)") }, modifier = Modifier.fillMaxWidth(),
-                            keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
-                        )
-                    }
-                    item {
-                        OutlinedTextField(
-                            value = config.keywords, onValueChange = { config = config.copy(keywords = it) },
-                            label = { Text("Ключевые слова | через ЭТУ линию | яблоко | БРАВЛ ПАСС") }, modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = config.priceMin.toString(), onValueChange = { config = config.copy(priceMin = it.toDoubleOrNull() ?: 1.0) },
-                                label = { Text("Цена, ниже которой демпер не упадёт") }, modifier = Modifier.weight(1f),
-                                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
-                            )
-                            OutlinedTextField(
-                                value = config.priceMax.toString(), onValueChange = { config = config.copy(priceMax = it.toDoubleOrNull() ?: 99999.0) },
-                                label = { Text("Макс. цена") }, modifier = Modifier.weight(1f),
-                                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
-                            )
-                        }
-                    }
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = config.priceStep.toString(), onValueChange = { config = config.copy(priceStep = it.toDoubleOrNull() ?: 1.0) },
-                                label = { Text("Шаг (руб)") }, modifier = Modifier.weight(1f),
-                                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
-                            )
-                            OutlinedTextField(
-                                value = config.priceDivider.toString(),
-                                onValueChange = { config = config.copy(priceDivider = it.toDoubleOrNull() ?: 0.0) },
-                                label = { Text("Делить цену на") }, modifier = Modifier.weight(1f),
-                                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
-                            )
-                        }
-                    }
-                    item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = config.fastPriceCheck, onCheckedChange = { config = config.copy(fastPriceCheck = it) })
-                            Text("Fast Price Check (глубокий парсинг, жрёт батарею)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
-                        }
-                    }
-                    item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = config.ignoreZeroRating, onCheckedChange = { config = config.copy(ignoreZeroRating = it) })
-                            Text("Игнор продавцов без нормального рейтинга", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
-                        }
-                    }
-                    item {
-                        OutlinedTextField(
-                            value = config.ratingMin.toString(),
-                            onValueChange = { config = config.copy(ratingMin = it.toIntOrNull() ?: 0) },
-                            label = { Text("Мин. кол-во звёзд конкурента (от 0 до 5)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
-                        )
-                    }
-                    item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = config.matchAllMethods, onCheckedChange = { config = config.copy(matchAllMethods = it) })
-                            Column {
-                                Text("Демпить все способы получения", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
-                                Text("Вкл - учитывает все способы получения/выдачи товара. Выкл - только тот способ, который в лоте", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp)
-                            }
-                        }
-                    }
-                    item {
-                        Text("Интервал обновления: ${config.updateInterval} сек (1 сек — максимально агрессивно, 10 сек — комфортно по батарее)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp)
-                        Slider(
-                            value = config.updateInterval.toFloat(), onValueChange = { config = config.copy(updateInterval = it.toInt().coerceAtLeast(1)) },
-                            valueRange = 1f..300f, steps = 298
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onDismiss, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) { Text("Отмена", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                    Button(onClick = { onSave(config) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))) { Text("Сохранить") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 fun StrictProOnlySettingCard(
     title: String,
     subtitle: String,
@@ -10230,4 +10191,610 @@ private fun SalesStatCard(
             Text(label, color = textSec, fontSize = 10.sp)
         }
     }
+}
+
+data class CatalogPack(
+    val id: String = "",
+    val created_at: String = "",
+    val author: String = "",
+    val name: String = "",
+    val description: String = "",
+    val pack_data: Map<String, Any> = emptyMap()
+)
+
+object CatalogApiManager {
+    private const val API_URL = "https://funpay.tools/api/catalog"
+    private val gson = Gson()
+
+    suspend fun getCatalog(): Result<List<CatalogPack>> = withContext(Dispatchers.IO) {
+        try {
+            val url = URL(API_URL)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+
+            if (connection.responseCode == 200) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val type = object : TypeToken<List<CatalogPack>>() {}.type
+                val packs: List<CatalogPack> = gson.fromJson(response, type)
+                Result.success(packs)
+            } else {
+                Result.failure(Exception("Ошибка сервера: ${connection.responseCode}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun publishPack(author: String, name: String, desc: String, packData: Map<String, Any>): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val url = URL(API_URL)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.doOutput = true
+
+            val payload = mapOf(
+                "author" to author,
+                "name" to name,
+                "description" to desc,
+                "pack_data" to packData
+            )
+
+            val jsonString = gson.toJson(payload)
+
+            
+            if (jsonString.toByteArray(Charsets.UTF_8).size > 1_000_000) {
+                return@withContext Result.failure(Exception("Файл слишком большой. Лимит 1 МБ."))
+            }
+
+            OutputStreamWriter(connection.outputStream).use { it.write(jsonString) }
+
+            if (connection.responseCode == 200) {
+                Result.success(Unit)
+            } else {
+                val errorMsg = try { connection.errorStream.bufferedReader().use { it.readText() } } catch (e:Exception) { "Неизвестная ошибка" }
+                Result.failure(Exception("Ошибка: $errorMsg"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+}
+
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CatalogMainScreen(navController: NavController, theme: AppTheme) {
+    var packs by remember { mutableStateOf<List<CatalogPack>>(emptyList()) }
+    var filteredPacks by remember { mutableStateOf<List<CatalogPack>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        CatalogApiManager.getCatalog()
+            .onSuccess {
+                packs = it
+                filteredPacks = it
+                isLoading = false
+            }
+            .onFailure {
+                error = it.message
+                isLoading = false
+            }
+    }
+
+    LaunchedEffect(searchQuery) {
+        filteredPacks = if (searchQuery.isBlank()) packs else {
+            val q = searchQuery.lowercase()
+            packs.filter { it.name.lowercase().contains(q) || it.author.lowercase().contains(q) || it.description.lowercase().contains(q) }
+        }
+    }
+
+    Scaffold(
+        containerColor = ThemeManager.parseColor(theme.backgroundColor),
+        topBar = {
+            TopAppBar(
+                title = { Text("Каталог Шаблонов", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { navController.navigate("catalog_export") }) {
+                        Icon(Icons.Default.CloudUpload, "Опубликовать свой", tint = ThemeManager.parseColor(theme.accentColor))
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+            )
+        }
+    ) { padding ->
+        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Поиск паков...", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = ThemeManager.parseColor(theme.accentColor)) },
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                    unfocusedBorderColor = ThemeManager.parseColor(theme.surfaceColor),
+                    focusedContainerColor = ThemeManager.parseColor(theme.surfaceColor),
+                    unfocusedContainerColor = ThemeManager.parseColor(theme.surfaceColor),
+                    focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                    unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)
+                ),
+                singleLine = true
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            if (isLoading) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = ThemeManager.parseColor(theme.accentColor))
+                }
+            } else if (error != null) {
+                Text("Ошибка: $error", color = Color.Red)
+            } else if (filteredPacks.isEmpty()) {
+                Text("Ничего не найдено", color = ThemeManager.parseColor(theme.textSecondaryColor))
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(filteredPacks) { pack ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                SharedCatalogPack = pack
+                                navController.navigate("catalog_import")
+                            },
+                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(0.8f)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(pack.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.weight(1f))
+                                    Icon(Icons.Default.Download, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(18.dp))
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text("Автор: ${pack.author}", fontSize = 11.sp, color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(6.dp))
+                                Text(pack.description, fontSize = 13.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+fun LazyListScope.dataTreeEditor(
+    editableData: Map<String, Any>,
+    selectedItems: MutableMap<String, Boolean>,
+    theme: AppTheme,
+    onUpdateData: (String, Any) -> Unit
+) {
+    editableData.forEach { (category, items) ->
+        item {
+            Text(
+                text = translateCategoryName(category).uppercase(),
+                color = ThemeManager.parseColor(theme.accentColor),
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                letterSpacing = 1.sp,
+                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+            )
+        }
+
+        if (items is List<*>) {
+            val list = items.filterIsInstance<Map<String, Any>>()
+            item {
+                val allSelected = list.indices.all { selectedItems["${category}_$it"] == true }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
+                    Checkbox(
+                        checked = allSelected,
+                        onCheckedChange = { chk -> list.indices.forEach { i -> selectedItems["${category}_$i"] = chk } },
+                        colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                    )
+                    Text(if (allSelected) "Снять всё" else "Выбрать всё", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                }
+            }
+
+            itemsIndexed(list) { index, itemMap ->
+                val isSelected = selectedItems["${category}_$index"] ?: false
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).alpha(if (isSelected) 1f else 0.4f),
+                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent)
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
+                            Checkbox(
+                                checked = isSelected,
+                                onCheckedChange = { selectedItems["${category}_$index"] = it },
+                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                            )
+                            Text(
+                                itemMap["name"] as? String ?: itemMap["trigger"] as? String ?: "Элемент #${index + 1}",
+                                color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        if (isSelected) {
+                            itemMap.forEach { (k, v) ->
+                                if (k != "id" && (v is String || v is Number)) {
+                                    OutlinedTextField(
+                                        value = v.toString(),
+                                        onValueChange = { newVal ->
+                                            val newList = list.toMutableList()
+                                            val newMap = newList[index].toMutableMap()
+                                            newMap[k] = newVal
+                                            newList[index] = newMap
+                                            onUpdateData(category, newList)
+                                        },
+                                        label = { Text(k, fontSize = 11.sp) },
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)
+                                        ),
+                                        maxLines = 3,
+                                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
+                                    )
+                                } else if (k != "id" && v is Boolean) {
+                                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(k, color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                        Switch(
+                                            checked = v,
+                                            onCheckedChange = { newVal ->
+                                                val newList = list.toMutableList()
+                                                val newMap = newList[index].toMutableMap()
+                                                newMap[k] = newVal
+                                                newList[index] = newMap
+                                                onUpdateData(category, newList)
+                                            },
+                                            colors = SwitchDefaults.colors(checkedThumbColor = ThemeManager.parseColor(theme.accentColor))
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (items is Map<*, *>) {
+            val itemMap = items as Map<String, Any>
+            item {
+                val isSelected = selectedItems["${category}_obj"] ?: false
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).alpha(if (isSelected) 1f else 0.4f),
+                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent)
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
+                            Checkbox(
+                                checked = isSelected,
+                                onCheckedChange = { selectedItems["${category}_obj"] = it },
+                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                            )
+                            Text("Выбрать блок настроек", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold)
+                        }
+
+                        if (isSelected) {
+                            itemMap.forEach { (k, v) ->
+                                if (k != "id" && (v is String || v is Number)) {
+                                    OutlinedTextField(
+                                        value = v.toString(),
+                                        onValueChange = { newVal ->
+                                            val newMap = itemMap.toMutableMap()
+                                            newMap[k] = newVal
+                                            onUpdateData(category, newMap)
+                                        },
+                                        label = { Text(k, fontSize = 11.sp) },
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)
+                                        ),
+                                        maxLines = 3,
+                                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
+                                    )
+                                } else if (k != "id" && v is Boolean) {
+                                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(k, color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                        Switch(
+                                            checked = v,
+                                            onCheckedChange = { newVal ->
+                                                val newMap = itemMap.toMutableMap()
+                                                newMap[k] = newVal
+                                                onUpdateData(category, newMap)
+                                            },
+                                            colors = SwitchDefaults.colors(checkedThumbColor = ThemeManager.parseColor(theme.accentColor))
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CatalogImportScreen(navController: NavController, repository: FunPayRepository, theme: AppTheme) {
+    val pack = SharedCatalogPack
+    val context = LocalContext.current
+    if (pack == null) {
+        navController.popBackStack()
+        return
+    }
+
+    var editableData by remember { mutableStateOf(pack.pack_data.toMutableMap()) }
+    val selectedItems = remember { mutableStateMapOf<String, Boolean>() }
+    val gson = Gson()
+
+    LaunchedEffect(Unit) {
+        pack.pack_data.forEach { (cat, items) ->
+            if (items is List<*>) {
+                items.forEachIndexed { i, _ -> selectedItems["${cat}_$i"] = true }
+            } else {
+                selectedItems["${cat}_obj"] = true
+            }
+        }
+    }
+
+    Scaffold(
+        containerColor = ThemeManager.parseColor(theme.backgroundColor),
+        topBar = {
+            TopAppBar(
+                title = { Text(pack.name, color = ThemeManager.parseColor(theme.textPrimaryColor), maxLines = 1) },
+                navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor)) } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+            )
+        },
+        bottomBar = {
+            Surface(color = ThemeManager.parseColor(theme.surfaceColor), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        try {
+                            val finalDataToApply = mutableMapOf<String, Any>()
+                            editableData.forEach { (cat, items) ->
+                                if (items is List<*>) {
+                                    val filteredList = items.filterIndexed { index, _ -> selectedItems["${cat}_$index"] == true }
+                                    if (filteredList.isNotEmpty()) finalDataToApply[cat] = filteredList
+                                } else {
+                                    if (selectedItems["${cat}_obj"] == true) finalDataToApply[cat] = items
+                                }
+                            }
+
+                            if (finalDataToApply.containsKey("templates")) {
+                                val listType = object : TypeToken<List<MessageTemplate>>() {}.type
+                                val newItems: List<MessageTemplate> = gson.fromJson(gson.toJson(finalDataToApply["templates"]), listType)
+                                repository.saveMessageTemplates(repository.getMessageTemplates() + newItems)
+                            }
+                            if (finalDataToApply.containsKey("auto_responses")) {
+                                val listType = object : TypeToken<List<AutoResponseCommand>>() {}.type
+                                val newItems: List<AutoResponseCommand> = gson.fromJson(gson.toJson(finalDataToApply["auto_responses"]), listType)
+                                repository.saveCommands(repository.getCommands() + newItems)
+                            }
+                            if (finalDataToApply.containsKey("ai_settings")) {
+                                val aiSettings = gson.fromJson(gson.toJson(finalDataToApply["ai_settings"]), AiVarPermissions::class.java)
+                                repository.saveAiVarPermissions(aiSettings)
+                            }
+                            if (finalDataToApply.containsKey("review_reply_settings")) {
+                                val rs = gson.fromJson(gson.toJson(finalDataToApply["review_reply_settings"]), ReviewReplySettings::class.java)
+                                repository.saveReviewReplySettings(rs)
+                            }
+                            if (finalDataToApply.containsKey("greeting_settings")) {
+                                val gs = gson.fromJson(gson.toJson(finalDataToApply["greeting_settings"]), GreetingSettings::class.java)
+                                repository.saveGreetingSettings(gs)
+                            }
+                            if (finalDataToApply.containsKey("order_confirm_settings")) {
+                                val ocs = gson.fromJson(gson.toJson(finalDataToApply["order_confirm_settings"]), OrderConfirmSettings::class.java)
+                                repository.saveOrderConfirmSettings(ocs)
+                            }
+
+                            Toast.makeText(context, "Выбранные элементы успешно скачаны!", Toast.LENGTH_SHORT).show()
+                            navController.popBackStack()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Ошибка скачивания: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(16.dp).height(50.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                ) {
+                    Icon(Icons.Default.Download, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Скачать выбранное себе", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    ) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+            item {
+                Text("Перед скачиванием вы можете снять галочки с ненужных элементов и даже отредактировать их текста.", fontSize = 13.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                Spacer(Modifier.height(8.dp))
+            }
+
+            dataTreeEditor(
+                editableData = editableData,
+                selectedItems = selectedItems,
+                theme = theme,
+                onUpdateData = { category, newItems ->
+                    editableData = editableData.toMutableMap().apply { this[category] = newItems }
+                }
+            )
+        }
+    }
+}
+
+
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CatalogExportScreen(navController: NavController, repository: FunPayRepository, theme: AppTheme) {
+    val context = LocalContext.current
+    var author by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var desc by remember { mutableStateOf("") }
+    var isPublishing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val gson = Gson()
+
+    
+    var editableData by remember { mutableStateOf<MutableMap<String, Any>>(mutableMapOf()) }
+    val selectedItems = remember { mutableStateMapOf<String, Boolean>() }
+    var isLoaded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val rawData = mutableMapOf<String, Any>()
+
+        val templates = repository.getMessageTemplates()
+        if (templates.isNotEmpty()) rawData["templates"] = templates
+
+        val commands = repository.getCommands()
+        if (commands.isNotEmpty()) rawData["auto_responses"] = commands
+
+        rawData["ai_settings"] = repository.getAiVarPermissions()
+        rawData["review_reply_settings"] = repository.getReviewReplySettings()
+        rawData["greeting_settings"] = repository.getGreetingSettings()
+        rawData["order_confirm_settings"] = repository.getOrderConfirmSettings()
+
+        
+        val jsonStr = gson.toJson(rawData)
+        val type = object : TypeToken<Map<String, Any>>() {}.type
+        val parsedMap: Map<String, Any> = gson.fromJson(jsonStr, type)
+        editableData = parsedMap.toMutableMap()
+
+        
+        parsedMap.forEach { (cat, items) ->
+            if (items is List<*>) {
+                items.forEachIndexed { i, _ -> selectedItems["${cat}_$i"] = false }
+            } else {
+                selectedItems["${cat}_obj"] = false
+            }
+        }
+        isLoaded = true
+    }
+
+    Scaffold(
+        containerColor = ThemeManager.parseColor(theme.backgroundColor),
+        topBar = {
+            TopAppBar(
+                title = { Text("Опубликовать свой пак", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+                navigationIcon = { IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor)) } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+            )
+        },
+        bottomBar = {
+            if (isLoaded) {
+                Surface(color = ThemeManager.parseColor(theme.surfaceColor), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = {
+                            if (author.isBlank() || name.isBlank()) {
+                                Toast.makeText(context, "Заполните свой никнейм и название пака", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+
+                            val finalDataToPublish = mutableMapOf<String, Any>()
+                            editableData.forEach { (cat, items) ->
+                                if (items is List<*>) {
+                                    val filteredList = items.filterIndexed { index, _ -> selectedItems["${cat}_$index"] == true }
+                                    if (filteredList.isNotEmpty()) finalDataToPublish[cat] = filteredList
+                                } else {
+                                    if (selectedItems["${cat}_obj"] == true) finalDataToPublish[cat] = items
+                                }
+                            }
+
+                            if (finalDataToPublish.isEmpty()) {
+                                Toast.makeText(context, "Вы не выбрали ни одного элемента для выгрузки!", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+
+                            isPublishing = true
+                            scope.launch {
+                                CatalogApiManager.publishPack(author, name, desc, finalDataToPublish)
+                                    .onSuccess {
+                                        Toast.makeText(context, "Пак успешно опубликован в каталоге!", Toast.LENGTH_LONG).show()
+                                        navController.popBackStack()
+                                    }
+                                    .onFailure { e ->
+                                        Toast.makeText(context, "Ошибка публикации: ${e.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                isPublishing = false
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(16.dp).height(50.dp),
+                        enabled = !isPublishing,
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                    ) {
+                        if (isPublishing) CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White)
+                        else Text("Опубликовать выбранное", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+            item {
+                Text("Детали пака", color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(value = author, onValueChange = { author = it }, label = { Text("Ваш никнейм") }, modifier = Modifier.fillMaxWidth(), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Название пака") }, modifier = Modifier.fillMaxWidth(), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Краткое описание") }, modifier = Modifier.fillMaxWidth(), minLines = 2, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
+
+                Spacer(Modifier.height(24.dp))
+                Text("Отметьте галочками всё, чем хотите поделиться:", color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+            }
+
+            if (isLoaded) {
+                dataTreeEditor(
+                    editableData = editableData,
+                    selectedItems = selectedItems,
+                    theme = theme,
+                    onUpdateData = { category, newItems ->
+                        editableData = editableData.toMutableMap().apply { this[category] = newItems }
+                    }
+                )
+            } else {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = ThemeManager.parseColor(theme.accentColor))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun translateCategoryName(cat: String): String = when (cat) {
+    "templates" -> "Шаблоны сообщений"
+    "auto_responses" -> "Автоответы и команды"
+    "ai_settings" -> "ИИ переменные"
+    "review_reply_settings" -> "Автоответ на отзывы"
+    "greeting_settings" -> "Приветствия"
+    "order_confirm_settings" -> "Просьба отзыва"
+    "feedback_bonus_settings" -> "Бонусы за отзывы"
+    else -> cat
 }

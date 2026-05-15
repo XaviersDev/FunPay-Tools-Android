@@ -223,6 +223,26 @@ fun SettingsScreen(
                         theme = currentTheme,
                         content = {
                             ModernSettingsItem(
+                                title = "Менеджер плагинов",
+                                description = "Установка JS-скриптов, ИИ конвертер и каталог",
+                                icon = Icons.Default.Extension,
+                                iconColor = ThemeManager.parseColor("#00E676"),
+                                theme = currentTheme,
+                                showBadge = true,
+                                badgeText = "BETA",
+                                onClick = {
+                                    navController.navigate("plugins")
+                                }
+                            )
+                        }
+                    )
+                }
+
+                item {
+                    SettingsCard(
+                        theme = currentTheme,
+                        content = {
+                            ModernSettingsItem(
                                 title = "Бэкапы и экспорт",
                                 description = "Сохранить или восстановить данные",
                                 icon = Icons.Default.Backup,
@@ -252,6 +272,8 @@ fun SettingsScreen(
                         }
                     )
                 }
+
+
 
                 
                 item {
