@@ -309,9 +309,6 @@ class FunPayService : Service() {
             if (chat.isUnread) {
                 val lastMsg = chat.lastMessage
 
-                val safeText = lastMsg.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
-                PluginEngine.dispatchEvent("onNewMessage", """{"chatId": "${chat.id}", "username": "${chat.username}", "text": "$safeText"}""")
-
                 val lastSelf = FunPayRepository.lastOutgoingMessages[chat.id]
 
                 if (lastSelf != null) {
