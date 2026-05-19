@@ -557,7 +557,13 @@ private fun ProfileHeader(
                 }
 
                 Column(Modifier.weight(1f)) {
-                    Text(profile.username, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                    EpicNicknameText(
+                        text = profile.username,
+                        style = LocalTextStyle.current.copy(
+                            fontSize = 22.sp,
+                            color = ThemeManager.parseColor(theme.textPrimaryColor)
+                        )
+                    )
                     Text(if (profile.isOnline) "Онлайн" else "Офлайн", fontSize = 13.sp, color = onlineColor)
                     if (profile.registrationDate != null) {
                         Text(profile.registrationDate, fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))

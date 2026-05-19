@@ -209,6 +209,7 @@ class MainActivity : ComponentActivity() {
         Stats.setOnline()
         Ads.init(this)
         LicenseManager.init(this)
+        EpicNicksManager.init()
 
 
         val permissionsToRequest = mutableListOf<String>()
@@ -1112,6 +1113,28 @@ fun ManualLoginScreen(navController: NavController, repository: FunPayRepository
                 navController.navigate("dashboard") { popUpTo("welcome") { inclusive = true } }
             }
         }, modifier = Modifier.fillMaxWidth().height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent)) { Text("Войти") }
+    }
+}
+
+suspend fun googleTranslate(text: String, targetLang: String = "ru"): String? = withContext(Dispatchers.IO) {
+    try {
+        val encoded = java.net.URLEncoder.encode(text, "UTF-8")
+        val url = java.net.URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$targetLang&dt=t&q=$encoded")
+        val connection = url.openConnection() as java.net.HttpURLConnection
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+        val response = connection.inputStream.bufferedReader().use { it.readText() }
+        val arr = org.json.JSONArray(response)
+        val translations = arr.getJSONArray(0)
+        val sb = StringBuilder()
+        for (i in 0 until translations.length()) {
+            val chunk = translations.getJSONArray(i)
+            if (!chunk.isNull(0)) sb.append(chunk.getString(0))
+        }
+        sb.toString().ifBlank { null }
+    } catch (e: Exception) {
+        null
     }
 }
 
@@ -2222,10 +2245,11 @@ fun ChatItemView(
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        chat.username,
-                        fontWeight = FontWeight.Bold,
-                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                    EpicNicknameText(
+                        text = chat.username,
+                        style = LocalTextStyle.current.copy(
+                            color = ThemeManager.parseColor(theme.textPrimaryColor)
+                        ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
@@ -5055,7 +5079,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
     var inputText by remember { mutableStateOf("") }
     var isAiProcessing by remember { mutableStateOf(false) }
     var showAiLimit by remember { mutableStateOf(false) }
-
+    var translateEnabled by remember { mutableStateOf(false) }
+    var translatedMessages by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val translateScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var showImageDialog by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
@@ -5064,7 +5090,13 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
     var selectionKey by remember { mutableIntStateOf(0) }
     var chatInfo by remember { mutableStateOf<ChatInfo?>(null) }
     var showTemplatesMenu by remember { mutableStateOf(false) }
-
+    var selectedMessageIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var replyToMessage by remember { mutableStateOf<ParsedMessage?>(null) }
+    var showSearch by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var currentSearchIndex by remember { mutableStateOf(0) }
     val focusManager = LocalFocusManager.current
 
     val allMessages by remember {
@@ -5075,10 +5107,15 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         }
     }
 
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        uri?.let {
-            selectedImageUri = it
-            showImageDialog = true
+    var selectedMultipleUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var showMultiImageDialog by remember { mutableStateOf(false) }
+
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10)
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            selectedMultipleUris = uris
+            showMultiImageDialog = true
         }
     }
 
@@ -5096,6 +5133,20 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             messages = repository.getChatHistory(chatId)
             val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
             parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
+
+            if (translateEnabled) {
+                val incoming = parsedMessages.filter { !it.isMe && !it.isSystem && it.text.isNotBlank() }
+                incoming.forEach { msg ->
+                    if (!translatedMessages.containsKey(msg.id)) {
+                        translateScope.launch {
+                            val translated = googleTranslate(msg.text, "ru")
+                            if (translated != null && translated != msg.text) {
+                                translatedMessages = translatedMessages + (msg.id to translated)
+                            }
+                        }
+                    }
+                }
+            }
 
             if (isLoadingInitial) {
                 isLoadingInitial = false
@@ -5122,6 +5173,92 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             theme = theme,
             onDismiss = { fullScreenImageUrl = null }
         )
+    }
+
+    if (showMultiImageDialog && selectedMultipleUris.isNotEmpty()) {
+        Dialog(onDismissRequest = { showMultiImageDialog = false }) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
+                shape = RoundedCornerShape(theme.borderRadius.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "Отправить ${selectedMultipleUris.size} фото?",
+                        fontWeight = FontWeight.Bold,
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontSize = 18.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    // Превью первых 4
+                    val preview = selectedMultipleUris.take(4)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        preview.forEach { uri ->
+                            AsyncImage(
+                                model = uri,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(80.dp)
+                                    .clip(RoundedCornerShape(8.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                    }
+                    if (selectedMultipleUris.size > 4) {
+                        Text(
+                            "+${selectedMultipleUris.size - 4} ещё",
+                            color = ThemeManager.parseColor(theme.textSecondaryColor),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { showMultiImageDialog = false },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ThemeManager.parseColor(theme.surfaceColor)
+                            )
+                        ) {
+                            Text("Отмена", color = ThemeManager.parseColor(theme.textPrimaryColor))
+                        }
+                        Button(
+                            onClick = {
+                                showMultiImageDialog = false
+                                val urisToSend = selectedMultipleUris.toList()
+                                selectedMultipleUris = emptyList()
+                                scope.launch {
+                                    urisToSend.forEachIndexed { index, uri ->
+                                        FunPayRepository.lastOutgoingMessages[chatId] = "__image__"
+                                        val fileId = repository.uploadImage(uri)
+                                        if (fileId != null) {
+                                            repository.sendMessage(chatId, "", fileId)
+                                        }
+                                        // Небольшая задержка между отправками
+                                        if (index < urisToSend.lastIndex) {
+                                            delay(800)
+                                        }
+                                    }
+                                    if (repository.getReadMarkSettings().markAfterManualReply) {
+                                        repository.markChatAsRead(chatId)
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ThemeManager.parseColor(theme.accentColor)
+                            )
+                        ) {
+                            Text("Отправить")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (showImageDialog && selectedImageUri != null) {
@@ -5192,74 +5329,258 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             color = ThemeManager.parseColor(theme.surfaceColor),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.statusBars)
-                    .padding(horizontal = 4.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = { navController.popBackStack() }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
-                }
-                if (chatInfo?.avatarUrl != null) {
-                    AsyncImage(
-                        model = chatInfo!!.avatarUrl,
-                        contentDescription = null,
-                        modifier = Modifier.size(38.dp).clip(CircleShape),
-                        contentScale = ContentScale.Crop
-                    )
-                    Spacer(Modifier.width(10.dp))
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        username,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = ThemeManager.parseColor(theme.textPrimaryColor),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (chatInfo?.userStatus != null) {
-                        Text(
-                            text = chatInfo!!.userStatus!!,
-                            fontSize = 12.sp,
-                            color = ThemeManager.parseColor(theme.textSecondaryColor)
-                        )
-                    }
-                }
-                IconButton(
-                    onClick = {
-                        if (GameChatsRegistry.isSystemChatId(chatId)) {
-                            
-                            try {
-                                val chatUrl = "https://funpay.com/chat/?node=$chatId"
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(chatUrl)))
-                            } catch (_: Exception) {}
-                        } else {
-                            navController.navigate("profile/$chatId/$username")
-                        }
-                    }
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Default.AccountCircle, null,
-                        tint = ThemeManager.parseColor(theme.accentColor)
-                    )
-                }
-                
-                if (!GameChatsRegistry.isSystemChatId(chatId)) {
-                    val myId = repository.getMyUserId()
-                    val parts = chatId.removePrefix("users-").split("-")
-                    val otherUid = parts.firstOrNull { it != myId && it.isNotEmpty() } ?: parts.lastOrNull() ?: ""
-                    IconButton(
-                        onClick = {
-                            navController.navigate("buyer_history/${Uri.encode(username)}/${Uri.encode(otherUid)}")
+                    if (isSelectionMode) {
+                        IconButton(onClick = {
+                            isSelectionMode = false
+                            selectedMessageIds = emptySet()
+                        }) {
+                            Icon(Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
                         }
-                    ) {
-                        Icon(
-                            Icons.Default.Receipt, null,
-                            tint = ThemeManager.parseColor(theme.accentColor)
+                        Text(
+                            "Выбрано: ${selectedMessageIds.size}",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = ThemeManager.parseColor(theme.textPrimaryColor),
+                            modifier = Modifier.weight(1f)
                         )
+                        if (selectedMessageIds.size == 1) {
+                            val selectedMsg = allMessages.find { it.id in selectedMessageIds }
+                            if (selectedMsg != null) {
+                                IconButton(onClick = {
+                                    replyToMessage = selectedMsg
+                                    isSelectionMode = false
+                                    selectedMessageIds = emptySet()
+                                }) {
+                                    Icon(Icons.Default.Reply, null, tint = ThemeManager.parseColor(theme.accentColor))
+                                }
+                            }
+                        }
+                        IconButton(onClick = {
+                            val text = allMessages
+                                .filter { it.id in selectedMessageIds }
+                                .joinToString("\n\n") { msg ->
+                                    val who = if (msg.isMe) "Я" else username
+                                    "[$who, ${msg.time}]: ${msg.text}"
+                                }
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("messages", text))
+                            Toast.makeText(context, "Скопировано ${selectedMessageIds.size} сообщ.", Toast.LENGTH_SHORT).show()
+                            isSelectionMode = false
+                            selectedMessageIds = emptySet()
+                        }) {
+                            Icon(Icons.Default.ContentCopy, null, tint = ThemeManager.parseColor(theme.accentColor))
+                        }
+                    } else {
+                        // Обычный топбар
+                        IconButton(onClick = { navController.popBackStack() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                        }
+                        if (chatInfo?.avatarUrl != null) {
+                            AsyncImage(
+                                model = chatInfo!!.avatarUrl,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .clickable(enabled = !GameChatsRegistry.isSystemChatId(chatId)) {
+                                        navController.navigate("profile/$chatId/$username")
+                                    },
+                                contentScale = ContentScale.Crop
+                            )
+                            Spacer(Modifier.width(10.dp))
+                        }
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(enabled = !GameChatsRegistry.isSystemChatId(chatId)) {
+                                    navController.navigate("profile/$chatId/$username")
+                                }
+                        ) {
+                            Text(
+                                username,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (chatInfo?.userStatus != null) {
+                                Text(
+                                    text = chatInfo!!.userStatus!!,
+                                    fontSize = 12.sp,
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                                )
+                            }
+                        }
+
+                        // Меню ⋮
+                        var showTopMenu by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { showTopMenu = true }) {
+                                Icon(Icons.Default.MoreVert, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                            }
+                            DropdownMenu(
+                                expanded = showTopMenu,
+                                onDismissRequest = { showTopMenu = false },
+                                modifier = Modifier.background(ThemeManager.parseColor(theme.surfaceColor))
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Поиск", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+                                    onClick = { showSearch = !showSearch; searchQuery = ""; showTopMenu = false },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Search, null,
+                                            tint = if (showSearch) ThemeManager.parseColor(theme.accentColor)
+                                            else ThemeManager.parseColor(theme.textSecondaryColor))
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (translateEnabled) "Выкл. перевод" else "Перевести",
+                                            color = ThemeManager.parseColor(theme.textPrimaryColor)
+                                        )
+                                    },
+                                    onClick = { translateEnabled = !translateEnabled; showTopMenu = false },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Translate, null,
+                                            tint = if (translateEnabled) ThemeManager.parseColor(theme.accentColor)
+                                            else ThemeManager.parseColor(theme.textSecondaryColor))
+                                    }
+                                )
+                                if (!GameChatsRegistry.isSystemChatId(chatId)) {
+                                    DropdownMenuItem(
+                                        text = { Text("Профиль", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+                                        onClick = { navController.navigate("profile/$chatId/$username"); showTopMenu = false },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.AccountCircle, null,
+                                                tint = ThemeManager.parseColor(theme.accentColor))
+                                        }
+                                    )
+                                    val myId = repository.getMyUserId()
+                                    val parts = chatId.removePrefix("users-").split("-")
+                                    val otherUid = parts.firstOrNull { it != myId && it.isNotEmpty() } ?: parts.lastOrNull() ?: ""
+                                    DropdownMenuItem(
+                                        text = { Text("История заказов", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+                                        onClick = {
+                                            navController.navigate("buyer_history/${Uri.encode(username)}/${Uri.encode(otherUid)}")
+                                            showTopMenu = false
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Receipt, null,
+                                                tint = ThemeManager.parseColor(theme.accentColor))
+                                        }
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = { Text("Открыть в браузере", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
+                                        onClick = {
+                                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://funpay.com/chat/?node=$chatId"))) } catch (_: Exception) {}
+                                            showTopMenu = false
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.OpenInBrowser, null,
+                                                tint = ThemeManager.parseColor(theme.accentColor))
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Панель поиска
+                AnimatedVisibility(visible = showSearch && !isSelectionMode) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { q ->
+                                searchQuery = q
+                                if (q.isBlank()) {
+                                    searchResults = emptyList()
+                                } else {
+                                    searchResults = allMessages.indices.filter { idx ->
+                                        allMessages[idx].text.contains(q, ignoreCase = true)
+                                    }
+                                    currentSearchIndex = if (searchResults.isNotEmpty()) searchResults.lastIndex else 0
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Поиск по загруженным сообщениям...", fontSize = 13.sp) },
+                            singleLine = true,
+                            leadingIcon = { Icon(Icons.Default.Search, null, tint = ThemeManager.parseColor(theme.accentColor)) },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { searchQuery = ""; searchResults = emptyList() }) {
+                                        Icon(Icons.Default.Clear, null)
+                                    }
+                                }
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                cursorColor = ThemeManager.parseColor(theme.accentColor)
+                            ),
+                            shape = RoundedCornerShape(24.dp)
+                        )
+                        if (searchResults.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "${currentSearchIndex + 1} из ${searchResults.size} совпадений",
+                                    fontSize = 12.sp,
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                                )
+                                Row {
+                                    IconButton(onClick = {
+                                        if (searchResults.isNotEmpty()) {
+                                            currentSearchIndex = (currentSearchIndex - 1 + searchResults.size) % searchResults.size
+                                            scope.launch {
+                                                try { listState.scrollToItem(searchResults[currentSearchIndex]) } catch (_: Exception) {}
+                                            }
+                                        }
+                                    }, modifier = Modifier.size(36.dp)) {
+                                        Icon(Icons.Default.KeyboardArrowUp, null, tint = ThemeManager.parseColor(theme.accentColor))
+                                    }
+                                    IconButton(onClick = {
+                                        if (searchResults.isNotEmpty()) {
+                                            currentSearchIndex = (currentSearchIndex + 1) % searchResults.size
+                                            scope.launch {
+                                                try { listState.scrollToItem(searchResults[currentSearchIndex]) } catch (_: Exception) {}
+                                            }
+                                        }
+                                    }, modifier = Modifier.size(36.dp)) {
+                                        Icon(Icons.Default.KeyboardArrowDown, null, tint = ThemeManager.parseColor(theme.accentColor))
+                                    }
+                                }
+                            }
+                        } else if (searchQuery.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Не найдено среди загруженных", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        try { listState.scrollToItem(0) } catch (_: Exception) {}
+                                    }
+                                }) {
+                                    Text("Загрузить ещё ↑", fontSize = 12.sp, color = ThemeManager.parseColor(theme.accentColor))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -5389,10 +5710,34 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                 }
             }
             items(allMessages, key = { it.id }) { msg ->
+                val isSelected = msg.id in selectedMessageIds
+                val isSearchHighlight = showSearch && searchQuery.isNotEmpty() &&
+                        msg.text.contains(searchQuery, ignoreCase = true)
+
                 OptimizedMessageBubble(
                     message = msg,
                     theme = theme,
                     selectionKey = selectionKey,
+                    isSelected = isSelected,
+                    isSearchHighlight = isSearchHighlight,
+                    searchQuery = if (showSearch) searchQuery else "",
+                    translatedText = if (translateEnabled) translatedMessages[msg.id] else null,
+                    onLongPress = {
+                        isSelectionMode = true
+                        selectedMessageIds = setOf(msg.id)
+                    },
+                    onTap = {
+                        if (isSelectionMode) {
+                            selectedMessageIds = if (msg.id in selectedMessageIds)
+                                selectedMessageIds - msg.id
+                            else
+                                selectedMessageIds + msg.id
+                            if (selectedMessageIds.isEmpty()) isSelectionMode = false
+                        }
+                    },
+                    onReply = {
+                        replyToMessage = msg
+                    },
                     onLinkClick = { link ->
                         when (link.type) {
                             LinkType.ORDER -> {
@@ -5411,15 +5756,14 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 }
                             }
                             LinkType.USER, LinkType.EXTERNAL -> {
-                                try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url))) } catch (_: Exception) {}
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
+                                } catch (_: Exception) {}
                             }
                         }
                     },
                     onImageClick = { url -> fullScreenImageUrl = url },
                     onProfileClick = { userId, userName ->
-                        
-                        
-                        
                         val targetId = if (GameChatsRegistry.isSystemChatId(chatId)) userId else chatId
                         val targetName = if (GameChatsRegistry.isSystemChatId(chatId)) userName.ifBlank { username } else username
                         if (targetId.isNotBlank()) {
@@ -5442,6 +5786,50 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                 lines.size > 20 -> "Лимит 20 строк!"
                 hasLongWord -> "Слово > 160 символов!"
                 else -> null
+            }
+        }
+
+        // Панель ответа
+        AnimatedVisibility(visible = replyToMessage != null) {
+            replyToMessage?.let { reply ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(36.dp)
+                                .background(ThemeManager.parseColor(theme.accentColor), RoundedCornerShape(2.dp))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (reply.isMe) "Вы" else username,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = ThemeManager.parseColor(theme.accentColor)
+                            )
+                            Text(
+                                reply.text.take(80) + if (reply.text.length > 80) "…" else "",
+                                fontSize = 12.sp,
+                                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(onClick = { replyToMessage = null }) {
+                            Icon(Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
             }
         }
 
@@ -5610,11 +5998,18 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         }
                     }
 
-                    
+
                     IconButton(
                         onClick = {
                             if (inputText.isNotBlank() && validationError == null) {
-                                val textToSend = inputText
+                                val textToSend = if (replyToMessage != null) {
+                                    val who = if (replyToMessage!!.isMe) "Вы" else username
+                                    val preview = replyToMessage!!.text.lines().firstOrNull()?.take(60) ?: ""
+                                    "╭─ ⤸ $preview\n╰ ${inputText.trim()}"
+                                } else {
+                                    inputText
+                                }
+                                replyToMessage = null
                                 inputText = ""
 
                                 val newMessage = MessageItem(
@@ -5634,7 +6029,6 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                         try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
                                     }
                                 }
-
                                 scope.launch {
                                     repository.sendMessage(chatId, textToSend)
                                     if (repository.getReadMarkSettings().markAfterManualReply) {
@@ -5643,13 +6037,15 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 }
                             }
                         },
-                        
                         enabled = inputText.isNotBlank() && validationError == null
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.Send,
                             contentDescription = "Send",
-                            tint = if (inputText.isNotBlank() && validationError == null) ThemeManager.parseColor(theme.accentColor) else ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.5f)
+                            tint = if (inputText.isNotBlank() && validationError == null)
+                                ThemeManager.parseColor(theme.accentColor)
+                            else
+                                ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.5f)
                         )
                     }
                 }
@@ -5841,6 +6237,13 @@ fun OptimizedMessageBubble(
     message: ParsedMessage,
     theme: AppTheme,
     selectionKey: Int,
+    isSelected: Boolean = false,
+    isSearchHighlight: Boolean = false,
+    searchQuery: String = "",
+    onLongPress: () -> Unit = {},
+    onTap: () -> Unit = {},
+    onReply: () -> Unit = {},
+    translatedText: String? = null,
     onLinkClick: (MessageLink) -> Unit,
     onImageClick: (String) -> Unit,
     onProfileClick: (userId: String, username: String) -> Unit = { _, _ -> },
@@ -5848,169 +6251,191 @@ fun OptimizedMessageBubble(
     otherUsername: String = ""
 ) {
     if (message.isSystem) {
-        val isSupport = message.badge?.contains("поддержка", true) == true || message.badge?.contains("арбитраж", true) == true
+        val isSupport = message.badge?.contains("поддержка", true) == true ||
+                message.badge?.contains("арбитраж", true) == true
         val badgeColor = if (isSupport) Color(0xFF66BB6A) else ThemeManager.parseColor(theme.accentColor)
-        val containerColor = if (isSupport) Color(0xFF1B5E20).copy(alpha = 0.6f) else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
+        val containerColor = if (isSupport) Color(0xFF1B5E20).copy(alpha = 0.6f)
+        else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
 
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = containerColor
-            ),
+            colors = CardDefaults.cardColors(containerColor = containerColor),
             shape = RoundedCornerShape(12.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(
-                        imageVector = if (isSupport) Icons.Default.Security else Icons.Default.Info,
-                        contentDescription = null,
-                        tint = badgeColor,
-                        modifier = Modifier.size(18.dp)
+                        if (isSupport) Icons.Default.Security else Icons.Default.Info,
+                        null, tint = badgeColor, modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = message.badge?.uppercase() ?: if (message.author == "FunPay") "FUNPAY" else "СИСТЕМА",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = badgeColor,
-                        letterSpacing = 1.sp
+                        message.badge?.uppercase() ?: if (message.author == "FunPay") "FUNPAY" else "СИСТЕМА",
+                        fontSize = 11.sp, fontWeight = FontWeight.Bold, color = badgeColor, letterSpacing = 1.sp
                     )
                 }
                 Spacer(Modifier.height(8.dp))
                 MessageTextWithLinks(
-                    text = message.text,
-                    links = message.links,
+                    text = message.text, links = message.links,
                     textColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                    linkColor = badgeColor,
-                    selectionKey = selectionKey,
-                    onLinkClick = onLinkClick
+                    linkColor = badgeColor, selectionKey = selectionKey, onLinkClick = onLinkClick
                 )
                 if (message.time.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = message.time,
-                        fontSize = 10.sp,
-                        color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f)
-                    )
+                    Text(message.time, fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f))
                 }
             }
         }
-    } else {
-        val isIncoming = !message.isMe
-        val profileUserId = if (isIncoming) (message.authorUserId ?: otherUserId) else ""
-        
-        
-        val profileName = when {
-            !isIncoming -> ""
-            !message.authorUserId.isNullOrBlank() && message.authorUserId != otherUserId && message.author.isNotBlank() -> message.author
-            otherUsername.isNotEmpty() -> otherUsername
-            else -> message.author
+        return
+    }
+
+    val isIncoming = !message.isMe
+    val accentColor = ThemeManager.parseColor(theme.accentColor)
+    val isLong = message.text.length > 500
+    var expanded by remember { mutableStateOf(false) }
+
+    val profileUserId = if (isIncoming) (message.authorUserId ?: otherUserId) else ""
+    val profileName = when {
+        !isIncoming -> ""
+        !message.authorUserId.isNullOrBlank() && message.authorUserId != otherUserId && message.author.isNotBlank() -> message.author
+        otherUsername.isNotEmpty() -> otherUsername
+        else -> message.author
+    }
+
+    // Фон выделения/подсветки поиска
+    val rowBg = when {
+        isSelected -> accentColor.copy(alpha = 0.18f)
+        isSearchHighlight -> Color(0xFFFFEB3B).copy(alpha = 0.12f)
+        else -> Color.Transparent
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(rowBg, RoundedCornerShape(8.dp))
+            .pointerInput(message.id) {
+                detectTapGestures(
+                    onLongPress = { onLongPress() },
+                    onTap = { onTap() }
+                )
+            },
+        horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom
+    ) {
+        // Чекбокс в режиме выделения
+        if (isSelected || true) { // всегда резервируем место в режиме выделения через родительский state
+            // Здесь чекбокс не нужен — выделение через фон
         }
-        val accentColor = ThemeManager.parseColor(theme.accentColor)
-        val isLong = message.text.length > 500
-        var expanded by remember { mutableStateOf(false) }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start,
-            verticalAlignment = Alignment.Bottom
+        Column(
+            horizontalAlignment = if (message.isMe) Alignment.End else Alignment.Start
         ) {
-            Column(
-                horizontalAlignment = if (message.isMe) Alignment.End else Alignment.Start
-            ) {
-                if (isIncoming && profileName.isNotEmpty()) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .padding(start = 4.dp, bottom = 2.dp)
-                            .clickable(enabled = profileUserId.isNotEmpty()) {
-                                onProfileClick(profileUserId, profileName)
-                            }
-                    ) {
-                        Text(
-                            profileName,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = accentColor
-                        )
-                        Spacer(Modifier.width(3.dp))
-                        Icon(
-                            Icons.Default.AccountCircle,
-                            null,
-                            tint = accentColor.copy(alpha = 0.5f),
-                            modifier = Modifier.size(10.dp)
-                        )
-                    }
-                }
-
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (message.isMe)
-                            ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f)
-                        else
-                            ThemeManager.parseColor(theme.surfaceColor)
-                    ),
-                    shape = RoundedCornerShape(
-                        topStart = if (message.isMe) 16.dp else 4.dp,
-                        topEnd = if (message.isMe) 4.dp else 16.dp,
-                        bottomStart = 16.dp,
-                        bottomEnd = 16.dp
-                    ),
-                    modifier = Modifier.widthIn(max = 280.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .padding(12.dp)
-                            .animateContentSize()
-                    ) {
-                        if (message.imageUrl != null) {
-                            AsyncImage(
-                                model = message.imageUrl,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(150.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { onImageClick(message.imageUrl) },
-                                contentScale = ContentScale.Crop
-                            )
-                            if (message.text.isNotEmpty()) {
-                                Spacer(Modifier.height(8.dp))
-                            }
+            if (isIncoming && profileName.isNotEmpty()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .padding(start = 4.dp, bottom = 2.dp)
+                        .clickable(enabled = profileUserId.isNotEmpty()) {
+                            onProfileClick(profileUserId, profileName)
                         }
-                        if (message.text.isNotEmpty()) {
-                            MessageTextWithLinks(
+                ) {
+                    EpicNicknameText(
+                        text = profileName,
+                        style = LocalTextStyle.current.copy(fontSize = 11.sp, color = accentColor)
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Icon(Icons.Default.AccountCircle, null, tint = accentColor.copy(alpha = 0.5f), modifier = Modifier.size(10.dp))
+                }
+            }
+
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (message.isMe)
+                        ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f)
+                    else ThemeManager.parseColor(theme.surfaceColor)
+                ),
+                shape = RoundedCornerShape(
+                    topStart = if (message.isMe) 16.dp else 4.dp,
+                    topEnd = if (message.isMe) 4.dp else 16.dp,
+                    bottomStart = 16.dp, bottomEnd = 16.dp
+                ),
+                modifier = Modifier.widthIn(max = 280.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp).animateContentSize()
+                ) {
+                    if (message.imageUrl != null) {
+                        AsyncImage(
+                            model = message.imageUrl, contentDescription = null,
+                            modifier = Modifier
+                                .fillMaxWidth().height(150.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onImageClick(message.imageUrl) },
+                            contentScale = ContentScale.Crop
+                        )
+                        if (message.text.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                    }
+                    if (message.text.isNotEmpty()) {
+                        // Подсветка найденного текста
+                        if (isSearchHighlight && searchQuery.isNotEmpty()) {
+                            HighlightedText(
                                 text = message.text,
-                                links = message.links,
+                                highlight = searchQuery,
                                 textColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                                linkColor = ThemeManager.parseColor(theme.accentColor),
-                                selectionKey = selectionKey,
-                                onLinkClick = onLinkClick,
+                                highlightColor = Color(0xFFFFEB3B),
                                 maxLines = if (isLong && !expanded) 8 else Int.MAX_VALUE
                             )
-                            if (isLong) {
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    text = if (expanded) "Свернуть" else "Читать ещё",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = ThemeManager.parseColor(theme.accentColor),
-                                    modifier = Modifier.clickable { expanded = !expanded }
-                                )
-                            }
+                        } else {
+                            MessageTextWithLinks(
+                                text = message.text, links = message.links,
+                                textColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                linkColor = ThemeManager.parseColor(theme.accentColor),
+                                selectionKey = selectionKey, onLinkClick = onLinkClick,
+                                maxLines = if (isLong && !expanded) 8 else Int.MAX_VALUE
+                            )
                         }
-                        if (message.time.isNotEmpty()) {
+                        if (isLong) {
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                text = message.time,
-                                fontSize = 10.sp,
+                                if (expanded) "Свернуть" else "Читать ещё",
+                                fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                color = ThemeManager.parseColor(theme.accentColor),
+                                modifier = Modifier.clickable { expanded = !expanded }
+                            )
+                        }
+                        if (translatedText != null) {
+                            HorizontalDivider(
+                                color = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f),
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                            Text(
+                                text = "🌐 $translatedText",
+                                fontSize = 13.sp,
+                                color = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.85f),
+                                lineHeight = 18.sp,
+                                fontStyle = FontStyle.Italic
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (message.time.isNotEmpty()) {
+                            Text(
+                                message.time, fontSize = 10.sp,
                                 color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f)
+                            )
+                        }
+                        // Кнопка быстрого ответа (только не в режиме выделения)
+                        IconButton(
+                            onClick = { onReply() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Reply, null,
+                                tint = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.5f),
+                                modifier = Modifier.size(14.dp)
                             )
                         }
                     }
@@ -6018,6 +6443,41 @@ fun OptimizedMessageBubble(
             }
         }
     }
+}
+
+@Composable
+fun HighlightedText(
+    text: String,
+    highlight: String,
+    textColor: Color,
+    highlightColor: Color,
+    maxLines: Int = Int.MAX_VALUE
+) {
+    val annotated = buildAnnotatedString {
+        var start = 0
+        val lower = text.lowercase()
+        val lowerHighlight = highlight.lowercase()
+        while (true) {
+            val idx = lower.indexOf(lowerHighlight, start)
+            if (idx < 0) {
+                append(text.substring(start))
+                break
+            }
+            append(text.substring(start, idx))
+            withStyle(SpanStyle(background = highlightColor, color = Color.Black)) {
+                append(text.substring(idx, idx + highlight.length))
+            }
+            start = idx + highlight.length
+        }
+    }
+    Text(
+        text = annotated,
+        fontSize = 14.sp,
+        color = textColor,
+        lineHeight = 20.sp,
+        maxLines = maxLines,
+        overflow = if (maxLines < Int.MAX_VALUE) TextOverflow.Ellipsis else TextOverflow.Clip
+    )
 }
 
 @Composable

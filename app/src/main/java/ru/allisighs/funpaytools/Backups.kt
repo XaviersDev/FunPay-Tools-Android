@@ -1,3 +1,5 @@
+// ФАЙЛ: C:\Users\AlliSighs\StudioProjects\FunPay-Tools-Android\app\src\main\java\ru\allisighs\funpaytools\Backups.kt
+
 /*
  *
  *  * Copyright (c) 2026 XaviersDev (AlliSighs). All rights reserved.
@@ -40,6 +42,10 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.text.SimpleDateFormat
@@ -47,29 +53,25 @@ import java.util.*
 
 data class BackupData(
     @SerializedName("version")
-    val version: Int = 2,
+    val version: Int = 3,
 
     @SerializedName("created_at")
     val createdAt: Long = System.currentTimeMillis(),
 
     @SerializedName("app_version")
-    val appVersion: String = "1.2.5",
-
+    val appVersion: String = APP_VERSION,
 
     @SerializedName("accounts")
     val accounts: AccountsData,
 
-
     @SerializedName("theme")
     val theme: AppTheme,
-
 
     @SerializedName("settings")
     val settings: FullBackupSettings
 )
 
 data class FullBackupSettings(
-
     @SerializedName("auto_response")
     val autoResponse: Boolean = false,
 
@@ -85,26 +87,26 @@ data class FullBackupSettings(
     @SerializedName("auto_start_on_boot")
     val autoStartOnBoot: Boolean = false,
 
+    @SerializedName("always_online")
+    val alwaysOnline: Boolean = false,
+
+    @SerializedName("smart_raise_enabled")
+    val smartRaiseEnabled: Boolean = true,
 
     @SerializedName("commands")
     val commands: List<AutoResponseCommand> = emptyList(),
 
-
     @SerializedName("greeting_settings")
     val greetingSettings: GreetingSettings = GreetingSettings(false, "", 0, false),
-
 
     @SerializedName("review_reply_settings")
     val reviewReplySettings: ReviewReplySettings = ReviewReplySettings(),
 
-
     @SerializedName("auto_refund_settings")
     val autoRefundSettings: AutoRefundSettings = AutoRefundSettings(),
 
-
     @SerializedName("order_confirm_settings")
     val orderConfirmSettings: OrderConfirmSettings = OrderConfirmSettings(),
-
 
     @SerializedName("message_templates")
     val messageTemplates: List<MessageTemplate> = emptyList(),
@@ -124,6 +126,12 @@ data class FullBackupSettings(
     @SerializedName("busy_mode")
     val busyMode: BusyModeSettings = BusyModeSettings(),
 
+    @SerializedName("flood_chat_settings")
+    val floodChatSettings: FloodChatSettings = FloodChatSettings(),
+
+    @SerializedName("busy_schedule_settings")
+    val busyScheduleSettings: BusyScheduleSettings = BusyScheduleSettings(),
+
     @SerializedName("dumper_settings")
     val dumperSettings: DumperSettings = DumperSettings(),
 
@@ -131,17 +139,68 @@ data class FullBackupSettings(
     val autoTicketSettings: AutoTicketSettings = AutoTicketSettings(),
 
     @SerializedName("order_reminder_settings")
-    val orderReminderSettings: OrderReminderSettings = OrderReminderSettings()
+    val orderReminderSettings: OrderReminderSettings = OrderReminderSettings(),
+
+    @SerializedName("pending_order_reminders")
+    val pendingOrderReminders: List<PendingOrderReminder> = emptyList(),
+
+    @SerializedName("read_mark_settings")
+    val readMarkSettings: ReadMarkSettings = ReadMarkSettings(),
+
+    @SerializedName("ai_var_permissions")
+    val aiVarPermissions: AiVarPermissions = AiVarPermissions(),
+
+    @SerializedName("feedback_bonus_settings")
+    val feedbackBonusSettings: FeedbackBonusSettings = FeedbackBonusSettings(),
+
+    @SerializedName("auto_delivery_settings")
+    val autoDeliverySettings: AutoDeliverySettings = AutoDeliverySettings(),
+
+    @SerializedName("concurent_settings")
+    val concurentSettings: ConcurentSettings = ConcurentSettings(),
+
+    @SerializedName("dynamic_avatar_settings")
+    val dynamicAvatarSettings: DynamicAvatarSettings = DynamicAvatarSettings(),
+
+    @SerializedName("aos_config")
+    val aosConfig: AosConfig = AosConfig(),
+
+    @SerializedName("inactive_lots")
+    val inactiveLots: List<Lot> = emptyList(),
+
+    @SerializedName("plugins")
+    val plugins: List<PluginMeta> = emptyList(),
+
+    @SerializedName("plugins_auto_update_interval")
+    val pluginsAutoUpdateInterval: Float = 4f
 )
 
 class BackupManager(private val context: Context) {
     private val gson = Gson()
 
-    fun createBackup(repository: FunPayRepository, currentTheme: AppTheme): BackupData {
+    private fun getDynamicAvatarSettings(): DynamicAvatarSettings {
+        val json = context.getSharedPreferences("dynamic_avatar_prefs", Context.MODE_PRIVATE).getString("settings", null)
+        return try { gson.fromJson(json, DynamicAvatarSettings::class.java) ?: DynamicAvatarSettings() } catch (e: Exception) { DynamicAvatarSettings() }
+    }
+
+    private fun saveDynamicAvatarSettings(settings: DynamicAvatarSettings) {
+        context.getSharedPreferences("dynamic_avatar_prefs", Context.MODE_PRIVATE).edit().putString("settings", gson.toJson(settings)).apply()
+        DynamicAvatarManager.startOrUpdate(context, FunPayRepository(context))
+    }
+
+    private fun getPluginsAutoUpdateInterval(): Float {
+        return context.getSharedPreferences("plugins_db", Context.MODE_PRIVATE).getFloat("auto_update_interval", 4f)
+    }
+
+    private fun savePluginsAutoUpdateInterval(value: Float) {
+        context.getSharedPreferences("plugins_db", Context.MODE_PRIVATE).edit().putFloat("auto_update_interval", value).apply()
+    }
+
+    suspend fun createBackup(repository: FunPayRepository, currentTheme: AppTheme): BackupData {
         return BackupData(
-            version = 2,
+            version = 3,
             createdAt = System.currentTimeMillis(),
-            appVersion = "1.2.5",
+            appVersion = APP_VERSION,
             accounts = repository.getAccountsData(),
             theme = currentTheme,
             settings = FullBackupSettings(
@@ -150,6 +209,9 @@ class BackupManager(private val context: Context) {
                 raiseEnabled = repository.getSetting("raise_enabled"),
                 raiseInterval = repository.getRaiseInterval(),
                 autoStartOnBoot = repository.getSetting("auto_start_on_boot"),
+                alwaysOnline = repository.getSetting("always_online"),
+                smartRaiseEnabled = repository.isSmartRaiseEnabled(),
+
                 commands = repository.getCommands(),
                 greetingSettings = repository.getGreetingSettings(),
                 reviewReplySettings = repository.getReviewReplySettings(),
@@ -157,13 +219,31 @@ class BackupManager(private val context: Context) {
                 orderConfirmSettings = repository.getOrderConfirmSettings(),
                 messageTemplates = repository.getMessageTemplates(),
                 templateSettings = repository.getTemplateSettings(),
+
                 chatFolders = ChatFolderManager.getFolders(context),
                 chatLabels = ChatFolderManager.getLabels(context),
                 chatLabelAssignments = ChatFolderManager.getChatLabels(context),
                 busyMode = ChatFolderManager.getBusyMode(context),
+                floodChatSettings = ChatFolderManager.getFloodChat(context),
+                busyScheduleSettings = ChatFolderManager.getBusySchedule(context),
+
                 dumperSettings = repository.getDumperSettings(),
                 autoTicketSettings = repository.getAutoTicketSettings(),
-                orderReminderSettings = repository.getOrderReminderSettings()
+                orderReminderSettings = repository.getOrderReminderSettings(),
+                pendingOrderReminders = repository.getPendingReminders(),
+
+                readMarkSettings = repository.getReadMarkSettings(),
+                aiVarPermissions = repository.getAiVarPermissions(),
+                feedbackBonusSettings = repository.getFeedbackBonusSettings(),
+
+                autoDeliverySettings = AutoDeliveryManager.getSettings(context),
+                concurentSettings = ConcurentManager.getSettings(context),
+                dynamicAvatarSettings = getDynamicAvatarSettings(),
+                aosConfig = AosManager.getConfig(context),
+
+                inactiveLots = InactiveLotsStorage(context).getInactiveLots(),
+                plugins = PluginStorage.loadAll(context),
+                pluginsAutoUpdateInterval = getPluginsAutoUpdateInterval()
             )
         )
     }
@@ -181,21 +261,17 @@ class BackupManager(private val context: Context) {
         }
     }
 
-
-    fun applyBackup(
+    suspend fun applyBackup(
         backup: BackupData,
         repository: FunPayRepository,
         context: Context,
         onThemeChanged: (AppTheme) -> Unit
     ): Result<Unit> {
         return try {
-
             repository.saveAccountsData(backup.accounts)
 
-
             ThemeManager.saveTheme(context, backup.theme)
-            onThemeChanged(backup.theme)
-
+            withContext(Dispatchers.Main) { onThemeChanged(backup.theme) }
 
             val settings = backup.settings
 
@@ -204,6 +280,8 @@ class BackupManager(private val context: Context) {
             repository.setSetting("raise_enabled", settings.raiseEnabled)
             repository.setRaiseInterval(settings.raiseInterval)
             repository.setSetting("auto_start_on_boot", settings.autoStartOnBoot)
+            repository.setSetting("always_online", settings.alwaysOnline)
+            repository.setSmartRaiseEnabled(settings.smartRaiseEnabled)
 
             repository.saveCommands(settings.commands)
             repository.saveGreetingSettings(settings.greetingSettings)
@@ -217,9 +295,32 @@ class BackupManager(private val context: Context) {
             ChatFolderManager.saveLabels(context, settings.chatLabels)
             ChatFolderManager.saveChatLabels(context, settings.chatLabelAssignments)
             ChatFolderManager.saveBusyMode(context, settings.busyMode)
+            ChatFolderManager.saveFloodChat(context, settings.floodChatSettings)
+            ChatFolderManager.saveBusySchedule(context, settings.busyScheduleSettings)
+
             repository.saveDumperSettings(settings.dumperSettings)
             repository.saveAutoTicketSettings(settings.autoTicketSettings)
             repository.saveOrderReminderSettings(settings.orderReminderSettings)
+            repository.savePendingReminders(settings.pendingOrderReminders)
+
+            repository.saveReadMarkSettings(settings.readMarkSettings)
+            repository.saveAiVarPermissions(settings.aiVarPermissions)
+            repository.saveFeedbackBonusSettings(settings.feedbackBonusSettings)
+
+            AutoDeliveryManager.saveSettings(context, settings.autoDeliverySettings)
+            ConcurentManager.saveSettings(context, settings.concurentSettings)
+            saveDynamicAvatarSettings(settings.dynamicAvatarSettings)
+            AosManager.saveConfig(context, settings.aosConfig)
+
+            savePluginsAutoUpdateInterval(settings.pluginsAutoUpdateInterval)
+
+            val storage = InactiveLotsStorage(context)
+            settings.inactiveLots.forEach { storage.saveLot(it) }
+
+            for (plugin in settings.plugins) {
+                PluginStorage.upsert(context, plugin)
+            }
+            PluginEngine.requestReload()
 
             Result.success(Unit)
         } catch (e: Exception) {
@@ -238,11 +339,11 @@ class BackupManager(private val context: Context) {
 fun BackupsScreen(
     navController: NavController,
     currentTheme: AppTheme,
-
     repository: FunPayRepository,
     onThemeChanged: (AppTheme) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val backupManager = remember { BackupManager(context) }
 
     var showExportSuccess by remember { mutableStateOf(false) }
@@ -251,59 +352,65 @@ fun BackupsScreen(
     var isExporting by remember { mutableStateOf(false) }
     var isImporting by remember { mutableStateOf(false) }
 
-
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri: Uri? ->
         uri?.let {
-            try {
+            scope.launch {
+                try {
+                    val backup = backupManager.createBackup(repository, currentTheme)
+                    val json = backupManager.exportBackup(backup)
 
-                val backup = backupManager.createBackup(repository, currentTheme)
-                val json = backupManager.exportBackup(backup)
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                            outputStream.write(json.toByteArray())
+                        }
+                    }
 
-                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                    outputStream.write(json.toByteArray())
+                    isExporting = false
+                    showExportSuccess = true
+                } catch (e: Exception) {
+                    isExporting = false
+                    showError = "Ошибка экспорта: ${e.message}"
                 }
-
-                isExporting = false
-                showExportSuccess = true
-            } catch (e: Exception) {
-                isExporting = false
-                showError = "Ошибка экспорта: ${e.message}"
             }
         } ?: run {
             isExporting = false
         }
     }
 
-
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val reader = BufferedReader(InputStreamReader(inputStream))
-                val json = reader.readText()
-                reader.close()
+            scope.launch {
+                isImporting = true
+                try {
+                    val json = withContext(Dispatchers.IO) {
+                        val inputStream = context.contentResolver.openInputStream(uri)
+                        val reader = BufferedReader(InputStreamReader(inputStream))
+                        val text = reader.readText()
+                        reader.close()
+                        text
+                    }
 
-                val result = backupManager.importBackup(json)
-                result.onSuccess { backup ->
-
-                    backupManager.applyBackup(backup, repository, context, onThemeChanged).onSuccess {
-                        isImporting = false
-                        showImportSuccess = true
+                    val result = backupManager.importBackup(json)
+                    result.onSuccess { backup ->
+                        backupManager.applyBackup(backup, repository, context, onThemeChanged).onSuccess {
+                            isImporting = false
+                            showImportSuccess = true
+                        }.onFailure { error ->
+                            isImporting = false
+                            showError = "Ошибка применения: ${error.message}"
+                        }
                     }.onFailure { error ->
                         isImporting = false
-                        showError = "Ошибка применения: ${error.message}"
+                        showError = "Неверный формат файла: ${error.message}"
                     }
-                }.onFailure { error ->
+                } catch (e: Exception) {
                     isImporting = false
-                    showError = "Неверный формат файла: ${error.message}"
+                    showError = "Ошибка чтения файла: ${e.message}"
                 }
-            } catch (e: Exception) {
-                isImporting = false
-                showError = "Ошибка чтения файла: ${e.message}"
             }
         } ?: run {
             isImporting = false
@@ -363,7 +470,6 @@ fun BackupsScreen(
                     )
                 }
 
-
                 item {
                     AnimatedBackupCard(
                         title = "Экспорт настроек",
@@ -383,7 +489,6 @@ fun BackupsScreen(
                     )
                 }
 
-
                 item {
                     AnimatedBackupCard(
                         title = "Импорт настроек",
@@ -402,7 +507,6 @@ fun BackupsScreen(
                         }
                     )
                 }
-
 
                 item {
                     Card(
@@ -435,16 +539,14 @@ fun BackupsScreen(
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 BackupInfoItem("• Все аккаунты и токены", currentTheme)
-                                BackupInfoItem("• Тема и кастомизация", currentTheme)
-                                BackupInfoItem("• Настройки уведомлений", currentTheme)
-                                BackupInfoItem("• Шаблоны (с прикреплёнными картинками)", currentTheme)
-                                BackupInfoItem("• Настройки просьбы отзыва с картинкой", currentTheme)
-                                BackupInfoItem("• Всё остальное тоже", currentTheme)
+                                BackupInfoItem("• Тема, виджеты и AOD дисплей", currentTheme)
+                                BackupInfoItem("• Плагины, XD Dumper и Concurent", currentTheme)
+                                BackupInfoItem("• Автовыдача и все сообщения", currentTheme)
+                                BackupInfoItem("• Шаблоны, расписание и смарт-автоподнятие", currentTheme)
                             }
                         }
                     }
                 }
-
 
                 item {
                     Card(
@@ -495,7 +597,6 @@ fun BackupsScreen(
                 }
             }
 
-
             AnimatedVisibility(
                 visible = showExportSuccess,
                 enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
@@ -542,24 +643,23 @@ fun BackupsScreen(
         }
     }
 
-
     LaunchedEffect(showExportSuccess) {
         if (showExportSuccess) {
-            kotlinx.coroutines.delay(3000)
+            delay(3000)
             showExportSuccess = false
         }
     }
 
     LaunchedEffect(showImportSuccess) {
         if (showImportSuccess) {
-            kotlinx.coroutines.delay(4000)
+            delay(4000)
             showImportSuccess = false
         }
     }
 
     LaunchedEffect(showError) {
         if (showError != null) {
-            kotlinx.coroutines.delay(4000)
+            delay(4000)
             showError = null
         }
     }
