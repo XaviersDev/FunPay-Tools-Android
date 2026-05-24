@@ -17,7 +17,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -50,7 +50,7 @@ fun ThemeSelectionScreen(
                 navigationIcon = {
                     IconButton(onClick = { navController.navigateUp() }) {
                         Icon(
-                            Icons.Default.ArrowBack,
+                            Icons.AutoMirrored.Filled.ArrowBack,
                             "Назад",
                             tint = ThemeManager.parseColor(currentTheme.textPrimaryColor)
                         )
@@ -74,7 +74,20 @@ fun ThemeSelectionScreen(
                     theme = theme,
                     isSelected = theme.name == currentTheme.name,
                     currentTheme = currentTheme,
-                    onClick = { onThemeSelected(theme) }
+                    onClick = {
+                        // При смене темы сохраняем настройки обоев пользователя,
+                        // чтобы они не сбрасывались при выборе пресета.
+                        val merged = theme.copy(
+                            useWallpaper      = currentTheme.useWallpaper,
+                            wallpaperPath     = currentTheme.wallpaperPath,
+                            wallpaperAlpha    = currentTheme.wallpaperAlpha,
+                            wallpaperDim      = currentTheme.wallpaperDim,
+                            wallpaperBlur     = currentTheme.wallpaperBlur,
+                            wallpaperEffect   = currentTheme.wallpaperEffect,
+                            parallaxIntensity = currentTheme.parallaxIntensity
+                        )
+                        onThemeSelected(merged)
+                    }
                 )
             }
         }

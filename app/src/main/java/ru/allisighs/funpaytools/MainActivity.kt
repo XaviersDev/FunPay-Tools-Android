@@ -8,12 +8,30 @@
  *
  */
 
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package ru.allisighs.funpaytools
 
 import android.Manifest
 import android.app.Activity
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.hasMediaType
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.content.MediaType
 import android.annotation.SuppressLint
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.app.job.JobInfo
@@ -92,7 +110,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -109,12 +126,20 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import android.content.ComponentName
+import android.content.pm.ActivityInfo
+import android.view.ViewGroup
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.core.view.ViewCompat
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import coil.ImageLoader
@@ -138,6 +163,8 @@ import org.json.JSONArray
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 data class ParsedMessage(
@@ -189,9 +216,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
 
-        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         try {
-            val jobScheduler = getSystemService(Context.JOB_SCHEDULER_SERVICE) as JobScheduler
+            val jobScheduler = getSystemService(JOB_SCHEDULER_SERVICE) as JobScheduler
             val componentName = ComponentName(this, ZombieJobService::class.java)
 
             val jobInfo = JobInfo.Builder(999, componentName)
@@ -266,7 +293,7 @@ fun FunPayToolsApp(
     startDestination: String,
     repository: FunPayRepository,
     currentTheme: AppTheme,
-    pendingChatId: androidx.compose.runtime.MutableState<Pair<String, String>?> = remember { mutableStateOf(null) },
+    pendingChatId: MutableState<Pair<String, String>?> = remember { mutableStateOf(null) },
     onThemeChanged: (AppTheme) -> Unit
 ) {
     val navController = rememberNavController()
@@ -294,6 +321,7 @@ fun FunPayToolsApp(
             SplashScreen(onTimeout = { showSplash = false }, theme = currentTheme)
         } else {
             Box(modifier = Modifier.fillMaxSize().background(AppGradient)) {
+                WallpaperLayer(theme = currentTheme)
                 NavHost(navController = navController, startDestination = startDestination) {
                     composable("welcome") { WelcomeScreen(navController) }
                     composable("backups") {
@@ -659,7 +687,7 @@ fun PermissionsScreen(navController: NavController, repository: FunPayRepository
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1A237E).copy(alpha = 0.3f)),
             shape = RoundedCornerShape(12.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     "📋 Инструкция по производителям:",
@@ -1013,39 +1041,45 @@ fun AuthMethodScreen(navController: NavController) {
     val context = LocalContext.current
     val backupManager = remember { BackupManager(context) }
     val repository = remember { FunPayRepository(context) }
+    val scope = rememberCoroutineScope()
 
 
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val reader = BufferedReader(InputStreamReader(inputStream))
-                val json = reader.readText()
-                reader.close()
+            scope.launch {
+                try {
+                    val json = withContext(Dispatchers.IO) {
+                        val inputStream = context.contentResolver.openInputStream(uri)
+                        val reader = BufferedReader(InputStreamReader(inputStream))
+                        val text = reader.readText()
+                        reader.close()
+                        text
+                    }
 
-                val result = backupManager.importBackup(json)
-                result.onSuccess { backup ->
+                    val result = backupManager.importBackup(json)
+                    result.onSuccess { backup ->
 
-                    backupManager.applyBackup(
-                        backup = backup,
-                        repository = repository,
-                        context = context,
-                        onThemeChanged = { }
-                    ).onSuccess {
-                        Toast.makeText(context, "Бэкап восстановлен! Входим...", Toast.LENGTH_SHORT).show()
-                        navController.navigate("dashboard") {
-                            popUpTo(0) { inclusive = true }
+                        backupManager.applyBackup(
+                            backup = backup,
+                            repository = repository,
+                            context = context,
+                            onThemeChanged = { }
+                        ).onSuccess {
+                            Toast.makeText(context, "Бэкап восстановлен! Входим...", Toast.LENGTH_SHORT).show()
+                            navController.navigate("dashboard") {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        }.onFailure {
+                            Toast.makeText(context, "Ошибка применения: ${it.message}", Toast.LENGTH_LONG).show()
                         }
                     }.onFailure {
-                        Toast.makeText(context, "Ошибка применения: ${it.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Неверный формат файла", Toast.LENGTH_SHORT).show()
                     }
-                }.onFailure {
-                    Toast.makeText(context, "Неверный формат файла", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Ошибка чтения: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
-            } catch (e: Exception) {
-                Toast.makeText(context, "Ошибка чтения: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1056,7 +1090,7 @@ fun AuthMethodScreen(navController: NavController) {
             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1A237E).copy(alpha = 0.3f)),
             shape = RoundedCornerShape(12.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Row(
                 modifier = Modifier.padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -1118,14 +1152,14 @@ fun ManualLoginScreen(navController: NavController, repository: FunPayRepository
 
 suspend fun googleTranslate(text: String, targetLang: String = "ru"): String? = withContext(Dispatchers.IO) {
     try {
-        val encoded = java.net.URLEncoder.encode(text, "UTF-8")
-        val url = java.net.URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$targetLang&dt=t&q=$encoded")
-        val connection = url.openConnection() as java.net.HttpURLConnection
+        val encoded = URLEncoder.encode(text, "UTF-8")
+        val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$targetLang&dt=t&q=$encoded")
+        val connection = url.openConnection() as HttpURLConnection
         connection.setRequestProperty("User-Agent", "Mozilla/5.0")
         connection.connectTimeout = 5000
         connection.readTimeout = 5000
         val response = connection.inputStream.bufferedReader().use { it.readText() }
-        val arr = org.json.JSONArray(response)
+        val arr = JSONArray(response)
         val translations = arr.getJSONArray(0)
         val sb = StringBuilder()
         for (i in 0 until translations.length()) {
@@ -1410,9 +1444,9 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 WebView(ctx).apply {
-                    layoutParams = android.view.ViewGroup.LayoutParams(
-                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
                     )
 
                     settings.apply {
@@ -1443,7 +1477,7 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                     }
 
                     webViewClient = object : WebViewClient() {
-                        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
                             isLoading = true
                             currentUrl = url ?: currentUrl
@@ -1461,7 +1495,7 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                     }
                     webChromeClient = WebChromeClient()
 
-                    
+
                     setOnLongClickListener {
                         val hit = (it as? WebView)?.hitTestResult ?: return@setOnLongClickListener false
                         val value: String? = when (hit.type) {
@@ -1487,9 +1521,9 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
         )
     }
 
-    
-    
-    
+
+
+
     if (pickForConcurent) {
         val nodeId = remember(currentUrl) { ConcurentManager.parseNodeId(currentUrl) }
         val isChatPage = currentUrl.contains("/chat/")
@@ -1498,7 +1532,7 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
                 Column(horizontalAlignment = Alignment.End,
                     modifier = Modifier.padding(bottom = 24.dp, end = 16.dp)) {
-                    
+
                     if (isLotsPage) {
                         Surface(
                             color = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.95f),
@@ -1516,9 +1550,9 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                     }
                     ExtendedFloatingActionButton(
                         onClick = {
-                            
+
                             val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
-                            
+
                             val name = currentTitle.trim().split(Regex("\\s+"))
                                 .filter { it.isNotBlank() }.take(2).joinToString(" ")
                                 .ifBlank { "Чат $nodeId" }
@@ -1567,7 +1601,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
     val accountKey = activeAccount?.id ?: "none"
 
     DisposableEffect(Unit) {
-        
+
         val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("app_fully_disabled", false)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1596,9 +1630,9 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
             try {
                 val loadedChats = repository.getChats()
 
-                
-                
-                
+
+
+
                 val floodSettings = ChatFolderManager.getFloodChat(context)
                 chats = if (floodSettings.enabled) {
                     val flood = ChatItem(
@@ -1609,7 +1643,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                         avatarUrl = "https://funpay.com/img/layout/avatar.png",
                         date = ""
                     )
-                    
+
                     val existing = loadedChats.any { it.id == "flood" }
                     if (existing) loadedChats else (listOf(flood) + loadedChats)
                 } else {
@@ -1742,12 +1776,12 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                                     .weight(1f)
                                     .fillMaxHeight()
                                     .clickable(
-                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                        indication = null 
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
                                     ) { selectedTab = index },
                                 contentAlignment = Alignment.Center
                             ) {
-                                
+
                                 Box(
                                     modifier = Modifier
                                         .size(40.dp)
@@ -1826,15 +1860,15 @@ fun ChatListView(
 ) {
     val context = LocalContext.current
 
-    
+
     val banInfo by repository.banInfo.collectAsState()
     if (banInfo != null) {
         AccountBannedView(banInfo = banInfo!!, theme = theme, onNavigateToSupport = onNavigateToSupport)
-        return 
+        return
     }
 
-    
-    
+
+
     var mode by remember { mutableStateOf(ChatListMode.PERSONAL) }
 
     var folders by remember { mutableStateOf(ChatFolderManager.getFolders(context)) }
@@ -1844,7 +1878,7 @@ fun ChatListView(
     var showManageFolders by remember { mutableStateOf(false) }
     var showManageLabels by remember { mutableStateOf(false) }
 
-    
+
     var personalQuery by remember { mutableStateOf("") }
 
     val allFolderIds = remember(folders) { listOf(null) + folders.map { it.id } }
@@ -1889,7 +1923,7 @@ fun ChatListView(
 
     Column(modifier = Modifier.fillMaxSize()) {
 
-        
+
         ChatModeSegmentedControl(
             mode = mode,
             onModeChanged = { mode = it },
@@ -1898,12 +1932,12 @@ fun ChatListView(
 
         when (mode) {
             ChatListMode.GAMES -> {
-                
+
                 GameChatsView(navController = navController, theme = theme)
             }
 
             ChatListMode.PERSONAL -> {
-                
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1933,11 +1967,11 @@ fun ChatListView(
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
                     val pageFolderId = allFolderIds.getOrNull(page)
-                    
+
                     val floodSettings = remember(chats) { ChatFolderManager.getFloodChat(context) }
                     val filteredByFolder = remember(chats, pageFolderId, folders, chatLabels, floodSettings) {
-                        
-                        
+
+
                         fun chatInFolder(chatId: String, folderId: String?): Boolean {
                             if (folderId == null) return false
                             if (chatId == "flood" && floodSettings.enabled && floodSettings.folderId == folderId) return true
@@ -1945,8 +1979,8 @@ fun ChatListView(
                         }
                         when (pageFolderId) {
                             null -> {
-                                
-                                
+
+
                                 if (floodSettings.enabled && floodSettings.folderId != null) {
                                     chats.filter { it.id != "flood" }
                                 } else {
@@ -1960,7 +1994,7 @@ fun ChatListView(
                         }
                     }
 
-                    
+
                     val filtered = remember(filteredByFolder, personalQuery) {
                         if (personalQuery.isBlank()) filteredByFolder
                         else {
@@ -2067,8 +2101,8 @@ fun AccountBannedView(banInfo: BanInfo, theme: AppTheme, onNavigateToSupport: ()
                 .weight(1f, fill = false),
             colors = CardDefaults.cardColors(containerColor = Color(0xFFE53935).copy(alpha = 0.1f)),
             shape = RoundedCornerShape(16.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE53935).copy(alpha = 0.5f))
-        ) {
+            border = BorderStroke(1.dp, Color(0xFFE53935).copy(alpha = 0.5f))
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(
                 modifier = Modifier
                     .padding(20.dp)
@@ -2189,7 +2223,7 @@ fun ChatItemView(
             containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
         ),
         shape = RoundedCornerShape(theme.borderRadius.dp)
-    ) {
+        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -2415,7 +2449,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
 
             Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Schedule, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
@@ -2465,7 +2499,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                         Color(0xFFB71C1C).copy(alpha = 0.25f)
                     else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
                 ),
-                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.PowerSettingsNew, null,
@@ -2507,7 +2541,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                     pushNotifications = false
                                     repository.setSetting("push_notifications", false)
                                     try {
-                                        val nm = context.getSystemService(android.app.NotificationManager::class.java)
+                                        val nm = context.getSystemService(NotificationManager::class.java)
                                         nm?.cancelAll()
                                     } catch (_: Exception) {}
                                     Toast.makeText(context, "Приложение выключено. Фон и уведомления отключены.", Toast.LENGTH_LONG).show()
@@ -2659,7 +2693,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
                 shape = RoundedCornerShape(theme.borderRadius.dp)
-            ) {
+                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
@@ -2686,7 +2720,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
                 shape = RoundedCornerShape(theme.borderRadius.dp)
-            ) {
+                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Psychology, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
@@ -2882,7 +2916,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             }
             Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Campaign, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
@@ -2943,7 +2977,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
                 shape = RoundedCornerShape(theme.borderRadius.dp),
                 border = BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.3f))
-            ) {
+                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.CloudDownload, contentDescription = null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
                     Spacer(modifier = Modifier.width(16.dp))
@@ -2960,7 +2994,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             val floodFolders = remember { ChatFolderManager.getFolders(context) }
             Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
@@ -2988,7 +3022,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                     if (floodSettings.enabled) {
                         Spacer(Modifier.height(10.dp))
 
-                        
+
                         OutlinedTextField(
                             value = floodSettings.customDisplayName,
                             onValueChange = {
@@ -3008,7 +3042,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
 
                         Spacer(Modifier.height(4.dp))
 
-                        
+
                         Text("Группа (папка):", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(4.dp))
                         Row(
@@ -3055,7 +3089,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         item {
             Card(modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.ShortText, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
@@ -3074,7 +3108,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         item {
             Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("aos_settings") },
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(32.dp))
                     Spacer(modifier = Modifier.width(16.dp))
@@ -3091,7 +3125,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         item {
             Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("rmthub_search") },
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Public, contentDescription = null, tint = Color(0xFF288CD7), modifier = Modifier.size(32.dp))
                     Spacer(modifier = Modifier.width(16.dp))
@@ -3113,7 +3147,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         "confirm_settings" -> OrderConfirmDialog(repository, theme) { showDialog = null; confirmSettings = repository.getOrderConfirmSettings() }
         "auto_delivery" -> AutoDeliverySettingsDialog(theme = theme) { showDialog = null }
         "concurent" -> {
-            
+
             val prefsC = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
             val pendingNode = prefsC.getString("concurent_pending_node", null)
             val pendingName = prefsC.getString("concurent_pending_name", null)
@@ -3146,8 +3180,8 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         "raise_settings" -> RaiseSettingsDialog(repository = repository, theme = theme,
             onDismiss = {
                 showDialog = null
-                
-                
+
+
                 raiseInterval = repository.getRaiseInterval()
             })
         "feedback_bonus" -> FeedbackBonusDialog(repository = repository, theme = theme,
@@ -3175,7 +3209,7 @@ fun AutoTicketCard(
     val surface = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(theme.borderRadius.dp)) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.ConfirmationNumber, null, tint = accent, modifier = Modifier.size(28.dp))
@@ -3289,7 +3323,7 @@ fun OrderReminderCard(settings: OrderReminderSettings, theme: AppTheme, onToggle
     val surface = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(theme.borderRadius.dp)) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Timer, null, tint = accent, modifier = Modifier.size(28.dp))
@@ -3327,15 +3361,15 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
     val surface = ThemeManager.parseColor(theme.surfaceColor)
 
-    
-    
+
+
     var nextAtMs by remember { mutableStateOf(repository.prefs.let { p ->
         SmartRaise.minNextAt(p)
     }) }
     LaunchedEffect(smartMode) {
         while (true) {
             nextAtMs = SmartRaise.minNextAt(repository.prefs)
-            kotlinx.coroutines.delay(1000L)
+            delay(1000L)
         }
     }
 
@@ -3347,7 +3381,7 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
             modifier = Modifier.fillMaxWidth(0.95f).heightIn(max = 640.dp),
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3372,7 +3406,7 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
 
                 Spacer(Modifier.height(14.dp))
 
-                
+
                 ModeCard(
                     selected = smartMode,
                     title = "Умный режим (рекомендуется)",
@@ -3391,7 +3425,7 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
 
                 Spacer(Modifier.height(10.dp))
 
-                
+
                 ModeCard(
                     selected = !smartMode,
                     title = "Ручной режим",
@@ -3410,7 +3444,7 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
 
                 Spacer(Modifier.height(16.dp))
 
-                
+
                 val sliderAlpha = if (smartMode) 0.35f else 1f
                 Column(modifier = Modifier.alpha(sliderAlpha)) {
                     Text(
@@ -3437,13 +3471,13 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
 
                 Spacer(Modifier.height(18.dp))
 
-                
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.28f)),
                     shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.4f))
-                ) {
+                    border = BorderStroke(1.dp, accent.copy(alpha = 0.4f))
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Column(Modifier.padding(12.dp)) {
                         Text(
                             "Следующий разрешённый подъём",
@@ -3506,11 +3540,11 @@ private fun ModeCard(
             containerColor = if (selected) accent.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.18f)
         ),
         shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(
+        border = BorderStroke(
             if (selected) 2.dp else 1.dp,
             if (selected) accent else Color.White.copy(alpha = 0.12f)
         )
-    ) {
+        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Row(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.Top
@@ -3561,9 +3595,9 @@ fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
             modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.92f),
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                
+
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text(
                         "🎁 Бонусы за отзыв",
@@ -3575,7 +3609,7 @@ fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
 
                 Spacer(Modifier.height(8.dp))
 
-                
+
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -3601,7 +3635,7 @@ fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
                 HorizontalDivider(color = Color.White.copy(0.12f))
                 Spacer(Modifier.height(8.dp))
 
-                
+
                 OutlinedButton(
                     onClick = {
                         val new = FeedbackBonusRule(name = "Правило #${settings.rules.size + 1}")
@@ -3650,10 +3684,10 @@ fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
                                 },
                                 onCopy = {
                                     val clone = rule.copy(
-                                        id = java.util.UUID.randomUUID().toString(),
+                                        id = UUID.randomUUID().toString(),
                                         name = rule.name + " (копия)"
                                     )
-                                    
+
                                     val idx = settings.rules.indexOfFirst { it.id == rule.id }
                                     val list = settings.rules.toMutableList()
                                     list.add(idx + 1, clone)
@@ -3687,7 +3721,7 @@ private fun FeedbackBonusRuleCard(
     onDelete: () -> Unit
 ) {
     var imageUri by remember(rule.id) {
-        mutableStateOf<android.net.Uri?>(rule.imageUri?.let { android.net.Uri.parse(it) })
+        mutableStateOf<Uri?>(rule.imageUri?.let { Uri.parse(it) })
     }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -3703,13 +3737,13 @@ private fun FeedbackBonusRuleCard(
             containerColor = if (rule.enabled) Color.Black.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.08f)
         ),
         shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(
+        border = BorderStroke(
             1.dp,
             if (isEditing) accent else Color.White.copy(alpha = 0.1f)
         )
-    ) {
+        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Column(modifier = Modifier.padding(12.dp)) {
-            
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     if (isEditing) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
@@ -3757,7 +3791,7 @@ private fun FeedbackBonusRuleCard(
                 HorizontalDivider(color = Color.White.copy(0.08f))
                 Spacer(Modifier.height(10.dp))
 
-                
+
                 OutlinedTextField(
                     value = rule.name,
                     onValueChange = { onUpdate(rule.copy(name = it)) },
@@ -3772,7 +3806,7 @@ private fun FeedbackBonusRuleCard(
 
                 Spacer(Modifier.height(8.dp))
 
-                
+
                 Text("Отправлять при оценке ≥ ${rule.minStars}★", color = textPrimary, fontSize = 12.sp)
                 Slider(
                     value = rule.minStars.toFloat(),
@@ -3781,7 +3815,7 @@ private fun FeedbackBonusRuleCard(
                     colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
                 )
 
-                
+
                 Text("Текст бонуса:", color = textPrimary, fontSize = 12.sp)
                 OutlinedTextField(
                     value = rule.text,
@@ -3800,7 +3834,7 @@ private fun FeedbackBonusRuleCard(
                     )
                 )
 
-                
+
                 var showVarsHelp by remember { mutableStateOf(false) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -3823,7 +3857,7 @@ private fun FeedbackBonusRuleCard(
 
                 Spacer(Modifier.height(6.dp))
 
-                
+
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
                         onClick = {
@@ -3863,7 +3897,7 @@ private fun FeedbackBonusRuleCard(
                     }
                 }
 
-                
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = rule.oncePerOrder,
@@ -3877,7 +3911,7 @@ private fun FeedbackBonusRuleCard(
                 HorizontalDivider(color = Color.White.copy(0.08f))
                 Spacer(Modifier.height(10.dp))
 
-                
+
                 Text(
                     "Фильтры по лоту (необязательно)",
                     color = accent, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
@@ -3915,7 +3949,7 @@ private fun FeedbackBonusRuleCard(
 
                 Spacer(Modifier.height(12.dp))
 
-                
+
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedButton(
                         onClick = onCopy,
@@ -4099,7 +4133,7 @@ fun PremiumSettingCard(
 
 @Composable
 fun ImagePickerRow(
-    imageUri: android.net.Uri?,
+    imageUri: Uri?,
     theme: AppTheme,
     onPick: () -> Unit,
     onClear: () -> Unit
@@ -4108,7 +4142,7 @@ fun ImagePickerRow(
         OutlinedButton(
             onClick = onPick,
             modifier = Modifier.fillMaxWidth(),
-            border = androidx.compose.foundation.BorderStroke(
+            border = BorderStroke(
                 1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.5f)
             )
         ) {
@@ -4183,9 +4217,9 @@ fun ImageOrderPicker(
 @Composable
 fun AutoRefundDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
     var settings by remember { mutableStateOf(repository.getAutoRefundSettings()) }
-    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { Uri.parse(it) }) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        val localUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+        val localUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> Uri.parse(p) } ?: it }
         imageUri = localUri; settings = settings.copy(imageUri = localUri?.toString())
     }
 
@@ -4194,7 +4228,7 @@ fun AutoRefundDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: (
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp),
             modifier = Modifier.heightIn(max = 600.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка Авто-возврата", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -4296,7 +4330,7 @@ fun SettingCard(title: String, desc: String, enabled: Boolean, icon: ImageVector
             containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
         ),
         shape = RoundedCornerShape(theme.borderRadius.dp)
-    ) {
+        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = if (enabled) ThemeManager.parseColor(theme.accentColor) else ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(32.dp))
             Spacer(modifier = Modifier.width(16.dp))
@@ -4320,9 +4354,9 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
     var exactMatch by remember { mutableStateOf(false) }
     var caseSensitive by remember { mutableStateOf(false) }
     var callMode by remember { mutableStateOf(false) }
-    var callStyle by remember { mutableStateOf("notification") } 
+    var callStyle by remember { mutableStateOf("notification") }
     var callAutoReplyText by remember { mutableStateOf("Зову хозяина, он ответит в течение часа.") }
-    var newImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var newImageUri by remember { mutableStateOf<Uri?>(null) }
     var newImageFirst by remember { mutableStateOf(true) }
     var editingCmd by remember { mutableStateOf<AutoResponseCommand?>(null) }
 
@@ -4338,7 +4372,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
             modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -4388,7 +4422,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                 )
                 Spacer(Modifier.height(6.dp))
 
-                
+
                 var showVarsHelp by remember { mutableStateOf(false) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -4415,7 +4449,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                         modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
                         colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.25f)),
                         shape = RoundedCornerShape(8.dp)
-                    ) {
+                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                         Text(
                             FpPlaceholders.AVAILABLE_HELP_TEXT,
                             color = ThemeManager.parseColor(theme.textSecondaryColor),
@@ -4429,8 +4463,8 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = Color.Transparent),
                     shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f))
-                ) {
+                    border = BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f))
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                         Text(
                             if (editingCmd != null) "Параметры этой команды" else "Параметры новой команды",
@@ -4611,7 +4645,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                                     else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
                                 ),
                                 shape = RoundedCornerShape(10.dp)
-                            ) {
+                                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -4660,7 +4694,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                                         callMode = cmd.callMode
                                         callStyle = cmd.callStyle.ifBlank { "notification" }
                                         callAutoReplyText = cmd.callAutoReplyTextOrDefault
-                                        newImageUri = cmd.imageUri?.let { android.net.Uri.parse(it) }
+                                        newImageUri = cmd.imageUri?.let { Uri.parse(it) }
                                         newImageFirst = cmd.imageFirst
                                     }, modifier = Modifier.size(32.dp)) {
                                         Icon(Icons.Default.Edit, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(16.dp))
@@ -4701,18 +4735,18 @@ fun GreetingDialog(repository: FunPayRepository, settings: GreetingSettings, the
     var text by remember { mutableStateOf(settings.text) }
     var cooldown by remember { mutableIntStateOf(settings.cooldownHours) }
     var ignoreSystem by remember { mutableStateOf(settings.ignoreSystemMessages) }
-    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { Uri.parse(it) }) }
     var imageFirst by remember { mutableStateOf(settings.imageFirst) }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        imageUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+        imageUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> Uri.parse(p) } ?: it }
     }
 
     Dialog(onDismissRequest = {}) {
         Card(
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка приветствия", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -4800,7 +4834,7 @@ fun ReviewSettingsDialog(
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp),
             modifier = Modifier.heightIn(max = 700.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка ответов на отзывы", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -5010,8 +5044,8 @@ fun ReviewSettingsDialog(
                         }
                         HorizontalDivider(color = Color.White.copy(0.1f))
                     }
-                    
-                    
+
+
                     var showReviewVarsHelp by remember { mutableStateOf(false) }
                     Spacer(Modifier.height(6.dp))
                     Row(
@@ -5039,7 +5073,7 @@ fun ReviewSettingsDialog(
                             modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
                             colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.25f)),
                             shape = RoundedCornerShape(8.dp)
-                        ) {
+                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                             Text(
                                 FpPlaceholders.AVAILABLE_HELP_TEXT,
                                 color = ThemeManager.parseColor(theme.textSecondaryColor),
@@ -5050,10 +5084,10 @@ fun ReviewSettingsDialog(
                     }
                 }
 
-                
-                
-                
-                
+
+
+
+
 
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(
@@ -5119,6 +5153,39 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         }
     }
 
+    val receiveContentListener = remember {
+        ReceiveContentListener { transferableContent ->
+            if (transferableContent.hasMediaType(MediaType.Image)) {
+                val clipData = transferableContent.clipEntry.clipData
+                val uris = mutableListOf<Uri>()
+
+                for (i in 0 until clipData.itemCount) {
+                    val uri = clipData.getItemAt(i).uri
+                    if (uri != null) {
+                        try {
+                            context.contentResolver.takePersistableUriPermission(
+                                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {}
+                        uris.add(uri)
+                    }
+                }
+
+                if (uris.isNotEmpty()) {
+                    selectedMultipleUris = uris
+                    showMultiImageDialog = true
+                }
+
+                // Сообщаем системе, что мы успешно обработали (consume)
+                // все элементы, у которых есть URI, оставляя остальное (например, текст)
+                transferableContent.consume { it.uri != null }
+            } else {
+                // Если пришел просто текст, пропускаем его дальше
+                transferableContent
+            }
+        }
+    }
+
     if (showAiLimit) {
         AiLimitDialog(theme = theme, onDismiss = { showAiLimit = false }) {
             showAiLimit = false
@@ -5180,7 +5247,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             Card(
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
                 shape = RoundedCornerShape(theme.borderRadius.dp)
-            ) {
+                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         "Отправить ${selectedMultipleUris.size} фото?",
@@ -5266,7 +5333,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             Card(
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
                 shape = RoundedCornerShape(theme.borderRadius.dp)
-            ) {
+                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Отправить изображение?", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                     Spacer(modifier = Modifier.height(16.dp))
@@ -5313,15 +5380,46 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         }
     }
 
+    val backSwipeDensity = LocalDensity.current
+    var backSwipeOffset by remember { mutableStateOf(0f) }
+    val animatedBackOffset by animateFloatAsState(targetValue = backSwipeOffset, label = "backSwipe")
+    val backSwipeTriggerPx = with(backSwipeDensity) { 100.dp.toPx() }
+    val backSwipeEdgePx = with(backSwipeDensity) { 24.dp.toPx() }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .offset { IntOffset(animatedBackOffset.toInt(), 0) }
             .background(ThemeManager.parseColor(theme.backgroundColor))
             .imePadding()
             .pointerInput(Unit) {
-                detectTapGestures {
-                    selectionKey++
-                    focusManager.clearFocus()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // Срабатывает только если жест начат у левого края
+                    if (down.position.x > backSwipeEdgePx) return@awaitEachGesture
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var triggered = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (change.changedToUp()) {
+                            if (backSwipeOffset > backSwipeTriggerPx && !triggered) {
+                                triggered = true
+                                navController.popBackStack()
+                            }
+                            backSwipeOffset = 0f
+                            break
+                        }
+                        val dx = change.position.x - change.previousPosition.x
+                        val dy = change.position.y - change.previousPosition.y
+                        totalDx += dx
+                        totalDy += dy
+                        if (totalDx > abs(totalDy) * 1.5f && totalDx > 8f) {
+                            backSwipeOffset = (backSwipeOffset + dx).coerceAtLeast(0f)
+                            change.consume()
+                        }
+                    }
                 }
             }
     ) {
@@ -5593,7 +5691,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     modifier = Modifier.fillMaxWidth().padding(8.dp),
                     colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.8f)),
                     shape = RoundedCornerShape(8.dp)
-                ) {
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Column(modifier = Modifier.padding(8.dp)) {
                         if (info.lookingAtName != null) {
                             Row(
@@ -5719,6 +5817,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     theme = theme,
                     selectionKey = selectionKey,
                     isSelected = isSelected,
+                    isSelectionMode = isSelectionMode,
                     isSearchHighlight = isSearchHighlight,
                     searchQuery = if (showSearch) searchQuery else "",
                     translatedText = if (translateEnabled) translatedMessages[msg.id] else null,
@@ -5736,6 +5835,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         }
                     },
                     onReply = {
+                        replyToMessage = msg
+                    },
+                    onSwipeReply = {
                         replyToMessage = msg
                     },
                     onLinkClick = { link ->
@@ -5798,7 +5900,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         containerColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
                     ),
                     shape = RoundedCornerShape(12.dp)
-                ) {
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -5839,9 +5941,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                 .padding(8.dp),
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(24.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                
+
                 if (validationError != null) {
                     Text(
                         text = validationError!!,
@@ -5856,19 +5958,26 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(8.dp),
-                    verticalAlignment = Alignment.Bottom 
+                    verticalAlignment = Alignment.Bottom
                 ) {
-                    IconButton(onClick = {
-                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    }) {
-                        Icon(Icons.Default.Add, contentDescription = "Attach", tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                    Row(modifier = Modifier.padding(bottom = 8.dp)) {
+                        IconButton(
+                            onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Attach", tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                        }
                     }
+
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     Box(modifier = Modifier.weight(1f)) {
                         OutlinedTextField(
                             value = inputText,
                             onValueChange = { inputText = it },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .contentReceiver(receiveContentListener),
                             placeholder = { Text("Сообщение...", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
@@ -5880,7 +5989,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 cursorColor = ThemeManager.parseColor(theme.accentColor)
                             ),
                             shape = RoundedCornerShape(24.dp),
-                            maxLines = 6, 
+                            maxLines = 6,
                             trailingIcon = {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -5895,7 +6004,8 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                     }
                                     IconButton(onClick = {
                                         if (inputText.isNotBlank() && !isAiProcessing && validationError == null) {
-                                            if (!LicenseManager.consumeAiClick()) {
+                                            val isPro = LicenseManager.isProActive()
+                                            if (!isPro && !LicenseManager.consumeAiClick()) {
                                                 showAiLimit = true
                                                 return@IconButton
                                             }
@@ -6238,11 +6348,13 @@ fun OptimizedMessageBubble(
     theme: AppTheme,
     selectionKey: Int,
     isSelected: Boolean = false,
+    isSelectionMode: Boolean = false,
     isSearchHighlight: Boolean = false,
     searchQuery: String = "",
     onLongPress: () -> Unit = {},
     onTap: () -> Unit = {},
     onReply: () -> Unit = {},
+    onSwipeReply: () -> Unit = {},
     translatedText: String? = null,
     onLinkClick: (MessageLink) -> Unit,
     onImageClick: (String) -> Unit,
@@ -6261,7 +6373,7 @@ fun OptimizedMessageBubble(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = containerColor),
             shape = RoundedCornerShape(12.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(
@@ -6277,7 +6389,8 @@ fun OptimizedMessageBubble(
                 MessageTextWithLinks(
                     text = message.text, links = message.links,
                     textColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                    linkColor = badgeColor, selectionKey = selectionKey, onLinkClick = onLinkClick
+                    linkColor = badgeColor, selectionKey = selectionKey, onLinkClick = onLinkClick,
+                    selectionEnabled = isSelected && isSelectionMode
                 )
                 if (message.time.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
@@ -6308,16 +6421,66 @@ fun OptimizedMessageBubble(
         else -> Color.Transparent
     }
 
+    val density = LocalDensity.current
+    var swipeOffset by remember(message.id) { mutableStateOf(0f) }
+    val animatedOffset by animateFloatAsState(targetValue = swipeOffset, label = "swipeReply")
+    val swipeTriggerPx = with(density) { 64.dp.toPx() }
+    val swipeMaxPx = with(density) { 120.dp.toPx() }
+    val swipeReplyState = rememberUpdatedState(onSwipeReply)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(rowBg, RoundedCornerShape(8.dp))
+            .pointerInput(message.id, isSelectionMode, isSelected) {
+                if (isSelectionMode && isSelected) {
+                    detectTapGestures(onTap = { onTap() })
+                } else {
+                    detectTapGestures(
+                        onLongPress = { onLongPress() },
+                        onTap = { onTap() }
+                    )
+                }
+            }
             .pointerInput(message.id) {
-                detectTapGestures(
-                    onLongPress = { onLongPress() },
-                    onTap = { onTap() }
-                )
-            },
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var locked = false
+                    var triggered = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) {
+                            if (swipeOffset < -swipeTriggerPx && !triggered) {
+                                triggered = true
+                                swipeReplyState.value()
+                            }
+                            swipeOffset = 0f
+                            break
+                        }
+                        val dx = change.position.x - change.previousPosition.x
+                        val dy = change.position.y - change.previousPosition.y
+                        totalDx += dx
+                        totalDy += dy
+                        if (!locked) {
+                            if (abs(totalDy) > 12f && abs(totalDy) > abs(totalDx)) {
+                                // Это вертикальный жест (скролл) — выходим
+                                break
+                            }
+                            if (totalDx < -12f && abs(totalDx) > abs(totalDy) * 1.3f) {
+                                locked = true
+                            }
+                        }
+                        if (locked) {
+                            swipeOffset = (swipeOffset + dx).coerceIn(-swipeMaxPx, 0f)
+                            change.consume()
+                        }
+                    }
+                }
+            }
+            .offset { IntOffset(animatedOffset.toInt(), 0) },
         horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom
     ) {
@@ -6359,15 +6522,17 @@ fun OptimizedMessageBubble(
                     bottomStart = 16.dp, bottomEnd = 16.dp
                 ),
                 modifier = Modifier.widthIn(max = 280.dp)
-            ) {
+                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                 Column(
-                    modifier = Modifier.padding(12.dp).animateContentSize()
+                    modifier = Modifier.width(IntrinsicSize.Max).padding(12.dp).animateContentSize()
                 ) {
                     if (message.imageUrl != null) {
                         AsyncImage(
                             model = message.imageUrl, contentDescription = null,
                             modifier = Modifier
-                                .fillMaxWidth().height(150.dp)
+                                .widthIn(min = 200.dp)
+                                .fillMaxWidth()
+                                .height(150.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable { onImageClick(message.imageUrl) },
                             contentScale = ContentScale.Crop
@@ -6390,7 +6555,8 @@ fun OptimizedMessageBubble(
                                 textColor = ThemeManager.parseColor(theme.textPrimaryColor),
                                 linkColor = ThemeManager.parseColor(theme.accentColor),
                                 selectionKey = selectionKey, onLinkClick = onLinkClick,
-                                maxLines = if (isLong && !expanded) 8 else Int.MAX_VALUE
+                                maxLines = if (isLong && !expanded) 8 else Int.MAX_VALUE,
+                                selectionEnabled = isSelected && isSelectionMode
                             )
                         }
                         if (isLong) {
@@ -6417,7 +6583,7 @@ fun OptimizedMessageBubble(
                         }
                     }
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -6427,15 +6593,18 @@ fun OptimizedMessageBubble(
                                 color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.7f)
                             )
                         }
-                        // Кнопка быстрого ответа (только не в режиме выделения)
-                        IconButton(
-                            onClick = { onReply() },
-                            modifier = Modifier.size(24.dp)
+                        Box(
+                            modifier = Modifier
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { onReply() }
+                                .padding(2.dp)
                         ) {
                             Icon(
                                 Icons.Default.Reply, null,
                                 tint = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.5f),
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
@@ -6488,7 +6657,8 @@ fun MessageTextWithLinks(
     linkColor: Color,
     selectionKey: Int,
     onLinkClick: (MessageLink) -> Unit,
-    maxLines: Int = Int.MAX_VALUE
+    maxLines: Int = Int.MAX_VALUE,
+    selectionEnabled: Boolean = true
 ) {
     val annotatedString = buildAnnotatedString {
         if (links.isEmpty()) {
@@ -6517,31 +6687,37 @@ fun MessageTextWithLinks(
 
     val layoutResult = remember { mutableStateOf<TextLayoutResult?>(null) }
 
-    key(selectionKey) {
-        SelectionContainer {
-            Text(
-                text = annotatedString,
-                style = LocalTextStyle.current.copy(
-                    fontSize = 14.sp,
-                    color = textColor,
-                    lineHeight = 20.sp
-                ),
-                maxLines = maxLines,
-                overflow = if (maxLines < Int.MAX_VALUE) TextOverflow.Ellipsis else TextOverflow.Clip,
-                onTextLayout = { layoutResult.value = it },
-                modifier = Modifier.pointerInput(Unit) {
-                    detectTapGestures { offset ->
-                        layoutResult.value?.let { layout ->
-                            val position = layout.getOffsetForPosition(offset)
-                            annotatedString.getStringAnnotations(tag = "LINK", start = position, end = position)
-                                .firstOrNull()?.let { annotation ->
-                                    links.find { it.url == annotation.item }?.let(onLinkClick)
-                                }
-                        }
+    val textComposable: @Composable () -> Unit = {
+        Text(
+            text = annotatedString,
+            style = LocalTextStyle.current.copy(
+                fontSize = 14.sp,
+                color = textColor,
+                lineHeight = 20.sp
+            ),
+            maxLines = maxLines,
+            overflow = if (maxLines < Int.MAX_VALUE) TextOverflow.Ellipsis else TextOverflow.Clip,
+            onTextLayout = { layoutResult.value = it },
+            modifier = Modifier.pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    layoutResult.value?.let { layout ->
+                        val position = layout.getOffsetForPosition(offset)
+                        annotatedString.getStringAnnotations(tag = "LINK", start = position, end = position)
+                            .firstOrNull()?.let { annotation ->
+                                links.find { it.url == annotation.item }?.let(onLinkClick)
+                            }
                     }
                 }
-            )
+            }
+        )
+    }
+
+    if (selectionEnabled) {
+        key(selectionKey) {
+            SelectionContainer { textComposable() }
         }
+    } else {
+        textComposable()
     }
 }
 
@@ -6583,8 +6759,8 @@ fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayR
             isAdmin = isAdminMsg,
             badge = msg.badge,
             links = links,
-            
-            
+
+
             authorUserId = when {
                 msg.isMe || isSystemMsg -> null
                 !msg.authorId.isNullOrBlank() && msg.authorId != "0" -> msg.authorId
@@ -6714,12 +6890,12 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
     var isLoading by remember { mutableStateOf(true) }
     var showRefundDialog by remember { mutableStateOf(false) }
 
-    
+
     var showReviewReplyDialog by remember { mutableStateOf(false) }
     var showDeleteReplyDialog by remember { mutableStateOf(false) }
     var replyText by remember { mutableStateOf("") }
 
-    
+
     var showWriteReviewDialog by remember { mutableStateOf(false) }
     var showDeleteMyReviewDialog by remember { mutableStateOf(false) }
     var myReviewText by remember { mutableStateOf("") }
@@ -6766,7 +6942,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
         )
     }
 
-    
+
     if (showReviewReplyDialog) {
         AlertDialog(
             onDismissRequest = { showReviewReplyDialog = false },
@@ -6798,7 +6974,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
         )
     }
 
-    
+
     if (showDeleteReplyDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteReplyDialog = false },
@@ -6823,7 +6999,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
         )
     }
 
-    
+
     if (showWriteReviewDialog) {
         AlertDialog(
             onDismissRequest = { showWriteReviewDialog = false },
@@ -6835,7 +7011,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
             },
             text = {
                 Column {
-                    
+
                     Text("Оценка:", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -6893,7 +7069,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
         )
     }
 
-    
+
     if (showDeleteMyReviewDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteMyReviewDialog = false },
@@ -6958,7 +7134,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
                     shape = RoundedCornerShape(theme.borderRadius.dp)
-                ) {
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Column(modifier = Modifier.padding(16.dp)) {
 
                         Text(
@@ -6997,7 +7173,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        
+
                         val partnerLabel = if (order.isBuyer) "Продавец" else "Покупатель"
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -7059,15 +7235,15 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                
+
                 if (order.isBuyer) {
-                    
+
                     if (order.hasReview) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)),
                             shape = RoundedCornerShape(theme.borderRadius.dp)
-                        ) {
+                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(
                                     "Ваш отзыв",
@@ -7075,7 +7251,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(Modifier.height(4.dp))
-                                
+
                                 Row {
                                     val starColor = when (order.reviewRating) {
                                         5 -> Color(0xFF4CAF50); 4 -> Color(0xFF8BC34A)
@@ -7119,7 +7295,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                             }
                         }
                     } else {
-                        
+
                         Button(
                             onClick = {
                                 myReviewText   = ""
@@ -7137,13 +7313,13 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                 } else {
-                    
+
                     if (order.hasReview) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)),
                             shape = RoundedCornerShape(theme.borderRadius.dp)
-                        ) {
+                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text("Отзыв покупателя (${order.reviewRating}★)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold)
                                 Text(order.reviewText, color = ThemeManager.parseColor(theme.textPrimaryColor), fontStyle = FontStyle.Italic)
@@ -7212,14 +7388,14 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
     var editingId by remember { mutableStateOf<String?>(null) }
     var formName by remember { mutableStateOf("") }
     var formText by remember { mutableStateOf("") }
-    var formImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var formImageUri by remember { mutableStateOf<Uri?>(null) }
     var formImageFirst by remember { mutableStateOf(true) }
     var showForm by remember { mutableStateOf(false) }
 
     fun resetForm() { editingId = null; formName = ""; formText = ""; formImageUri = null; formImageFirst = true; showForm = false }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        formImageUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+        formImageUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> Uri.parse(p) } ?: it }
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -7227,7 +7403,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
             modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.92f),
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
 
 
@@ -7278,7 +7454,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(0.5f)),
                                     shape = RoundedCornerShape(12.dp)
-                                ) {
+                                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -7298,7 +7474,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                                             editingId = template.id
                                             formName = template.name
                                             formText = template.text
-                                            formImageUri = template.imageUri?.let { android.net.Uri.parse(it) }
+                                            formImageUri = template.imageUri?.let { Uri.parse(it) }
                                             formImageFirst = template.imageFirst
                                             showForm = true
                                         }, modifier = Modifier.size(32.dp)) {
@@ -7373,7 +7549,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                                 val hasContent = formName.isNotBlank() && (formText.isNotBlank() || formImageUri != null)
                                 if (hasContent) {
                                     val tpl = MessageTemplate(
-                                        id = editingId ?: java.util.UUID.randomUUID().toString(),
+                                        id = editingId ?: UUID.randomUUID().toString(),
                                         name = formName.trim(), text = formText.trim(),
                                         imageUri = formImageUri?.toString(), imageFirst = formImageFirst
                                     )
@@ -7395,10 +7571,10 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
 @Composable
 fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () -> Unit) {
     var settings by remember { mutableStateOf(repository.getOrderConfirmSettings()) }
-    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { Uri.parse(it) }) }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        val localUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+        val localUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> Uri.parse(p) } ?: it }
         imageUri = localUri
         settings = settings.copy(imageUri = localUri?.toString())
     }
@@ -7407,7 +7583,7 @@ fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss:
         Card(
             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка просьбы отзыва", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -7916,7 +8092,7 @@ fun DonationScreen(theme: AppTheme) {
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
                         shape = RoundedCornerShape(12.dp)
-                    ) {
+                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text("System Model: Lenovo 20AV005HMS", color = Color(0xFF00E676), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                             Text("CPU: Intel Core i5-4200M @ 2.60GHz", color = Color(0xFF00E676), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -8285,7 +8461,7 @@ data class BusyModeSettings(
     @SerializedName("enabledAt") val enabledAt: Long = 0L,
     @SerializedName("imageUri") val imageUri: String? = null,
     @SerializedName("imageFirst") val imageFirst: Boolean = true,
-    
+
     @SerializedName("skipRefundIfAutoDelivery") val skipRefundIfAutoDelivery: Boolean = false,
     @SerializedName("autoDeliveryMessageEnabled") val autoDeliveryMessageEnabled: Boolean = false,
     @SerializedName("autoDeliveryMessage") val autoDeliveryMessage: String = "Спасибо за заказ! Товар уже выдан автоматически. Если возникнут вопросы — отвечу, как освобожусь."
@@ -8299,7 +8475,7 @@ data class FloodChatSettings(
 )
 
 data class BusyScheduleSlot(
-    @SerializedName("id") val id: String = java.util.UUID.randomUUID().toString(),
+    @SerializedName("id") val id: String = UUID.randomUUID().toString(),
     @SerializedName("name") val name: String = "Рабочее время",
     @SerializedName("days") val days: List<Int> = listOf(1, 2, 3, 4, 5),
     @SerializedName("startMinute") val startMinute: Int = 9 * 60,
@@ -8355,16 +8531,16 @@ object ChatFolderManager {
     }
     fun saveBusySchedule(context: Context, v: BusyScheduleSettings) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("busy_schedule", gson.toJson(v)).apply()
 
-    fun getActiveScheduleSlot(context: Context, now: java.util.Calendar = java.util.Calendar.getInstance()): BusyScheduleSlot? {
+    fun getActiveScheduleSlot(context: Context, now: Calendar = Calendar.getInstance()): BusyScheduleSlot? {
         val settings = getBusySchedule(context)
         if (!settings.enabled || settings.slots.isEmpty()) return null
 
-        
-        
-        val rawDow = now.get(java.util.Calendar.DAY_OF_WEEK)
-        val isoToday = if (rawDow == java.util.Calendar.SUNDAY) 7 else rawDow - 1
+
+
+        val rawDow = now.get(Calendar.DAY_OF_WEEK)
+        val isoToday = if (rawDow == Calendar.SUNDAY) 7 else rawDow - 1
         val isoYesterday = if (isoToday == 1) 7 else isoToday - 1
-        val minuteOfDay = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+        val minuteOfDay = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
 
         for (slot in settings.slots) {
             if (slot.days.isEmpty()) continue
@@ -8375,7 +8551,7 @@ object ChatFolderManager {
                     return slot
                 }
             } else {
-                
+
                 val startedYesterday = isoYesterday in slot.days && minuteOfDay < slot.endMinute
                 val startedToday = isoToday in slot.days && minuteOfDay >= slot.startMinute
                 if (startedYesterday || startedToday) return slot
@@ -8445,7 +8621,7 @@ fun BusyModeCard(settings: BusyModeSettings, onToggle: () -> Unit, onConfigure: 
             .border(if (settings.enabled) 1.5.dp else 0.dp, borderColor, RoundedCornerShape(theme.borderRadius.dp)),
         colors = CardDefaults.cardColors(containerColor = cardColor),
         shape = RoundedCornerShape(theme.borderRadius.dp)
-    ) {
+        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Row(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.DoNotDisturb, null, tint = if (settings.enabled) busyColor else ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(26.dp))
             Spacer(Modifier.width(14.dp))
@@ -8484,7 +8660,7 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
     var keepRaise by remember { mutableStateOf(settings.keepRaise) }
     var keepAutoResp by remember { mutableStateOf(settings.keepAutoResponse) }
     var keepGreeting by remember { mutableStateOf(settings.keepGreeting) }
-    var imageUri by remember { mutableStateOf(settings.imageUri?.let { android.net.Uri.parse(it) }) }
+    var imageUri by remember { mutableStateOf(settings.imageUri?.let { Uri.parse(it) }) }
     var imageFirst by remember { mutableStateOf(settings.imageFirst) }
     var skipRefundIfAutoDelivery by remember { mutableStateOf(settings.skipRefundIfAutoDelivery) }
     var autoDeliveryMessageEnabled by remember { mutableStateOf(settings.autoDeliveryMessageEnabled) }
@@ -8492,7 +8668,7 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
 
     val context = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        imageUri = uri?.let { FunPayRepository(context).copyPickedImageToStorage(it)?.let { p -> android.net.Uri.parse(p) } ?: it }
+        imageUri = uri?.let { FunPayRepository(context).copyPickedImageToStorage(it)?.let { p -> Uri.parse(p) } ?: it }
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -9066,7 +9242,7 @@ fun BusyScheduleDialog(
             modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -9110,7 +9286,7 @@ fun BusyScheduleDialog(
                                 modifier = Modifier.fillMaxWidth().clickable { editingSlot = slot },
                                 colors = CardDefaults.cardColors(containerColor = surface.copy(alpha = 0.6f)),
                                 shape = RoundedCornerShape(10.dp)
-                            ) {
+                                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                 Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(slot.name.ifBlank { "(без названия)" }, fontWeight = FontWeight.SemiBold, color = textPrimary, fontSize = 14.sp)
@@ -9190,7 +9366,7 @@ fun BusyScheduleSlotEditor(
             modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Слот расписания", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 17.sp, modifier = Modifier.weight(1f))
@@ -9404,7 +9580,7 @@ fun ReadMarkSettingsDialog(
     }
 
     Dialog(onDismissRequest = { onSave(s); onDismiss() }) {
-        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface)) {
+        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.VisibilityOff, null, tint = accent, modifier = Modifier.size(24.dp))
@@ -9526,7 +9702,7 @@ fun AiVarPermissionsDialog(
                         varName,
                         color = accent,
                         fontSize = 11.sp,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontFamily = FontFamily.Monospace,
                         modifier = Modifier
                             .background(accent.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
                             .padding(horizontal = 5.dp, vertical = 2.dp)
@@ -9552,7 +9728,7 @@ fun AiVarPermissionsDialog(
     }
 
     Dialog(onDismissRequest = { onSave(s); onDismiss() }) {
-        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface)) {
+        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
             Column(modifier = Modifier.padding(20.dp)) {
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -9570,7 +9746,7 @@ fun AiVarPermissionsDialog(
                     colors = CardDefaults.cardColors(containerColor = accent.copy(alpha = 0.1f)),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
-                ) {
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Text(
                         "⚠️ Данные настройки не рекомендуются модифицировать обычным пользователям.",
                         modifier = Modifier.padding(10.dp),
@@ -9580,7 +9756,7 @@ fun AiVarPermissionsDialog(
 
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()).weight(1f, fill = false)) {
 
-                    
+
                     SectionHeader(
                         "ИИ-переписыватель (кнопка ✨ в чате)",
                         "Данные, которые ИИ видит когда ты жмёшь «переписать черновик»"
@@ -9610,7 +9786,7 @@ fun AiVarPermissionsDialog(
                         "Название товара/услуги из заказа",
                         s.allowLotName) { s = s.copy(allowLotName = !s.allowLotName) }
 
-                    
+
                     SectionHeader(
                         "ИИ-автоответ на отзывы",
                         "Данные, которые ИИ видит когда генерирует ответ на отзыв покупателя"
@@ -9628,7 +9804,7 @@ fun AiVarPermissionsDialog(
                         colors = CardDefaults.cardColors(containerColor = textSecondary.copy(alpha = 0.08f)),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-                    ) {
+                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                         Text(
                             "ℹ️ Название лота и дата для автоответов на отзывы настраиваются в разделе «Автоответ на отзывы → Настроить»",
                             modifier = Modifier.padding(10.dp),
@@ -9693,7 +9869,7 @@ fun LotScreen(
         loading = false
     }
 
-    
+
     val totalLocalPrice = (selectedMethod?.priceValue ?: 0.0) * amount
     val localBalance = if (selectedMethod?.unit == "₽" || selectedMethod?.unit == "RUB") lot?.balanceRub ?: 0.0 else lot?.balanceUsd ?: 0.0
     val localDeducted = minOf(localBalance, totalLocalPrice)
@@ -9756,14 +9932,14 @@ fun LotScreen(
                     }
                 }
 
-                
+
                 draftOrder != null -> {
                     Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center) {
                         Card(
                             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier.fillMaxWidth()
-                        ) {
+                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                             Column(Modifier.padding(20.dp)) {
                                 Text(draftOrder!!.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = ThemeManager.parseColor(theme.textPrimaryColor))
                                 Spacer(Modifier.height(16.dp))
@@ -9836,7 +10012,7 @@ fun LotScreen(
                     }
                 }
 
-                
+
                 lot != null -> {
                     val l = lot!!
                     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -9863,7 +10039,7 @@ fun LotScreen(
 
                         if (l.params.isNotEmpty()) {
                             item {
-                                Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(theme.borderRadius.dp)) {
+                                Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                     Column(Modifier.fillMaxWidth().padding(12.dp)) {
                                         l.params.forEach { (k, v) ->
                                             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
@@ -9886,7 +10062,7 @@ fun LotScreen(
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 colors = OutlinedTextFieldDefaults.colors(
                                     focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
                                     unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
@@ -9896,7 +10072,7 @@ fun LotScreen(
                         }
 
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f))) {
+                            Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                         Text("С баланса спишется:", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp)
@@ -9921,8 +10097,8 @@ fun LotScreen(
                                 modifier = Modifier.fillMaxWidth().clickable { selectedMethod = m },
                                 colors = CardDefaults.cardColors(containerColor = bg),
                                 shape = RoundedCornerShape(theme.borderRadius.dp),
-                                border = if (selected) androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor)) else null
-                            ) {
+                                border = if (selected) BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor)) else null
+                                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                 Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text(m.title, modifier = Modifier.weight(1f), color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
                                     Text(m.priceStr, color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -9932,7 +10108,7 @@ fun LotScreen(
 
                         if (errorMessage != null) {
                             item {
-                                Card(colors = CardDefaults.cardColors(containerColor = Color.Red.copy(alpha = 0.15f))) {
+                                Card(colors = CardDefaults.cardColors(containerColor = Color.Red.copy(alpha = 0.15f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                     Text(errorMessage!!, modifier = Modifier.padding(12.dp), color = Color.Red, fontSize = 12.sp)
                                 }
                             }
@@ -9996,9 +10172,9 @@ fun BuyerHistoryScreen(
         isLoading  = true
         loadError  = null
         try {
-            
+
             var result = repository.getOrdersWithBuyer(partnerName, isSales = true)
-            
+
             if (result.isEmpty()) result = repository.getOrdersWithBuyer(partnerName, isSales = false)
             items = result
         } catch (e: Exception) {
@@ -10070,7 +10246,7 @@ fun BuyerHistoryScreen(
                         },
                         colors = CardDefaults.cardColors(containerColor = surf),
                         shape = RoundedCornerShape(theme.borderRadius.dp)
-                    ) {
+                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -10130,7 +10306,7 @@ fun SalesScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val prefs = remember {
-        context.getSharedPreferences("sales_cache", android.content.Context.MODE_PRIVATE)
+        context.getSharedPreferences("sales_cache", Context.MODE_PRIVATE)
     }
 
     var allSales   by remember { mutableStateOf(repository.cachedSales) }
@@ -10170,7 +10346,7 @@ fun SalesScreen(
 
         val alreadyFull = repository.isSalesFullLoaded
 
-        
+
         if (!isUserRefresh && alreadyFull && repository.cachedSales.isNotEmpty()) {
             allSales = repository.cachedSales
             isFullLoad = true
@@ -10182,13 +10358,13 @@ fun SalesScreen(
             isLoading = true
             errorMsg = null
 
-            
+
             val buf = repository.cachedSales.toMutableList()
             var token: String? = null
 
-            
-            
-            
+
+
+
             val stopOnDuplicate = alreadyFull
 
             while (true) {
@@ -10209,14 +10385,14 @@ fun SalesScreen(
                 }
 
                 if (stopOnDuplicate && newOrders.isNotEmpty()) {
-                    
+
                     buf.addAll(0, newOrders)
                 } else {
-                    
+
                     buf.addAll(newOrders)
                 }
 
-                
+
                 allSales = buf.toList()
                 totalLoaded = buf.size
 
@@ -10225,7 +10401,7 @@ fun SalesScreen(
                     repository.isSalesFullLoaded = true
                     break
                 }
-                kotlinx.coroutines.delay(400)
+                delay(400)
             }
 
             prefs.edit().putLong("last_load", System.currentTimeMillis()).apply()
@@ -10241,20 +10417,20 @@ fun SalesScreen(
         else (System.currentTimeMillis() - lastLoad) / 3_600_000L
     }
 
-    
+
     LaunchedEffect(Unit) { startLoad(isUserRefresh = false) }
 
-    
+
     LaunchedEffect(Unit) {
         while (true) {
-            kotlinx.coroutines.delay(36_000_000L)
+            delay(36_000_000L)
             startLoad(isUserRefresh = true)
         }
     }
 
     Column(Modifier.fillMaxSize().background(bg)) {
 
-        
+
         Surface(color = surf, modifier = Modifier.fillMaxWidth()) {
             Column {
                 Row(
@@ -10349,7 +10525,7 @@ fun SalesScreen(
             }
         }
 
-        
+
         when {
             allSales.isEmpty() && isLoading -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -10390,7 +10566,7 @@ fun SalesScreen(
                 LazyColumn(Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 16.dp)) {
 
-                    
+
                     filteredStats?.let { st ->
                         item {
                             Column(Modifier.fillMaxWidth().padding(12.dp)) {
@@ -10399,14 +10575,15 @@ fun SalesScreen(
                                     colors = CardDefaults.cardColors(
                                         containerColor = accent.copy(alpha = 0.12f)),
                                     shape = RoundedCornerShape(12.dp)
-                                ) {
+                                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                     Row(Modifier.padding(14.dp),
                                         verticalAlignment = Alignment.CenterVertically) {
                                         Text("💰", fontSize = 28.sp)
                                         Spacer(Modifier.width(12.dp))
                                         Column {
                                             Text(
-                                                String.format(java.util.Locale.US,
+                                                String.format(
+                                                    Locale.US,
                                                     "%.2f ₽", st.totalRevenue),
                                                 color = accent, fontSize = 22.sp,
                                                 fontWeight = FontWeight.Bold
@@ -10435,10 +10612,10 @@ fun SalesScreen(
                                     SalesStatCard(Modifier.weight(1f), "👥",
                                         "${st.uniqueBuyers}", "Покупателей", surf, textPri, textSec)
                                     SalesStatCard(Modifier.weight(1f), "📈",
-                                        String.format(java.util.Locale.US, "%.2f ₽", st.avgCheck),
+                                        String.format(Locale.US, "%.2f ₽", st.avgCheck),
                                         "Ср. чек", surf, textPri, textSec)
                                     SalesStatCard(Modifier.weight(1f), "💎",
-                                        String.format(java.util.Locale.US, "%.2f ₽", st.topSale),
+                                        String.format(Locale.US, "%.2f ₽", st.topSale),
                                         "Макс.", surf, textPri, textSec)
                                 }
 
@@ -10450,7 +10627,7 @@ fun SalesScreen(
                                     },
                                         colors = CardDefaults.cardColors(
                                             containerColor = Color(0xFFFFA000).copy(alpha = 0.12f)),
-                                        shape = RoundedCornerShape(8.dp)) {
+                                        shape = RoundedCornerShape(8.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                         Row(Modifier.padding(10.dp),
                                             verticalAlignment = Alignment.CenterVertically) {
                                             Text("⏳", fontSize = 16.sp)
@@ -10462,7 +10639,8 @@ fun SalesScreen(
                                                     fontWeight = FontWeight.Bold, fontSize = 12.sp
                                                 )
                                                 Text(
-                                                    String.format(java.util.Locale.US,
+                                                    String.format(
+                                                        Locale.US,
                                                         "%.2f ₽ — ожидают", st.unconfirmedRevenue),
                                                     color = textSec, fontSize = 11.sp
                                                 )
@@ -10475,7 +10653,7 @@ fun SalesScreen(
                                     Spacer(Modifier.height(8.dp))
                                     Card(Modifier.fillMaxWidth(),
                                         colors = CardDefaults.cardColors(containerColor = surf),
-                                        shape = RoundedCornerShape(8.dp)) {
+                                        shape = RoundedCornerShape(8.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                                         Column(Modifier.padding(10.dp)) {
                                             if (st.topBuyer.isNotEmpty()) {
                                                 Row(Modifier.fillMaxWidth()) {
@@ -10518,7 +10696,7 @@ fun SalesScreen(
                         }
                     }
 
-                    
+
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth()
@@ -10536,7 +10714,7 @@ fun SalesScreen(
                         }
                     }
 
-                    
+
                     items(
                         items = filteredSales,
                         key = { saleItem: FunPayRepository.SaleItem -> saleItem.orderId }
@@ -10554,7 +10732,7 @@ fun SalesScreen(
                                 .clickable { navController.navigate("order/${sale.orderId}") },
                             colors = CardDefaults.cardColors(containerColor = surf),
                             shape = RoundedCornerShape(10.dp)
-                        ) {
+                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                             Row(Modifier.padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
                                 if (sale.buyerAvatar.isNotEmpty()) {
@@ -10643,7 +10821,7 @@ private fun SalesStatCard(
         modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = surf),
         shape = RoundedCornerShape(10.dp)
-    ) {
+        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
         Column(Modifier.padding(8.dp)) {
             Text(icon, fontSize = 16.sp)
             Text(value, color = textPri, fontWeight = FontWeight.Bold,
@@ -10704,7 +10882,7 @@ object CatalogApiManager {
 
             val jsonString = gson.toJson(payload)
 
-            
+
             if (jsonString.toByteArray(Charsets.UTF_8).size > 1_000_000) {
                 return@withContext Result.failure(Exception("Файл слишком большой. Лимит 1 МБ."))
             }
@@ -10812,7 +10990,7 @@ fun CatalogMainScreen(navController: NavController, theme: AppTheme) {
                             },
                             colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(0.8f)),
                             shape = RoundedCornerShape(12.dp)
-                        ) {
+                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                             Column(Modifier.padding(16.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(pack.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.weight(1f))
@@ -10872,7 +11050,7 @@ fun LazyListScope.dataTreeEditor(
                     colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent)
-                ) {
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Column(Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
                             Checkbox(
@@ -10907,7 +11085,7 @@ fun LazyListScope.dataTreeEditor(
                                             unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)
                                         ),
                                         maxLines = 3,
-                                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
+                                        textStyle = TextStyle(fontSize = 13.sp)
                                     )
                                 } else if (k != "id" && v is Boolean) {
                                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -10939,7 +11117,7 @@ fun LazyListScope.dataTreeEditor(
                     colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent)
-                ) {
+                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
                     Column(Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
                             Checkbox(
@@ -10968,7 +11146,7 @@ fun LazyListScope.dataTreeEditor(
                                             unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)
                                         ),
                                         maxLines = 3,
-                                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp)
+                                        textStyle = TextStyle(fontSize = 13.sp)
                                     )
                                 } else if (k != "id" && v is Boolean) {
                                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -11119,7 +11297,7 @@ fun CatalogExportScreen(navController: NavController, repository: FunPayReposito
     val scope = rememberCoroutineScope()
     val gson = Gson()
 
-    
+
     var editableData by remember { mutableStateOf<MutableMap<String, Any>>(mutableMapOf()) }
     val selectedItems = remember { mutableStateMapOf<String, Boolean>() }
     var isLoaded by remember { mutableStateOf(false) }
@@ -11138,13 +11316,13 @@ fun CatalogExportScreen(navController: NavController, repository: FunPayReposito
         rawData["greeting_settings"] = repository.getGreetingSettings()
         rawData["order_confirm_settings"] = repository.getOrderConfirmSettings()
 
-        
+
         val jsonStr = gson.toJson(rawData)
         val type = object : TypeToken<Map<String, Any>>() {}.type
         val parsedMap: Map<String, Any> = gson.fromJson(jsonStr, type)
         editableData = parsedMap.toMutableMap()
 
-        
+
         parsedMap.forEach { (cat, items) ->
             if (items is List<*>) {
                 items.forEachIndexed { i, _ -> selectedItems["${cat}_$i"] = false }
@@ -11247,6 +11425,7 @@ fun CatalogExportScreen(navController: NavController, repository: FunPayReposito
         }
     }
 }
+
 
 fun translateCategoryName(cat: String): String = when (cat) {
     "templates" -> "Шаблоны сообщений"

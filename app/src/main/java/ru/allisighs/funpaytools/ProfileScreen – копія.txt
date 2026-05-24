@@ -648,11 +648,7 @@ fun ProfileScreen(
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
 
-                Box(modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(theme.borderRadius.dp))
-                    .background(ThemeManager.parseColor(theme.surfaceColor))
-                ) {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
                     Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box {
                             AsyncImage(model = user.avatarUrl, contentDescription = null, modifier = Modifier.size(72.dp).clip(CircleShape).border(2.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f), CircleShape), contentScale = ContentScale.Crop)
@@ -692,12 +688,12 @@ fun ProfileScreen(
                     StatMiniCard(modifier = Modifier.weight(1f), title = "Покупки", value = "${user.activePurchases}", icon = Icons.Default.ShoppingCart, theme = theme)
                 }
 
-                Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                Button(onClick = onLogout, modifier = Modifier.fillMaxWidth().height(42.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB71C1C).copy(alpha = 0.15f)), shape = RoundedCornerShape(12.dp), elevation = ButtonDefaults.buttonElevation(0.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.Logout, null, tint = Color(0xFFE53935), modifier = Modifier.size(18.dp))
+                Button(onClick = onLogout, modifier = Modifier.fillMaxWidth().height(36.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB71C1C).copy(alpha = 0.15f)), shape = RoundedCornerShape(10.dp), elevation = ButtonDefaults.buttonElevation(0.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.Logout, null, tint = Color(0xFFE53935), modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Выйти из аккаунта", color = Color(0xFFE53935), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("Выйти из аккаунта", color = Color(0xFFE53935), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }
@@ -846,8 +842,7 @@ fun DynamicAvatarDialog(
             Card(
                 modifier = Modifier.fillMaxWidth(0.92f).fillMaxHeight(0.85f),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                shape = RoundedCornerShape(theme.borderRadius.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                shape = RoundedCornerShape(theme.borderRadius.dp)
             ) {
                 Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -876,8 +871,7 @@ fun DynamicAvatarDialog(
                                         else ThemeManager.parseColor(theme.surfaceColor)
                                     ),
                                     border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor)) else null,
-                                    shape = RoundedCornerShape(8.dp),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                                    shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
 
@@ -928,8 +922,7 @@ fun DynamicAvatarDialog(
                     .then(if (expandDynamicSettings) Modifier.fillMaxHeight(0.94f) else Modifier.heightIn(max = 480.dp))
                     .animateContentSize(),
                 colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                shape = RoundedCornerShape(theme.borderRadius.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                shape = RoundedCornerShape(theme.borderRadius.dp)
             ) {
                 Column(modifier = Modifier.then(if (expandDynamicSettings) Modifier.fillMaxSize() else Modifier.fillMaxWidth()).padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -968,7 +961,7 @@ fun DynamicAvatarDialog(
                         if (expandDynamicSettings) {
 
                             item {
-                                Card(modifier = Modifier.fillMaxWidth().animateContentSize(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.05f)), border = androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.3f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                Card(modifier = Modifier.fillMaxWidth().animateContentSize(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.05f)), border = androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.3f))) {
                                     Column(Modifier.padding(14.dp).fillMaxWidth()) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Column(modifier = Modifier.weight(1f)) {
@@ -994,7 +987,7 @@ fun DynamicAvatarDialog(
 
 
                             item {
-                                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFF1B5E20).copy(alpha = 0.12f)), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4CAF50).copy(alpha = 0.4f)), shape = RoundedCornerShape(12.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFF1B5E20).copy(alpha = 0.12f)), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4CAF50).copy(alpha = 0.4f)), shape = RoundedCornerShape(12.dp)) {
                                     Column(Modifier.padding(14.dp)) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Column(Modifier.weight(1f)) {
@@ -1115,7 +1108,7 @@ fun DynamicAvatarDialog(
                             if (selEl != null) {
                                 val index = settings.elements.indexOf(selEl)
                                 item {
-                                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.Black.copy(0.3f)), border = androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.Black.copy(0.3f)), border = androidx.compose.foundation.BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor))) {
                                         Column(Modifier.padding(12.dp)) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text("Слой: ${selEl.type}", color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -1184,7 +1177,7 @@ fun DynamicAvatarDialog(
 
 
                                                 Spacer(Modifier.height(8.dp))
-                                                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f)), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)), shape = RoundedCornerShape(10.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f)), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)), shape = RoundedCornerShape(10.dp)) {
                                                     Column(Modifier.padding(12.dp)) {
                                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                                             Text("Фон", fontSize = 13.sp, color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
@@ -1539,7 +1532,7 @@ fun DetailedBalanceCard(totalBalance: String, totalVal: Double, activeSum: Doubl
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
-    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(surfaceColor)) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = surfaceColor), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.AccountBalanceWallet, null, tint = accentColor, modifier = Modifier.size(20.dp))
@@ -1562,7 +1555,7 @@ fun DetailedBalanceCard(totalBalance: String, totalVal: Double, activeSum: Doubl
                 }
                 if (nextUnlock != null) {
                     Spacer(Modifier.height(16.dp))
-                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFA000).copy(alpha = 0.1f)), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFA000).copy(alpha = 0.1f)), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
                         Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.HourglassEmpty, null, tint = Color(0xFFFFA000), modifier = Modifier.size(16.dp)); Spacer(Modifier.width(8.dp))
                             Column {
@@ -1582,26 +1575,22 @@ fun DetailedBalanceCard(totalBalance: String, totalVal: Double, activeSum: Doubl
 
 @Composable
 fun ActionGridItem(modifier: Modifier = Modifier, title: String, subtitle: String, icon: ImageVector, iconTint: Color, bgGradient: List<Color>, theme: AppTheme, onClick: () -> Unit) {
-    Box(modifier = modifier
-        .height(100.dp)
-        .clip(RoundedCornerShape(16.dp))
-        .background(Brush.linearGradient(colors = bgGradient))
-        .border(1.dp, iconTint.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
-        .clickable(onClick = onClick)
-    ) {
-        Icon(imageVector = icon, contentDescription = null, tint = Color.White.copy(alpha = 0.05f), modifier = Modifier.size(76.dp).align(Alignment.BottomEnd).offset(x = 16.dp, y = 16.dp).rotate(-15f))
-        Column(modifier = Modifier.padding(14.dp)) {
-            Box(modifier = Modifier.size(32.dp).clip(CircleShape).background(iconTint.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = iconTint, modifier = Modifier.size(16.dp)) }
-            Spacer(Modifier.weight(1f))
-            Text(title, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
-            Text(subtitle, color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.9f), fontSize = 11.sp)
+    Card(modifier = modifier.height(100.dp).clickable(onClick = onClick), shape = RoundedCornerShape(16.dp), border = androidx.compose.foundation.BorderStroke(1.dp, iconTint.copy(alpha = 0.2f)), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
+        Box(modifier = Modifier.fillMaxSize().background(Brush.linearGradient(colors = bgGradient))) {
+            Icon(imageVector = icon, contentDescription = null, tint = Color.White.copy(alpha = 0.05f), modifier = Modifier.size(76.dp).align(Alignment.BottomEnd).offset(x = 16.dp, y = 16.dp).rotate(-15f))
+            Column(modifier = Modifier.padding(14.dp)) {
+                Box(modifier = Modifier.size(32.dp).clip(CircleShape).background(iconTint.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = iconTint, modifier = Modifier.size(16.dp)) }
+                Spacer(Modifier.weight(1f))
+                Text(title, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                Text(subtitle, color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.9f), fontSize = 11.sp)
+            }
         }
     }
 }
 
 @Composable
 fun StatMiniCard(modifier: Modifier = Modifier, title: String, value: String, icon: ImageVector, theme: AppTheme) {
-    Box(modifier = modifier.clip(RoundedCornerShape(12.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.6f))) {
+    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.6f)), shape = RoundedCornerShape(12.dp)) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(18.dp)) }
             Spacer(Modifier.width(10.dp))

@@ -229,13 +229,23 @@ class FunPayService : Service() {
                         lastCleanup = System.currentTimeMillis()
                     }
 
-                    
+
                     if (account.isActive) {
                         if (System.currentTimeMillis() - lastWidgetUpdate > 5 * 60 * 1000L) {
                             try {
                                 val profile = repository.getSelfProfile()
                                 if (profile != null) {
                                     WidgetManager.saveProfileCache(this@FunPayService, profile)
+
+                                    try {
+                                        DynamicAvatarManager.tickFromService(
+                                            this@FunPayService,
+                                            repository,
+                                            profile
+                                        )
+                                    } catch (e: Exception) {
+                                        LogManager.addLogDebug("DynAvatar tick: ${e.message}")
+                                    }
                                 }
                                 WidgetManager.updateAllWidgets(this@FunPayService)
                             } catch (e: Exception) { }

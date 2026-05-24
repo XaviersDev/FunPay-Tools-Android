@@ -4406,6 +4406,7 @@ suspend fun FunPayRepository.getSelfProfile(): UserProfile? {
             val (csrf, userId) = getCsrfAndId() ?: return@withContext null
 
             val mainResponse = api.getMainPage(getGoldenKey()?.let { "golden_key=$it; PHPSESSID=${getPhpSessionId()}" } ?: "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
+            updateSession(mainResponse)
             val mainHtml = mainResponse.body()?.string() ?: ""
             val mainDoc = Jsoup.parse(mainHtml)
 
@@ -4414,6 +4415,7 @@ suspend fun FunPayRepository.getSelfProfile(): UserProfile? {
             val activePurchases = mainDoc.select(".badge-orders").text().toIntOrNull() ?: 0
 
             val profileResponse = api.getUserProfile(userId, getGoldenKey()?.let { "golden_key=$it; PHPSESSID=${getPhpSessionId()}" } ?: "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
+            updateSession(profileResponse)
             val profileHtml = profileResponse.body()?.string() ?: ""
             val profileDoc = Jsoup.parse(profileHtml)
 

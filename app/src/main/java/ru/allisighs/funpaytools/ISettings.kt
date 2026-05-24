@@ -224,7 +224,7 @@ fun SettingsScreen(
                         content = {
                             ModernSettingsItem(
                                 title = "Менеджер плагинов",
-                                description = "Установка JS-скриптов, ИИ конвертер и каталог",
+                                description = "Установка JS-расширений для приложения",
                                 icon = Icons.Default.Extension,
                                 iconColor = ThemeManager.parseColor("#00E676"),
                                 theme = currentTheme,
