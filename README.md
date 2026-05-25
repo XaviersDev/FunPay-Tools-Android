@@ -13,7 +13,7 @@
   </a>
    
   <a href="../../releases">
-    <img src="https://img.shields.io/badge/Скачать-v1.2.5-22C55E?style=for-the-badge&logo=android&logoColor=white&color=9333EA&labelColor=1a1a1a" alt=""/>
+    <img src="https://img.shields.io/badge/Скачать-v1.3-22C55E?style=for-the-badge&logo=android&logoColor=white&color=9333EA&labelColor=1a1a1a" alt=""/>
   </a>
   
   <a href="#">
@@ -65,7 +65,7 @@
 
 <div align="center">
   
-  [![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&weight=700&size=28&pause=1000&color=A855F7&center=true&vCenter=true&width=500&lines=%F0%9F%93%A6+%D0%A7%D1%82%D0%BE+%D0%BD%D0%BE%D0%B2%D0%BE%D0%B3%D0%BE+%D0%B2+1.2.5%3F)](https://github.com/XaviersDev/funpay-tools-android)
+  [![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&weight=700&size=28&pause=1000&color=A855F7&center=true&vCenter=true&width=500&lines=%F0%9F%93%A6+%D0%A7%D1%82%D0%BE+%D0%BD%D0%BE%D0%B2%D0%BE%D0%B3%D0%BE+%D0%B2+1.3%3F)](https://github.com/XaviersDev/funpay-tools-android)
   
 </div>
 
@@ -227,7 +227,7 @@
 <br>
 
 1. Перейдите в раздел [**Releases**](../../releases).
-2. Скачайте последний файл `FunPay.Tools.1.2.5.apk`.
+2. Скачайте последний файл `FunPay.Tools.1.3.0.apk`.
 3. Установите APK на телефон (разрешите установку из неизвестных источников).
 4. **Важно:** В настройках телефона разрешите приложению **работу в фоне** и **автозапуск** (актуально для Xiaomi, Samsung, Huawei), чтобы система не останавливала службу автоподнятия.
 
