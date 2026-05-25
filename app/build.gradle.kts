@@ -23,7 +23,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "1.2.5"
+        versionName = "1.3"
         multiDexEnabled = true
 
         vectorDrawables {
@@ -88,6 +88,7 @@ dependencies {
     implementation(libs.androidx.compose.foundation)
     implementation(libs.foundation)
     implementation(libs.androidx.compose.ui.text)
+    implementation(libs.androidx.compose.foundation.foundation)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
