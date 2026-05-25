@@ -307,6 +307,45 @@ object ThemeManager {
         }
     }
 
+    /**
+     * Парсит hex-цвет, но ВСЕГДА возвращает непрозрачную версию (alpha = 1).
+     * Используется для диалогов и других элементов, которые НЕ должны
+     * становиться прозрачными от темы.
+     *
+     * Если hex полностью прозрачный (alpha = 0, например "#00000000" — это
+     * наш override для background при включённых обоях), берётся originalBackgroundColor.
+     */
+    fun parseColorOpaque(hexColor: String): Color {
+        return try {
+            val c = android.graphics.Color.parseColor(hexColor)
+            // Принудительно ставим alpha = 0xFF
+            val opaque = (0xFF shl 24) or (c and 0x00FFFFFF)
+            Color(opaque)
+        } catch (e: Exception) {
+            Color(0xFF1A1A1A)
+        }
+    }
+
+    /**
+     * Возвращает непрозрачный surface цвет для использования в диалогах,
+     * меню и других всплывающих элементах, которые должны быть видны.
+     * Если surfaceColor прозрачный — берём originalSurfaceColor.
+     */
+    fun dialogSurface(theme: AppTheme): Color {
+        val src = theme.surfaceColor
+        // Если в текущем surface есть альфа меньше 255, используем оригинал
+        val s = src.trim().removePrefix("#")
+        if (s.length == 8) {
+            try {
+                val alphaByte = s.substring(0, 2).toInt(16)
+                if (alphaByte < 0xFF) {
+                    return parseColorOpaque(theme.originalSurfaceColor)
+                }
+            } catch (_: Exception) {}
+        }
+        return parseColorOpaque(src)
+    }
+
     // =========================================================================
     //                              WALLPAPER I/O
     // =========================================================================

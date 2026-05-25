@@ -216,7 +216,7 @@ fun RMTHubScreen(
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    
+
 
                     item {
                         Card(
@@ -239,7 +239,7 @@ fun RMTHubScreen(
                                 )
                                 Spacer(modifier = Modifier.width(16.dp))
 
-                                
+
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         data!!.user.username,
@@ -262,7 +262,7 @@ fun RMTHubScreen(
                                     }
                                 }
 
-                                
+
                                 IconButton(
                                     onClick = {
                                         val url = "https://funpay.com/users/${data!!.user.id}/"
@@ -271,12 +271,12 @@ fun RMTHubScreen(
                                     }
                                 ) {
                                     Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew, 
+                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                         contentDescription = "Открыть профиль FunPay",
                                         tint = ThemeManager.parseColor(currentTheme.accentColor)
                                     )
                                 }
-                                
+
                             }
                         }
                     }
@@ -405,6 +405,9 @@ suspend fun fetchRMTHubStats(username: String): Pair<RMTUserStats?, String?> {
             val body = response.body?.string()
 
             if (!response.isSuccessful || body == null) {
+                if (response.code == 404) {
+                    return@withContext Pair(null, "Профиль не найден")
+                }
                 return@withContext Pair(null, "Ошибка сервера RMTHub: ${response.code}")
             }
 

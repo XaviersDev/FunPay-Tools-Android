@@ -10,7 +10,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 
-// Модель конфига
+
 data class EpicNickConfig(
     val c1: String,
     val c2: String,
@@ -32,7 +32,7 @@ object EpicNicksManager {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val client = OkHttpClient()
-                // Сначала пробуем API, если упадет - запасной GitHub
+                
                 var request = Request.Builder().url("https://funpay.tools/api/donaters/").build()
                 var response = client.newCall(request).execute()
 
@@ -61,7 +61,7 @@ object EpicNicksManager {
                     }
                 }
 
-                // Обновляем UI-стейт
+                
                 nicksMap.clear()
                 nicksMap.putAll(newMap)
                 isLoaded = true

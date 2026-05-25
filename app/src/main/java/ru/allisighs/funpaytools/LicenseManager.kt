@@ -1,5 +1,3 @@
-
-
 package ru.allisighs.funpaytools
 
 import android.app.Activity
@@ -85,6 +83,31 @@ enum class PremiumFeature(
         "XD Dumper",
         "Авто-демпинг цен конкурентов",
         "📉"
+    ),
+    AI_VARIABLES(
+        "ИИ-переменные",
+        "Динамические переменные с обращением к нейросети в шаблонах сообщений",
+        "🧠"
+    ),
+    CONCURENT(
+        "Concurent",
+        "Авто-мониторинг конкурентов и их цен в реальном времени",
+        "👁"
+    ),
+    AUTO_TICKET(
+        "Авто-обращение в ТП",
+        "Автоматическое создание заявок в поддержку FunPay по правилам",
+        "🎫"
+    ),
+    AUTO_DELIVERY(
+        "Автовыдача",
+        "Автоматическая выдача товаров покупателю после оплаты",
+        "📦"
+    ),
+    AOS(
+        "Always On Screen",
+        "Информация на экране блокировки телефона",
+        "🌙"
     )
 }
 
@@ -145,8 +168,8 @@ object LicenseManager {
 
     private var ctx: Context? = null
 
-    
-    
+
+
     var licenseState: LicenseState by mutableStateOf(LicenseState.None)
         private set
 
@@ -156,11 +179,11 @@ object LicenseManager {
 
     fun init(context: Context) {
         ctx = context.applicationContext
-        loadCache()        
-        refreshFirebase()  
+        loadCache()
+        refreshFirebase()
     }
 
-    
+
     fun hasAccess(feature: PremiumFeature): Boolean =
         isProActive() || isAdUnlocked(feature)
 
@@ -169,9 +192,9 @@ object LicenseManager {
         return s.expiresAt == 0L || System.currentTimeMillis() < s.expiresAt
     }
 
-    
+
     fun isAdUnlocked(f: PremiumFeature): Boolean {
-        val c = ctx ?: return false   
+        val c = ctx ?: return false
         val t = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getLong(K_AD_PREFIX + f.name, 0L)
         return t > 0 && System.currentTimeMillis() < t
@@ -190,15 +213,15 @@ object LicenseManager {
             ?.apply()
     }
 
-    
-    
-    
-    
+
+
+
+
     fun consumeAiClick(): Boolean {
-        val p = prefs() ?: return true  
+        val p = prefs() ?: return true
         val today = todayStr()
         if (p.getString(K_AI_DATE, "") != today) {
-            
+
             p.edit().putString(K_AI_DATE, today).putInt(K_AI_COUNT, 0).apply()
         }
         val used  = p.getInt(K_AI_COUNT, 0)
@@ -223,7 +246,7 @@ object LicenseManager {
         p.edit().putInt(K_AI_BONUS, p.getInt(K_AI_BONUS, 0) + AI_AD_BONUS).apply()
     }
 
-    
+
     fun deviceId(): String {
         val p  = prefs() ?: return java.util.UUID.randomUUID().toString()
         val cached = p.getString(K_DEVICE_ID, null)
@@ -585,11 +608,11 @@ fun PremiumDialog(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
 
-                
+
                 Text(feature.emoji, fontSize = 30.sp)
                 Spacer(Modifier.height(10.dp))
 
-                
+
                 Text(
                     feature.displayName,
                     fontSize    = 17.sp,
@@ -599,7 +622,7 @@ fun PremiumDialog(
                 )
                 Spacer(Modifier.height(4.dp))
 
-                
+
                 Text(
                     feature.description,
                     fontSize    = 13.sp,
@@ -608,7 +631,7 @@ fun PremiumDialog(
                     color       = ThemeManager.parseColor(theme.textSecondaryColor)
                 )
 
-                
+
                 if (adHours > 0) {
                     Spacer(Modifier.height(12.dp))
                     Surface(
@@ -625,7 +648,7 @@ fun PremiumDialog(
                     }
                 }
 
-                
+
                 Spacer(Modifier.height(12.dp))
                 Text(
                     "Если функция включена, она продолжит работать в фоне после 48 часов. " +
@@ -642,7 +665,7 @@ fun PremiumDialog(
                 )
                 Spacer(Modifier.height(16.dp))
 
-                
+
                 if (activity != null) {
                     Button(
                         onClick = {
@@ -695,7 +718,7 @@ fun PremiumDialog(
 
                 Spacer(Modifier.height(8.dp))
 
-                
+
                 OutlinedButton(
                     onClick = {
                         try {
@@ -719,7 +742,7 @@ fun PremiumDialog(
 
                 Spacer(Modifier.height(6.dp))
 
-                
+
                 AnimatedVisibility(visible = !showKey) {
                     TextButton(
                         onClick  = { showKey = true },
@@ -912,7 +935,7 @@ fun ProStatusCard(theme: AppTheme) {
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
 
-            
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -960,7 +983,7 @@ fun ProStatusCard(theme: AppTheme) {
                 }
             }
 
-            
+
             if (!isPro) {
                 Spacer(Modifier.height(14.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1069,7 +1092,7 @@ fun ProStatusCard(theme: AppTheme) {
                 }
             }
 
-            
+
             if (isPro) {
                 Spacer(Modifier.height(10.dp))
                 Row(

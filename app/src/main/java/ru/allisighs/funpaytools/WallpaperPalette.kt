@@ -45,7 +45,7 @@ object WallpaperPalette {
         scaled.getPixels(pixels, 0, SAMPLE_SIZE, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
         if (scaled !== bitmap) scaled.recycle()
 
-        // 24 корзины (по 15°)
+        
         val buckets = Array(24) { HueBucket() }
         val veryDark = HueBucket()
         val veryLight = HueBucket()
@@ -70,14 +70,14 @@ object WallpaperPalette {
             }
         }
 
-        // Vibrant: корзина с максимальным count × saturation × (1 - |L - 0.5|)
-        // — то есть с яркими, не пересвеченными цветами.
+        
+        
         val vibrant = buckets
             .filter { it.count > 0 }
             .maxByOrNull { it.count * it.avgS() * (1f - abs(it.avgL() - 0.5f) * 1.5f).coerceAtLeast(0.2f) }
             ?: buckets[0]
 
-        // Dominant — самая тёмная цветная корзина или veryDark
+        
         val totalPixels = pixels.size
         val dominant: HueBucket = run {
             val darkest = buckets.filter { it.count > 0 }.minByOrNull { it.avgL() }
@@ -88,13 +88,13 @@ object WallpaperPalette {
             }
         }
 
-        // Secondary — другая vibrant корзина
+        
         val secondary: HueBucket = buckets
             .filter { it !== vibrant && it.count > 0 }
             .maxByOrNull { it.count * it.avgS() }
             ?: vibrant
 
-        // === Цвета ===
+        
         val accentInt = hslToColor(
             hue = vibrant.avgH(),
             sat = max(0.70f, vibrant.avgS()),
@@ -110,37 +110,37 @@ object WallpaperPalette {
             sat = max(0.35f, secondary.avgS()),
             light = 0.32f
         )
-        // background: очень тёмный, с оттенком dominant — глубокий и атмосферный.
+        
         val backgroundInt = hslToColor(
             hue = dominant.avgH(),
             sat = min(0.45f, dominant.avgS()),
             light = 0.03f
         )
-        // surface (БЕЗ альфы) — для AMOLED-режима и для тем без обоев.
-        // На тон светлее background, чтобы карточки выделялись.
+        
+        
         val surfaceInt = hslToColor(
             hue = dominant.avgH(),
             sat = min(0.4f, dominant.avgS() * 0.9f),
             light = 0.12f
         )
 
-        // === ТЕКСТ ===
-        // Гарантируем контраст к surface (4.5:1 — WCAG AA для обычного текста).
+        
+        
         val textPrimaryInt = pickHighContrastText(surfaceInt, vibrant.avgH())
         val textSecondaryInt = withMutedAlpha(textPrimaryInt)
 
-        // === SURFACE С АЛЬФА-КАНАЛОМ для тем с обоями ===
-        // alpha = 0xCC (~80%) — карточки красиво просвечивают обои, текст читается.
+        
+        
         val surfaceWithAlpha = if (forWallpaper) {
-            // Берём чуть более насыщенный/тёплый surface — он будет ложиться на обои
-            // и нужно чтобы цветовой оттенок не терялся.
+            
+            
             val opaqueBase = hslToColor(
                 hue = dominant.avgH(),
                 sat = min(0.5f, dominant.avgS() * 1.2f),
                 light = 0.10f
             )
-            // Альфа 0xD9 = 217/255 ≈ 85% непрозрачности —
-            // чуть просвечивает, но текст хорошо читается.
+            
+            
             val alpha = 0xD9
             ((alpha shl 24) or (opaqueBase and 0x00FFFFFF))
         } else {
@@ -152,7 +152,7 @@ object WallpaperPalette {
             secondaryHex     = toHexRgb(secondaryInt),
             accentHex        = toHexRgb(accentInt),
             backgroundHex    = toHexRgb(backgroundInt),
-            // Surface — с альфой! Формат #AARRGGBB.
+            
             surfaceHex       = toHexArgb(surfaceWithAlpha),
             textPrimaryHex   = toHexRgb(textPrimaryInt),
             textSecondaryHex = toHexRgb(textSecondaryInt)
@@ -168,8 +168,8 @@ object WallpaperPalette {
         textPrimaryColor    = p.textPrimaryHex,
         textSecondaryColor  = p.textSecondaryHex,
         originalBackgroundColor = p.backgroundHex,
-        // originalSurfaceColor — всегда непрозрачный (RGB-часть из p.surfaceHex без альфы).
-        // Это позволит корректно восстановить surface при выключении обоев.
+        
+        
         originalSurfaceColor    = stripAlpha(p.surfaceHex)
     )
 
@@ -178,7 +178,7 @@ object WallpaperPalette {
         return if (s.length == 8) "#${s.substring(2)}" else hex
     }
 
-    // =================== INTERNAL ===================
+    
 
     private class HueBucket {
         var count: Int = 0
@@ -228,19 +228,19 @@ object WallpaperPalette {
         val ratioLight = ColorUtils.calculateContrast(light, bg)
         val ratioDark  = ColorUtils.calculateContrast(dark, bg)
 
-        // Тёплый/холодный нейтральный с лёгкой подкраской по hue акцента
+        
         val tinted = if (ratioLight >= 4.5) {
-            // Слегка тонируем светлый текст оттенком акцента (очень тонко)
+            
             val hsl = FloatArray(3)
             ColorUtils.colorToHSL(light, hsl)
             hsl[0] = accentHue
-            hsl[1] = 0.04f  // едва заметный оттенок
+            hsl[1] = 0.04f  
             hsl[2] = 0.92f
             ColorUtils.HSLToColor(hsl)
         } else if (ratioDark >= 4.5) {
             dark
         } else {
-            // Контраст недостаточен — берём вариант с лучшим
+            
             if (ratioLight >= ratioDark) light else dark
         }
         return tinted
@@ -250,7 +250,7 @@ object WallpaperPalette {
     private fun withMutedAlpha(color: Int): Int {
         val hsl = FloatArray(3)
         ColorUtils.colorToHSL(color, hsl)
-        // Сдвигаем lightness к средне-серому, сохраняя оттенок
+        
         hsl[2] = (0.5f + (hsl[2] - 0.5f) * 0.65f).coerceIn(0f, 1f)
         return ColorUtils.HSLToColor(hsl)
     }

@@ -87,6 +87,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import androidx.compose.animation.animateColorAsState
@@ -683,11 +684,7 @@ fun PermissionsScreen(navController: NavController, repository: FunPayRepository
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A237E).copy(alpha = 0.3f)),
-            shape = RoundedCornerShape(12.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF1A237E).copy(alpha = 0.3f))) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     "📋 Инструкция по производителям:",
@@ -1086,11 +1083,7 @@ fun AuthMethodScreen(navController: NavController) {
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
 
-        Card(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A237E).copy(alpha = 0.3f)),
-            shape = RoundedCornerShape(12.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF1A237E).copy(alpha = 0.3f))) {
             Row(
                 modifier = Modifier.padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -1269,25 +1262,18 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
         )
 
 
-        Card(
-            modifier = Modifier
-                .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
-                .fillMaxWidth(0.9f)
-                .align(Alignment.TopCenter)
-                .padding(top = 16.dp)
-                .pointerInput(Unit) {
-                    detectDragGestures { change, dragAmount ->
-                        change.consume()
-                        offsetX += dragAmount.x
-                        offsetY += dragAmount.y
-                    }
-                },
-            colors = CardDefaults.cardColors(
-                containerColor = ThemeManager.parseColor(ThemeManager.loadTheme(context).surfaceColor).copy(alpha = 0.95f)
-            ),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
+        Box(modifier = Modifier
+            .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
+            .fillMaxWidth(0.9f)
+            .align(Alignment.TopCenter)
+            .padding(top = 16.dp)
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    offsetX += dragAmount.x
+                    offsetY += dragAmount.y
+                }
+            }.clip(RoundedCornerShape(16.dp)).background(ThemeManager.parseColor(ThemeManager.loadTheme(context).surfaceColor).copy(alpha = 0.95f))) {
             Column(
                 modifier = Modifier.padding(16.dp)
             ) {
@@ -2039,7 +2025,7 @@ fun ChatListView(
                             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(filtered, key = { it.id }) { chat ->
+                            items(filtered.distinctBy { it.id }, key = { it.id }) { chat ->
                                 ChatItemView(
                                     chat = chat,
                                     navController = navController,
@@ -2095,14 +2081,9 @@ fun AccountBannedView(banInfo: BanInfo, theme: AppTheme, onNavigateToSupport: ()
 
         Spacer(Modifier.height(24.dp))
 
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f, fill = false),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFE53935).copy(alpha = 0.1f)),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, Color(0xFFE53935).copy(alpha = 0.5f))
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f, fill = false).clip(RoundedCornerShape(16.dp)).background(Color(0xFFE53935).copy(alpha = 0.1f)).border(1.dp, Color(0xFFE53935).copy(alpha = 0.5f), RoundedCornerShape(16.dp))) {
             Column(
                 modifier = Modifier
                     .padding(20.dp)
@@ -2215,15 +2196,9 @@ fun ChatItemView(
         )
     }
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { navController.navigate("chat/${chat.id}/${chat.username}") },
-        colors = CardDefaults.cardColors(
-            containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
-        ),
-        shape = RoundedCornerShape(theme.borderRadius.dp)
-        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .clickable { navController.navigate("chat/${chat.id}/${chat.username}") }.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -2363,6 +2338,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
     var aiVarPermissions by remember { mutableStateOf(repository.getAiVarPermissions()) }
     var showReadMarkDialog by remember { mutableStateOf(false) }
     var showAiVarDialog by remember { mutableStateOf(false) }
+    var showPremiumFor by remember { mutableStateOf<PremiumFeature?>(null) }
 
     fun isAllowed(f: String) = !busySettings.enabled || when (f) {
         "raise" -> busySettings.keepRaise
@@ -2391,6 +2367,13 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         PremiumDialog(feature = PremiumFeature.REVIEW_AI, theme = theme,
             onDismiss = { showReviewAiGate = false }, onUnlocked = { showReviewAiGate = false })
     }
+    showPremiumFor?.let { f ->
+        PremiumDialog(
+            feature = f, theme = theme,
+            onDismiss = { showPremiumFor = null },
+            onUnlocked = { showPremiumFor = null }
+        )
+    }
     if (showBusyDialog) {
         BusyModeDialog(settings = busySettings,
             onSave = { busySettings = it; ChatFolderManager.saveBusyMode(context, it) },
@@ -2405,741 +2388,893 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         )
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(vertical = 12.dp)
-    ) {
-        item { ControlSectionHeader("УВЕДОМЛЕНИЯ И ЗАПУСК", Icons.Default.Notifications, theme) }
+    
+    val tabs = listOf(
+        "Быстро"   to Icons.Default.FlashOn,
+        "Чат"      to Icons.Default.ChatBubbleOutline,
+        "Заказы"   to Icons.Default.ShoppingCart,
+        "Торговля" to Icons.Default.TrendingUp,
+        "Прочее"   to Icons.Default.Build
+    )
+    
+    val tabActiveCounts = listOf(
+        listOf(pushNotifications, autoStartOnBoot, alwaysOnline, busySettings.enabled, scheduleSettings.enabled).count { it },
+        listOf(autoResponse, greetingSettings.enabled, reviewSettings.enabled, repository.getFeedbackBonusSettings().enabled).count { it },
+        listOf(confirmSettings.enabled, reminderSettings.enabled, autoTicketSettings.enabled, refundSettings.enabled).count { it },
+        listOf(raiseEnabled, dumperSettings.enabled, ConcurentManager.getSettings(context).enabled).count { it },
+        listOf(floodSettings.enabled).count { it }
+    )
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
 
-        item {
-            SettingCard("Push-уведомления", "Уведомления о новых сообщениях", pushNotifications, Icons.Default.Notifications, theme) {
-                pushNotifications = !pushNotifications
-                repository.setSetting("push_notifications", pushNotifications)
-            }
-        }
+    
+    
+    
+    val functionsMap = remember {
+        mapOf(
+            
+            "push уведомления push-уведомления уведомления" to (0 to 0),
+            "автозапуск после перезагрузки автозапуск перезагрузка boot" to (0 to 1),
+            "всегда онлайн always online онлайн" to (0 to 2),
+            "режим занятости занятость busy" to (0 to 3),
+            "расписание занятости расписание schedule" to (0 to 4),
+            
+            "автоответ auto reply" to (1 to 0),
+            "приветствие greeting приветственное" to (1 to 1),
+            "автоответ на отзывы отзыв review" to (1 to 2),
+            "бонусы за отзыв бонус feedback" to (1 to 3),
+            "нечиталка непрочитанные unread" to (1 to 4),
+            "ии переменные ai-переменные ai variables" to (1 to 5),
+            
+            "просьба отзыва отзыв" to (2 to 0),
+            "напоминание заказы reminder" to (2 to 1),
+            "авто обращение в тп auto ticket автоматическое обращение поддержка" to (2 to 2),
+            "авто возврат refund возврат" to (2 to 3),
+            
+            "автоподнятие поднятие лотов raise" to (3 to 0),
+            "автовыдача auto delivery выдача товаров" to (3 to 1),
+            "демпинг dumper xd dumper" to (3 to 2),
+            "concurent конкурент" to (3 to 3),
+            
+            "каталог готовых шаблонов каталог templates" to (4 to 0),
+            "секретный чат secret chat" to (4 to 1),
+            "шаблоны сообщений шаблоны messages templates" to (4 to 2),
+            "always on screen aos экран блокировки" to (4 to 3),
+            "глобальный поиск пользователей поиск users" to (4 to 4)
+        )
+    }
 
-        item {
-            SettingCard("Автозапуск после перезагрузки", "Запускать сервис при включении телефона", autoStartOnBoot, Icons.Default.Power, theme) {
-                autoStartOnBoot = !autoStartOnBoot
-                repository.setSetting("auto_start_on_boot", autoStartOnBoot)
-            }
-        }
+    
+    val currentMatch = remember(searchQuery) {
+        val q = searchQuery.trim().lowercase()
+        if (q.isBlank()) null
+        else functionsMap.entries.firstOrNull { (k, _) -> k.contains(q) }?.value
+    }
 
-        item {
-            SettingCard("Всегда онлайн", "Пингует FunPay каждые 4 минуты — аккаунт всегда показывает статус «онлайн»", alwaysOnline, Icons.Default.Wifi, theme) {
-                alwaysOnline = !alwaysOnline
-                repository.setSetting("always_online", alwaysOnline)
-            }
-        }
+    
+    val highlightTabName = currentMatch?.let { (t, _) -> tabs.getOrNull(t)?.first }
 
-        item { ControlSectionHeader("РЕЖИМ РАБОТЫ", Icons.Default.Tune, theme) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
-        item {
-            BusyModeCard(settings = busySettings,
-                onToggle = {
-                    val nowEnabled = !busySettings.enabled
-                    val u = busySettings.copy(enabled = nowEnabled, enabledAt = if (nowEnabled) System.currentTimeMillis() else 0L)
-                    busySettings = u; ChatFolderManager.saveBusyMode(context, u)
-                },
-                onConfigure = { showBusyDialog = true }, theme = theme)
-        }
+    
+    LaunchedEffect(searchQuery, currentMatch) {
+        val match = currentMatch ?: return@LaunchedEffect
+        val (tabIdx, itemIdxInTab) = match
+        if (tabIdx != selectedTab) selectedTab = tabIdx
+        
+        kotlinx.coroutines.delay(100)
+        
+        
+        val targetIndex = 3 + itemIdxInTab
+        try { listState.animateScrollToItem(targetIndex) } catch (_: Exception) {}
+    }
 
-        item {
-
-            Card(modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Schedule, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Расписание занятости", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
-                            Text(
-                                "Автоматически включает режим занятости в указанное время (рабочее время, перерыв, вечер, ночь).",
-                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
-                            )
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(vertical = 12.dp)
+        ) {
+            item {
+                ControlHeroCard(
+                    theme = theme,
+                    appFullyDisabled = appFullyDisabled,
+                    busyEnabled = busySettings.enabled,
+                    activeCount = listOf(
+                        autoResponse, raiseEnabled, pushNotifications, alwaysOnline,
+                        greetingSettings.enabled, reviewSettings.enabled, refundSettings.enabled,
+                        confirmSettings.enabled, dumperSettings.enabled, scheduleSettings.enabled
+                    ).count { it },
+                    onToggleFullDisable = {
+                        val newValue = !appFullyDisabled
+                        appFullyDisabled = newValue
+                        val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+                        prefs.edit().putBoolean("app_fully_disabled", newValue).apply()
+                        if (newValue) {
+                            prefs.edit().putBoolean("app_fully_disabled_prev_autostart", autoStartOnBoot).putBoolean("app_fully_disabled_prev_push", pushNotifications).apply()
+                            try { context.stopService(Intent(context, FunPayService::class.java)) } catch (_: Exception) {}
+                            autoStartOnBoot = false; repository.setSetting("auto_start_on_boot", false)
+                            pushNotifications = false; repository.setSetting("push_notifications", false)
+                            try { val nm = context.getSystemService(NotificationManager::class.java); nm?.cancelAll() } catch (_: Exception) {}
+                            Toast.makeText(context, "Приложение выключено. Фон и уведомления отключены.", Toast.LENGTH_LONG).show()
+                        } else {
+                            val prevAutoStart = prefs.getBoolean("app_fully_disabled_prev_autostart", true)
+                            val prevPush = prefs.getBoolean("app_fully_disabled_prev_push", true)
+                            autoStartOnBoot = prevAutoStart; repository.setSetting("auto_start_on_boot", prevAutoStart)
+                            pushNotifications = prevPush; repository.setSetting("push_notifications", prevPush)
+                            try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(Intent(context, FunPayService::class.java))
+                                else context.startService(Intent(context, FunPayService::class.java))
+                            } catch (_: Exception) {}
+                            Toast.makeText(context, "Приложение снова работает.", Toast.LENGTH_SHORT).show()
                         }
-                        Switch(
-                            checked = scheduleSettings.enabled,
-                            onCheckedChange = {
-                                scheduleSettings = scheduleSettings.copy(enabled = it)
-                                ChatFolderManager.saveBusySchedule(context, scheduleSettings)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
-                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
-                            )
-                        )
                     }
-                    if (scheduleSettings.enabled) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            if (scheduleSettings.slots.isEmpty()) "Слотов ещё нет — добавьте хотя бы один."
-                            else "Слотов: ${scheduleSettings.slots.size}",
-                            fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor)
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Button(
-                            onClick = { showScheduleDialog = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить слоты", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                )
+            }
+            item {
+                ControlSearchBar(
+                    query = searchQuery,
+                    theme = theme,
+                    foundInTab = highlightTabName,
+                    onChange = { searchQuery = it }
+                )
+            }
+            item {
+                ControlTabBar(
+                    tabs = tabs,
+                    activeCounts = tabActiveCounts,
+                    selected = selectedTab,
+                    theme = theme,
+                    onSelect = { selectedTab = it }
+                )
+            }
+
+            
+            if (selectedTab == 0) {
+                item {
+                    SettingCard("Push-уведомления", "Уведомления о новых сообщениях", pushNotifications, Icons.Default.Notifications, theme) {
+                        pushNotifications = !pushNotifications
+                        repository.setSetting("push_notifications", pushNotifications)
                     }
                 }
-            }
-        }
-
-        item {
-
-            Card(modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (appFullyDisabled)
-                        Color(0xFFB71C1C).copy(alpha = 0.25f)
-                    else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
-                ),
-                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.PowerSettingsNew, null,
-                            tint = if (appFullyDisabled) Color(0xFFFF5252) else ThemeManager.parseColor(theme.accentColor),
-                            modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                if (appFullyDisabled) "Приложение выключено полностью" else "Полностью выключить приложение",
-                                fontWeight = FontWeight.Bold,
-                                color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp
-                            )
-                            Text(
-                                "Останавливает сервис, отменяет автозапуск и уведомления. Фон не работает вообще. Включается обратно одним переключателем.",
-                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
-                            )
-                        }
-                        Switch(
-                            checked = appFullyDisabled,
-                            onCheckedChange = { newValue ->
-                                appFullyDisabled = newValue
-                                val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
-                                prefs.edit().putBoolean("app_fully_disabled", newValue).apply()
-
-                                if (newValue) {
-
-
-                                    prefs.edit()
-                                        .putBoolean("app_fully_disabled_prev_autostart", autoStartOnBoot)
-                                        .putBoolean("app_fully_disabled_prev_push", pushNotifications)
-                                        .apply()
-
-
-                                    try {
-                                        context.stopService(Intent(context, FunPayService::class.java))
-                                    } catch (_: Exception) {}
-                                    autoStartOnBoot = false
-                                    repository.setSetting("auto_start_on_boot", false)
-                                    pushNotifications = false
-                                    repository.setSetting("push_notifications", false)
-                                    try {
-                                        val nm = context.getSystemService(NotificationManager::class.java)
-                                        nm?.cancelAll()
-                                    } catch (_: Exception) {}
-                                    Toast.makeText(context, "Приложение выключено. Фон и уведомления отключены.", Toast.LENGTH_LONG).show()
-                                } else {
-
-
-                                    val prevAutoStart = prefs.getBoolean("app_fully_disabled_prev_autostart", true)
-                                    val prevPush = prefs.getBoolean("app_fully_disabled_prev_push", true)
-                                    autoStartOnBoot = prevAutoStart
-                                    repository.setSetting("auto_start_on_boot", prevAutoStart)
-                                    pushNotifications = prevPush
-                                    repository.setSetting("push_notifications", prevPush)
-
-                                    try {
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                            context.startForegroundService(Intent(context, FunPayService::class.java))
-                                        } else {
-                                            context.startService(Intent(context, FunPayService::class.java))
-                                        }
-                                    } catch (_: Exception) {}
-                                    Toast.makeText(context, "Приложение снова работает. Настройки фона восстановлены.", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFFFF5252),
-                                checkedTrackColor = Color(0xFFFF5252).copy(alpha = 0.4f),
-                                uncheckedThumbColor = ThemeManager.parseColor(theme.textSecondaryColor)
-                            )
-                        )
+                item {
+                    SettingCard("Автозапуск после перезагрузки", "Запускать сервис при включении телефона", autoStartOnBoot, Icons.Default.Power, theme) {
+                        autoStartOnBoot = !autoStartOnBoot
+                        repository.setSetting("auto_start_on_boot", autoStartOnBoot)
                     }
                 }
-            }
-        }
-
-        item { ControlSectionHeader("АВТОМАТИЗАЦИЯ ЧАТА", Icons.Default.AutoAwesome, theme) }
-
-        item {
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("autoResp")) 0.4f else 1f)) {
-                Column {
-                    SettingCard("Автоответ", "Быстрые ответы на сообщения", autoResponse, Icons.Default.AutoAwesome, theme) {
-                        if (isAllowed("autoResp")) { autoResponse = !autoResponse; repository.setSetting("auto_response", autoResponse) }
-                    }
-                    if (autoResponse) {
-                        Button(onClick = { if (isAllowed("autoResp")) showDialog = "commands" },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить команды", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                item {
+                    SettingCard("Всегда онлайн", "Пингует FunPay каждые 4 минуты — аккаунт всегда показывает статус «онлайн»", alwaysOnline, Icons.Default.Wifi, theme) {
+                        alwaysOnline = !alwaysOnline
+                        repository.setSetting("always_online", alwaysOnline)
                     }
                 }
-            }
-        }
-
-        item {
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("greeting")) 0.4f else 1f)) {
-                Column {
-                    SettingCard("Приветствие", "Автоматически здороваться с покупателями", greetingSettings.enabled, Icons.Default.WavingHand, theme) {
-                        if (isAllowed("greeting")) { greetingSettings = greetingSettings.copy(enabled = !greetingSettings.enabled); repository.saveGreetingSettings(greetingSettings) }
-                    }
-                    if (greetingSettings.enabled) {
-                        Button(onClick = { if (isAllowed("greeting")) showDialog = "greeting" },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить приветствие", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                    }
-                }
-            }
-        }
-
-        item {
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
-                Column {
-                    SettingCard("Автоответ на отзывы", "Автоматически отвечать на отзывы", reviewSettings.enabled, Icons.Default.Star, theme) {
-                        if (!busySettings.enabled) {
-                            val s = reviewSettings.copy(enabled = !reviewSettings.enabled)
-                            reviewSettings = s; repository.saveReviewReplySettings(s)
-                        }
-                    }
-                    if (reviewSettings.enabled) {
-                        Button(onClick = { if (!busySettings.enabled) showDialog = "review_settings" },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(if (reviewSettings.useAi) Icons.Default.AutoAwesome else Icons.Default.List, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-
-
-
-        item {
-            var bonusSettingsState by remember { mutableStateOf(repository.getFeedbackBonusSettings()) }
-
-
-            LaunchedEffect(showDialog) {
-                if (showDialog == null) bonusSettingsState = repository.getFeedbackBonusSettings()
-            }
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
-                Column {
-                    SettingCard(
-                        "Бонусы за отзыв",
-                        "Отдельные правила-бонусы под разные лоты",
-                        bonusSettingsState.enabled,
-                        Icons.Default.CardGiftcard,
-                        theme
-                    ) {
-                        if (!busySettings.enabled) {
-                            val s = bonusSettingsState.copy(enabled = !bonusSettingsState.enabled)
-                            bonusSettingsState = s
-                            repository.saveFeedbackBonusSettings(s)
-                        }
-                    }
-                    if (bonusSettingsState.enabled) {
-                        Button(
-                            onClick = { if (!busySettings.enabled) showDialog = "feedback_bonus" },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.Rule,
-                                    null,
-                                    tint = ThemeManager.parseColor(theme.accentColor),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    if (bonusSettingsState.rules.isEmpty())
-                                        "Добавить правила"
-                                    else
-                                        "Правил: ${bonusSettingsState.rules.size}",
-                                    color = ThemeManager.parseColor(theme.textPrimaryColor)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)
-                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Нечиталка", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
-                            Text(
-                                "Детальная настройка, какие сообщения приложению читать, а какие нет",
-                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = { showReadMarkDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)
-                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Psychology, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("ИИ-переменные", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
-                            Text(
-                                "Управляй данными, которые ИИ видит при переработке текста",
-                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = { showAiVarDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                    }
-                }
-            }
-        }
-
-        item { ControlSectionHeader("УПРАВЛЕНИЕ ЗАКАЗАМИ", Icons.Default.ShoppingCart, theme) }
-
-        item {
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
-                Column {
-                    PremiumSettingCard("Просьба отзыва", "Писать сообщение после подтверждения заказа", confirmSettings.enabled, Icons.Default.ThumbUp, theme, feature = PremiumFeature.REVIEW_REQUEST) {
-                        if (!busySettings.enabled) {
-                            val s = confirmSettings.copy(enabled = !confirmSettings.enabled)
-                            confirmSettings = s; repository.saveOrderConfirmSettings(s)
-                        }
-                    }
-                    if (confirmSettings.enabled) {
-                        Button(onClick = { if (!busySettings.enabled) showDialog = "confirm_settings" },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить текст", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                    }
-                }
-            }
-        }
-
-        item {
-            OrderReminderCard(
-                settings = reminderSettings, theme = theme,
-                onToggle = { reminderSettings = reminderSettings.copy(enabled = !reminderSettings.enabled); repository.saveOrderReminderSettings(reminderSettings) },
-                onConfigure = { showDialog = "order_reminder" }
-            )
-        }
-
-        item {
-            AutoTicketCard(
-                settings = autoTicketSettings, isSending = isSendingTickets, lastResult = ticketSendResult, theme = theme,
-                onToggle = { autoTicketSettings = autoTicketSettings.copy(enabled = !autoTicketSettings.enabled); repository.saveAutoTicketSettings(autoTicketSettings) },
-                onConfigure = { showDialog = "auto_ticket" },
-                onSendNow = {
-                    if (!isSendingTickets) {
-                        isSendingTickets = true; ticketSendResult = null
-                        scope.launch {
-                            val result = repository.sendAutoSupportTickets()
-                            ticketSendResult = when {
-                                result.errorMessage?.contains("лимит", ignoreCase = true) == true -> "⛔ Лимит: 1 запрос в день"
-                                result.errorMessage != null -> "❌ ${result.errorMessage}"
-                                result.ticketsCreated == 0 -> "ℹ️ Нет заказов для отправки"
-                                else -> "✅ Отправлено ${result.ticketsCreated} тикет(ов), ${result.ordersProcessed} заказов"
-                            }
-                            isSendingTickets = false
-                        }
-                    }
-                },
-                onOpenSupport = onNavigateToSupport
-            )
-        }
-
-        item {
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
-                Column {
-                    PremiumSettingCard("Авто-возврат", "Возврат денег при плохом отзыве на дешёвый товар", refundSettings.enabled, Icons.Default.MoneyOff, theme, feature = PremiumFeature.AUTO_REFUND) {
-                        if (!busySettings.enabled) {
-                            val s = refundSettings.copy(enabled = !refundSettings.enabled)
-                            refundSettings = s; repository.saveAutoRefundSettings(s)
-                        }
-                    }
-                    if (refundSettings.enabled) {
-                        Button(onClick = { if (!busySettings.enabled) showDialog = "refund_settings" },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить условия", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                    }
-                }
-            }
-        }
-
-        item { ControlSectionHeader("ТОРГОВЛЯ", Icons.Default.TrendingUp, theme) }
-
-        item {
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("raise")) 0.4f else 1f)) {
-                Column {
-                    SettingCard("Автоподнятие", "Поднимать лоты автоматически", raiseEnabled, Icons.Default.TrendingUp, theme) {
-                        if (isAllowed("raise")) { raiseEnabled = !raiseEnabled; repository.setSetting("raise_enabled", raiseEnabled) }
-                    }
-                    if (raiseEnabled) {
-                        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-
-
-
-
-
-                            val smartRaise = repository.isSmartRaiseEnabled()
-                            val summary = if (smartRaise)
-                                "Выбрано: Умный режим"
-                            else
-                                "Выбрано: Интервал $raiseInterval мин"
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        summary,
-                                        color = ThemeManager.parseColor(theme.textPrimaryColor),
-                                        fontSize = 13.sp, fontWeight = FontWeight.Medium
-                                    )
-                                    Text(
-                                        "Нажми, чтобы выбрать режим и интервал.",
-                                        color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                        fontSize = 10.sp, lineHeight = 13.sp
-                                    )
-                                }
-                                OutlinedButton(
-                                    onClick = { showDialog = "raise_settings" },
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        contentColor = ThemeManager.parseColor(theme.accentColor)
-                                    )
-                                ) {
-                                    Icon(Icons.Default.Tune, null, modifier = Modifier.size(14.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Настроить", fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            var autoDeliverySettings by remember { mutableStateOf(AutoDeliveryManager.getSettings(context)) }
-
-            AutoDeliveryCard(
-                settings = autoDeliverySettings,
-                theme = theme,
-                onToggle = {
-                    val newSt = autoDeliverySettings.copy(enabled = !autoDeliverySettings.enabled)
-                    autoDeliverySettings = newSt
-                    AutoDeliveryManager.saveSettings(context, newSt)
-                },
-                onConfigure = { showDialog = "auto_delivery" }
-            )
-        }
-
-        item {
-            Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
-                Column {
-                    StrictProOnlySettingCard(
-                        title = "XD Dumper", subtitle = "Авто-демпинг цен конкурентов",
-                        checked = dumperSettings.enabled, icon = Icons.Default.TrendingDown, theme = theme,
-                        onCheckedChange = {
-                            if (!busySettings.enabled) { dumperSettings = dumperSettings.copy(enabled = it); repository.saveDumperSettings(dumperSettings) }
+                item {
+                    BusyModeCard(settings = busySettings,
+                        onToggle = {
+                            val nowEnabled = !busySettings.enabled
+                            val u = busySettings.copy(enabled = nowEnabled, enabledAt = if (nowEnabled) System.currentTimeMillis() else 0L)
+                            busySettings = u; ChatFolderManager.saveBusyMode(context, u)
                         },
-                        onProRequired = { navController.navigate("donations"); Toast.makeText(context, "Эта функция доступна только в PRO версии!", Toast.LENGTH_SHORT).show() }
-                    )
-                    if (dumperSettings.enabled && LicenseManager.isProActive()) {
-                        Button(onClick = { if (!busySettings.enabled) navController.navigate("xd_dumper") },
-                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                        ) { Text("Настроить лоты для демпинга", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
-                    }
+                        onConfigure = { showBusyDialog = true }, theme = theme)
                 }
-            }
-        }
+                item {
 
-
-        item {
-            val concurentEnabled = remember { mutableStateOf(ConcurentManager.getSettings(context).enabled) }
-
-            val prefsLocal = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
-            LaunchedEffect(Unit) {
-                if (prefsLocal.getString("concurent_pending_node", null) != null && showDialog == null) {
-                    showDialog = "concurent"
-                }
-            }
-            Card(modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Campaign, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
-                        Spacer(Modifier.width(16.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Concurent", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
-                            Text(
-                                if (concurentEnabled.value) "Публикации идут по таймеру"
-                                else "Автопубликации в общих чатах FunPay",
-                                fontSize = 12.sp,
-                                color = ThemeManager.parseColor(theme.textSecondaryColor)
-                            )
-                        }
-                        Switch(
-                            checked = concurentEnabled.value,
-                            onCheckedChange = { on ->
-                                concurentEnabled.value = on
-                                val s = ConcurentManager.getSettings(context)
-                                val next = if (on) s.copy(
-                                    enabled = true,
-                                    postsSinceEnable = 0,
-                                    currentMessageIndex = 0,
-                                    currentGameIndex = 0,
-                                    lastPostAt = 0L,
-                                    nextPostAt = System.currentTimeMillis() + s.intervalSeconds * 1000L
-                                ) else s.copy(enabled = false)
-                                ConcurentManager.saveSettings(context, next)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
-                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
-                            )
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { showDialog = "concurent" },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-                    ) {
-                        Icon(Icons.Default.Tune, null, modifier = Modifier.size(16.dp),
-                            tint = ThemeManager.parseColor(theme.textPrimaryColor))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Настроить тексты и чаты", color = ThemeManager.parseColor(theme.textPrimaryColor))
-                    }
-                }
-            }
-        }
-
-
-
-
-        item { ControlSectionHeader("ИНСТРУМЕНТЫ", Icons.Default.Build, theme) }
-
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth().clickable { navController.navigate("catalog") },
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp),
-                border = BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.3f))
-                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.CloudDownload, contentDescription = null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Каталог готовых шаблонов", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
-                        Text("Скачивай и делись автоответами, шаблонами, настройками ИИ и оформлениями текстов.", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp)
-                    }
-                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
-                }
-            }
-        }
-
-        item {
-            val floodFolders = remember { ChatFolderManager.getFolders(context) }
-            Card(modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.width(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Секретный чат FunPay", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
-                            Text(
-                                "Общий чат по ссылке funpay.com/chat/?node=flood. В обычном списке его нет — добавим сами.",
-                                fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
-                            )
-                        }
-                        Switch(
-                            checked = floodSettings.enabled,
-                            onCheckedChange = {
-                                floodSettings = floodSettings.copy(enabled = it)
-                                ChatFolderManager.saveFloodChat(context, floodSettings)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
-                                checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
-                            )
-                        )
-                    }
-
-                    if (floodSettings.enabled) {
-                        Spacer(Modifier.height(10.dp))
-
-
-                        OutlinedTextField(
-                            value = floodSettings.customDisplayName,
-                            onValueChange = {
-                                floodSettings = floodSettings.copy(customDisplayName = it)
-                                ChatFolderManager.saveFloodChat(context, floodSettings)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Как назвать чат в списке", fontSize = 11.sp) },
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                                unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                                focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                                cursorColor = ThemeManager.parseColor(theme.accentColor)
-                            )
-                        )
-
-                        Spacer(Modifier.height(4.dp))
-
-
-                        Text("Группа (папка):", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            FilterChip(
-                                selected = floodSettings.folderId == null,
-                                onClick = {
-                                    floodSettings = floodSettings.copy(folderId = null)
-                                    ChatFolderManager.saveFloodChat(context, floodSettings)
-                                },
-                                label = { Text("Без папки", fontSize = 11.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
-                                    selectedLabelColor = Color.White
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Schedule, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
+                                Spacer(Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Расписание занятости", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                                    Text(
+                                        "Автоматически включает режим занятости в указанное время (рабочее время, перерыв, вечер, ночь).",
+                                        fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                                    )
+                                }
+                                Switch(
+                                    checked = scheduleSettings.enabled,
+                                    onCheckedChange = {
+                                        scheduleSettings = scheduleSettings.copy(enabled = it)
+                                        ChatFolderManager.saveBusySchedule(context, scheduleSettings)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                        checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
+                                    )
                                 )
-                            )
-                            floodFolders.filter { !it.isPreset || it.id == "preset_archived" }.forEach { folder ->
-                                FilterChip(
-                                    selected = floodSettings.folderId == folder.id,
+                            }
+                            if (scheduleSettings.enabled) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    if (scheduleSettings.slots.isEmpty()) "Слотов ещё нет — добавьте хотя бы один."
+                                    else "Слотов: ${scheduleSettings.slots.size}",
+                                    fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor)
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = { showScheduleDialog = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) { Text("Настроить слоты", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            
+            if (selectedTab == 1) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("autoResp")) 0.4f else 1f)) {
+                        Column {
+                            SettingCard("Автоответ", "Быстрые ответы на сообщения", autoResponse, Icons.Default.AutoAwesome, theme) {
+                                if (isAllowed("autoResp")) { autoResponse = !autoResponse; repository.setSetting("auto_response", autoResponse) }
+                            }
+                            if (autoResponse) {
+                                Button(onClick = { if (isAllowed("autoResp")) showDialog = "commands" },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) { Text("Настроить команды", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                            }
+                        }
+                    }
+                }
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("greeting")) 0.4f else 1f)) {
+                        Column {
+                            SettingCard("Приветствие", "Автоматически здороваться с покупателями", greetingSettings.enabled, Icons.Default.WavingHand, theme) {
+                                if (isAllowed("greeting")) { greetingSettings = greetingSettings.copy(enabled = !greetingSettings.enabled); repository.saveGreetingSettings(greetingSettings) }
+                            }
+                            if (greetingSettings.enabled) {
+                                Button(onClick = { if (isAllowed("greeting")) showDialog = "greeting" },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) { Text("Настроить приветствие", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                            }
+                        }
+                    }
+                }
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
+                        Column {
+                            SettingCard("Автоответ на отзывы", "Автоматически отвечать на отзывы", reviewSettings.enabled, Icons.Default.Star, theme) {
+                                if (!busySettings.enabled) {
+                                    val s = reviewSettings.copy(enabled = !reviewSettings.enabled)
+                                    reviewSettings = s; repository.saveReviewReplySettings(s)
+                                }
+                            }
+                            if (reviewSettings.enabled) {
+                                Button(onClick = { if (!busySettings.enabled) showDialog = "review_settings" },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(if (reviewSettings.useAi) Icons.Default.AutoAwesome else Icons.Default.List, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
+                    var bonusSettingsState by remember { mutableStateOf(repository.getFeedbackBonusSettings()) }
+
+
+                    LaunchedEffect(showDialog) {
+                        if (showDialog == null) bonusSettingsState = repository.getFeedbackBonusSettings()
+                    }
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
+                        Column {
+                            SettingCard(
+                                "Бонусы за отзыв",
+                                "Отдельные правила-бонусы под разные лоты",
+                                bonusSettingsState.enabled,
+                                Icons.Default.CardGiftcard,
+                                theme
+                            ) {
+                                if (!busySettings.enabled) {
+                                    val s = bonusSettingsState.copy(enabled = !bonusSettingsState.enabled)
+                                    bonusSettingsState = s
+                                    repository.saveFeedbackBonusSettings(s)
+                                }
+                            }
+                            if (bonusSettingsState.enabled) {
+                                Button(
+                                    onClick = { if (!busySettings.enabled) showDialog = "feedback_bonus" },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            Icons.Default.Rule,
+                                            null,
+                                            tint = ThemeManager.parseColor(theme.accentColor),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            if (bonusSettingsState.rules.isEmpty())
+                                                "Добавить правила"
+                                            else
+                                                "Правил: ${bonusSettingsState.rules.size}",
+                                            color = ThemeManager.parseColor(theme.textPrimaryColor)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
+                                Spacer(Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Нечиталка", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                                    Text(
+                                        "Детальная настройка, какие сообщения приложению читать, а какие нет",
+                                        fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = { showReadMarkDialog = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) { Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                            }
+                        }
+                    }
+                }
+                item {
+                    val aiVarIsPro = LicenseManager.isProActive()
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Box {
+                                    Icon(
+                                        Icons.Default.Psychology, null,
+                                        tint = if (aiVarIsPro) ThemeManager.parseColor(theme.accentColor) else Color.Gray.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                    if (!aiVarIsPro) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .offset(x = 18.dp, y = (-2).dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFFFC107)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Lock, null, tint = Color.Black, modifier = Modifier.size(9.dp))
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("ИИ-переменные", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                                    Text(
+                                        if (aiVarIsPro) "Управляй данными, которые ИИ видит при переработке текста"
+                                        else "Только для подписчиков PRO",
+                                        fontSize = 11.sp,
+                                        color = if (aiVarIsPro) ThemeManager.parseColor(theme.textSecondaryColor) else Color(0xFFFFC107),
+                                        lineHeight = 14.sp
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
                                     onClick = {
-                                        floodSettings = floodSettings.copy(folderId = folder.id)
+                                        if (aiVarIsPro) showAiVarDialog = true
+                                        else showPremiumFor = PremiumFeature.AI_VARIABLES
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) {
+                                    Text(
+                                        if (aiVarIsPro) "Настроить" else "PRO",
+                                        color = if (aiVarIsPro) ThemeManager.parseColor(theme.textPrimaryColor) else Color(0xFFFFC107)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            
+            if (selectedTab == 2) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
+                        Column {
+                            SettingCard("Просьба отзыва", "Писать сообщение после подтверждения заказа", confirmSettings.enabled, Icons.Default.ThumbUp, theme) {
+                                if (!busySettings.enabled) {
+                                    val s = confirmSettings.copy(enabled = !confirmSettings.enabled)
+                                    confirmSettings = s; repository.saveOrderConfirmSettings(s)
+                                }
+                            }
+                            if (confirmSettings.enabled) {
+                                Button(onClick = { if (!busySettings.enabled) showDialog = "confirm_settings" },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) { Text("Настроить текст", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                            }
+                        }
+                    }
+                }
+                item {
+                    OrderReminderCard(
+                        settings = reminderSettings, theme = theme,
+                        onToggle = { reminderSettings = reminderSettings.copy(enabled = !reminderSettings.enabled); repository.saveOrderReminderSettings(reminderSettings) },
+                        onConfigure = { showDialog = "order_reminder" }
+                    )
+                }
+                item {
+                    AutoTicketCard(
+                        settings = autoTicketSettings, isSending = isSendingTickets, lastResult = ticketSendResult, theme = theme,
+                        onToggle = {
+                            if (LicenseManager.hasAccess(PremiumFeature.AUTO_TICKET)) {
+                                autoTicketSettings = autoTicketSettings.copy(enabled = !autoTicketSettings.enabled)
+                                repository.saveAutoTicketSettings(autoTicketSettings)
+                            } else {
+                                showPremiumFor = PremiumFeature.AUTO_TICKET
+                            }
+                        },
+                        onConfigure = {
+                            if (LicenseManager.hasAccess(PremiumFeature.AUTO_TICKET)) showDialog = "auto_ticket"
+                            else showPremiumFor = PremiumFeature.AUTO_TICKET
+                        },
+                        onSendNow = {
+                            if (!isSendingTickets) {
+                                isSendingTickets = true; ticketSendResult = null
+                                scope.launch {
+                                    val result = repository.sendAutoSupportTickets()
+                                    ticketSendResult = when {
+                                        result.errorMessage?.contains("лимит", ignoreCase = true) == true -> "⛔ Лимит: 1 запрос в день"
+                                        result.errorMessage != null -> "❌ ${result.errorMessage}"
+                                        result.ticketsCreated == 0 -> "ℹ️ Нет заказов для отправки"
+                                        else -> "✅ Отправлено ${result.ticketsCreated} тикет(ов), ${result.ordersProcessed} заказов"
+                                    }
+                                    isSendingTickets = false
+                                }
+                            }
+                        },
+                        onOpenSupport = onNavigateToSupport
+                    )
+                }
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
+                        Column {
+                            PremiumSettingCard("Авто-возврат", "Возврат денег при плохом отзыве на дешёвый товар", refundSettings.enabled, Icons.Default.MoneyOff, theme, feature = PremiumFeature.AUTO_REFUND) {
+                                if (!busySettings.enabled) {
+                                    val s = refundSettings.copy(enabled = !refundSettings.enabled)
+                                    refundSettings = s; repository.saveAutoRefundSettings(s)
+                                }
+                            }
+                            if (refundSettings.enabled) {
+                                Button(onClick = { if (!busySettings.enabled) showDialog = "refund_settings" },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) { Text("Настроить условия", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            
+            if (selectedTab == 3) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("raise")) 0.4f else 1f)) {
+                        Column {
+                            SettingCard("Автоподнятие", "Поднимать лоты автоматически", raiseEnabled, Icons.Default.TrendingUp, theme) {
+                                if (isAllowed("raise")) { raiseEnabled = !raiseEnabled; repository.setSetting("raise_enabled", raiseEnabled) }
+                            }
+                            if (raiseEnabled) {
+                                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+
+
+
+
+
+                                    val smartRaise = repository.isSmartRaiseEnabled()
+                                    val summary = if (smartRaise)
+                                        "Выбрано: Умный режим"
+                                    else
+                                        "Выбрано: Интервал $raiseInterval мин"
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                summary,
+                                                color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                                fontSize = 13.sp, fontWeight = FontWeight.Medium
+                                            )
+                                            Text(
+                                                "Нажми, чтобы выбрать режим и интервал.",
+                                                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                                fontSize = 10.sp, lineHeight = 13.sp
+                                            )
+                                        }
+                                        OutlinedButton(
+                                            onClick = { showDialog = "raise_settings" },
+                                            colors = ButtonDefaults.outlinedButtonColors(
+                                                contentColor = ThemeManager.parseColor(theme.accentColor)
+                                            )
+                                        ) {
+                                            Icon(Icons.Default.Tune, null, modifier = Modifier.size(14.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Настроить", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
+                    var autoDeliverySettings by remember { mutableStateOf(AutoDeliveryManager.getSettings(context)) }
+
+                    AutoDeliveryCard(
+                        settings = autoDeliverySettings,
+                        theme = theme,
+                        onToggle = {
+                            if (LicenseManager.hasAccess(PremiumFeature.AUTO_DELIVERY)) {
+                                val newSt = autoDeliverySettings.copy(enabled = !autoDeliverySettings.enabled)
+                                autoDeliverySettings = newSt
+                                AutoDeliveryManager.saveSettings(context, newSt)
+                            } else {
+                                showPremiumFor = PremiumFeature.AUTO_DELIVERY
+                            }
+                        },
+                        onConfigure = {
+                            if (LicenseManager.hasAccess(PremiumFeature.AUTO_DELIVERY)) showDialog = "auto_delivery"
+                            else showPremiumFor = PremiumFeature.AUTO_DELIVERY
+                        }
+                    )
+                }
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
+                        Column {
+                            StrictProOnlySettingCard(
+                                title = "XD Dumper", subtitle = "Авто-демпинг цен конкурентов",
+                                checked = dumperSettings.enabled, icon = Icons.Default.TrendingDown, theme = theme,
+                                onCheckedChange = {
+                                    if (!busySettings.enabled) { dumperSettings = dumperSettings.copy(enabled = it); repository.saveDumperSettings(dumperSettings) }
+                                },
+                                onProRequired = { navController.navigate("donations"); Toast.makeText(context, "Эта функция доступна только в PRO версии!", Toast.LENGTH_SHORT).show() }
+                            )
+                            if (dumperSettings.enabled && LicenseManager.isProActive()) {
+                                Button(onClick = { if (!busySettings.enabled) navController.navigate("xd_dumper") },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                ) { Text("Настроить лоты для демпинга", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                            }
+                        }
+                    }
+                }
+                item {
+                    val concurentEnabled = remember { mutableStateOf(ConcurentManager.getSettings(context).enabled) }
+                    val concurentIsPro = LicenseManager.isProActive()
+
+                    val prefsLocal = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
+                    LaunchedEffect(Unit) {
+                        if (prefsLocal.getString("concurent_pending_node", null) != null && showDialog == null) {
+                            if (concurentIsPro) showDialog = "concurent"
+                        }
+                    }
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box {
+                                    Icon(
+                                        Icons.Default.Campaign, null,
+                                        tint = if (concurentIsPro) ThemeManager.parseColor(theme.accentColor) else Color.Gray.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                    if (!concurentIsPro) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .offset(x = 20.dp, y = (-2).dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFFFC107)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Lock, null, tint = Color.Black, modifier = Modifier.size(9.dp))
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.width(16.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("Concurent", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                    Text(
+                                        when {
+                                            !concurentIsPro -> "Только для подписчиков PRO"
+                                            concurentEnabled.value -> "Публикации идут по таймеру"
+                                            else -> "Автопубликации в общих чатах FunPay"
+                                        },
+                                        fontSize = 12.sp,
+                                        color = if (!concurentIsPro) Color(0xFFFFC107)
+                                        else ThemeManager.parseColor(theme.textSecondaryColor)
+                                    )
+                                }
+                                Switch(
+                                    checked = concurentEnabled.value && concurentIsPro,
+                                    onCheckedChange = { on ->
+                                        if (!concurentIsPro) {
+                                            showPremiumFor = PremiumFeature.CONCURENT
+                                            return@Switch
+                                        }
+                                        concurentEnabled.value = on
+                                        val s = ConcurentManager.getSettings(context)
+                                        val next = if (on) s.copy(
+                                            enabled = true,
+                                            postsSinceEnable = 0,
+                                            currentMessageIndex = 0,
+                                            currentGameIndex = 0,
+                                            lastPostAt = 0L,
+                                            nextPostAt = System.currentTimeMillis() + s.intervalSeconds * 1000L
+                                        ) else s.copy(enabled = false)
+                                        ConcurentManager.saveSettings(context, next)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                        checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
+                                    )
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    if (concurentIsPro) showDialog = "concurent"
+                                    else showPremiumFor = PremiumFeature.CONCURENT
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                            ) {
+                                Icon(Icons.Default.Tune, null, modifier = Modifier.size(16.dp),
+                                    tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    if (concurentIsPro) "Настроить тексты и чаты" else "PRO",
+                                    color = if (concurentIsPro) ThemeManager.parseColor(theme.textPrimaryColor) else Color(0xFFFFC107)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            
+            if (selectedTab == 4) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("catalog") }.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)).border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.3f), RoundedCornerShape(theme.borderRadius.dp))) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CloudDownload, contentDescription = null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Каталог готовых шаблонов", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                Text("Скачивай и делись автоответами, шаблонами, настройками ИИ и оформлениями текстов.", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp)
+                            }
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
+                        }
+                    }
+                }
+                item {
+                    val floodFolders = remember { ChatFolderManager.getFolders(context) }
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.VisibilityOff, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(28.dp))
+                                Spacer(Modifier.width(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Секретный чат FunPay", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
+                                    Text(
+                                        "Общий чат по ссылке funpay.com/chat/?node=flood. В обычном списке его нет — добавим сами.",
+                                        fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor), lineHeight = 14.sp
+                                    )
+                                }
+                                Switch(
+                                    checked = floodSettings.enabled,
+                                    onCheckedChange = {
+                                        floodSettings = floodSettings.copy(enabled = it)
                                         ChatFolderManager.saveFloodChat(context, floodSettings)
                                     },
-                                    label = { Text(folder.name, fontSize = 11.sp) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
-                                        selectedLabelColor = Color.White
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = ThemeManager.parseColor(theme.accentColor),
+                                        checkedTrackColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
                                     )
                                 )
                             }
+
+                            if (floodSettings.enabled) {
+                                Spacer(Modifier.height(10.dp))
+
+
+                                OutlinedTextField(
+                                    value = floodSettings.customDisplayName,
+                                    onValueChange = {
+                                        floodSettings = floodSettings.copy(customDisplayName = it)
+                                        ChatFolderManager.saveFloodChat(context, floodSettings)
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Как назвать чат в списке", fontSize = 11.sp) },
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                        cursorColor = ThemeManager.parseColor(theme.accentColor)
+                                    )
+                                )
+
+                                Spacer(Modifier.height(4.dp))
+
+
+                                Text("Группа (папка):", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    FilterChip(
+                                        selected = floodSettings.folderId == null,
+                                        onClick = {
+                                            floodSettings = floodSettings.copy(folderId = null)
+                                            ChatFolderManager.saveFloodChat(context, floodSettings)
+                                        },
+                                        label = { Text("Без папки", fontSize = 11.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                            selectedLabelColor = Color.White
+                                        )
+                                    )
+                                    floodFolders.filter { !it.isPreset || it.id == "preset_archived" }.forEach { folder ->
+                                        FilterChip(
+                                            selected = floodSettings.folderId == folder.id,
+                                            onClick = {
+                                                floodSettings = floodSettings.copy(folderId = folder.id)
+                                                ChatFolderManager.saveFloodChat(context, floodSettings)
+                                            },
+                                            label = { Text(folder.name, fontSize = 11.sp) },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                                selectedLabelColor = Color.White
+                                            )
+                                        )
+                                    }
+                                }
+                                if (floodFolders.none { !it.isPreset || it.id == "preset_archived" }) {
+                                    Text("Создайте папку в списке чатов, чтобы выбрать её здесь.",
+                                        fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                                }
+                            }
                         }
-                        if (floodFolders.none { !it.isPreset || it.id == "preset_archived" }) {
-                            Text("Создайте папку в списке чатов, чтобы выбрать её здесь.",
-                                fontSize = 10.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                    }
+                }
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.ShortText, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
+                                Spacer(Modifier.width(16.dp))
+                                Text("Шаблоны сообщений", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.weight(1f))
+                                Button(onClick = { showDialog = "templates" }, colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) {
+                                    Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text("Быстрая вставка готовых фраз в чате", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                         }
                     }
                 }
-            }
-        }
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.ShortText, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
-                        Spacer(Modifier.width(16.dp))
-                        Text("Шаблоны сообщений", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.weight(1f))
-                        Button(onClick = { showDialog = "templates" }, colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) {
-                            Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor))
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().clickable {
+                        if (LicenseManager.hasAccess(PremiumFeature.AOS)) navController.navigate("aos_settings")
+                        else showPremiumFor = PremiumFeature.AOS
+                    }.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val aosUnlocked = LicenseManager.hasAccess(PremiumFeature.AOS)
+                            Box {
+                                Icon(Icons.Default.PhoneAndroid, contentDescription = null,
+                                    tint = if (aosUnlocked) Color(0xFF00E676) else Color.Gray.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(32.dp))
+                                if (!aosUnlocked) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .offset(x = 20.dp, y = (-2).dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFFFC107)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Default.Lock, null, tint = Color.Black, modifier = Modifier.size(9.dp))
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Always On Screen (AOS)", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                Text(
+                                    if (aosUnlocked) "Использовать старый телефон как дисплей статистики"
+                                    else "PRO или разблокировка через рекламу",
+                                    fontSize = 12.sp,
+                                    color = if (aosUnlocked) ThemeManager.parseColor(theme.textSecondaryColor) else Color(0xFFFFC107)
+                                )
+                            }
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
                         }
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text("Быстрая вставка готовых фраз в чате", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
                 }
-            }
-        }
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("aos_settings") },
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(32.dp))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Always On Screen (AOS)", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
-                        Text("Использовать старый телефон как дисплей статистики", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("rmthub_search") }.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Public, contentDescription = null, tint = Color(0xFF288CD7), modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Глобальный поиск пользователей", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
+                                Text("Поиск по нику через API RMTHub.com", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
+                            }
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
+                        }
                     }
-                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
                 }
+                item { Spacer(Modifier.height(8.dp)) }
             }
+
+            item { Spacer(Modifier.height(80.dp)) }
         }
 
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("rmthub_search") },
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Public, contentDescription = null, tint = Color(0xFF288CD7), modifier = Modifier.size(32.dp))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Глобальный поиск пользователей", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
-                        Text("Поиск по нику через API RMTHub.com", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))
-                    }
-                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = ThemeManager.parseColor(theme.textSecondaryColor))
-                }
+        
+        
+        val highlightAccent = remember(theme.accentColor) {
+            val hsl = FloatArray(3)
+            androidx.core.graphics.ColorUtils.colorToHSL(
+                android.graphics.Color.parseColor(theme.accentColor), hsl
+            )
+            hsl[1] = (hsl[1] * 1.15f).coerceAtMost(1f)
+            hsl[2] = (hsl[2] + 0.18f).coerceIn(0.4f, 0.85f)
+            Color(androidx.core.graphics.ColorUtils.HSLToColor(hsl))
+        }
+        currentMatch?.let { (_, itemIdxInTab) ->
+            val targetIndex = 3 + itemIdxInTab
+            val visibleItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetIndex }
+            if (visibleItem != null) {
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                val infinite = rememberInfiniteTransition(label = "highlightPulse")
+                val pulseAlpha by infinite.animateFloat(
+                    initialValue = 0.45f, targetValue = 0.95f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(700, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "pulseAlpha"
+                )
+                val yOffsetDp = with(density) { visibleItem.offset.toDp() }
+                val heightDp = with(density) { visibleItem.size.toDp() }
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .offset(y = yOffsetDp)
+                        .fillMaxWidth()
+                        .height(heightDp)
+                        .border(
+                            width = 2.dp,
+                            color = highlightAccent.copy(alpha = pulseAlpha),
+                            shape = RoundedCornerShape(theme.borderRadius.dp)
+                        )
+                )
             }
         }
-
-        item { Spacer(Modifier.height(8.dp)) }
-    }
+    } 
 
     when (showDialog) {
         "commands" -> CommandsDialog(repository, theme) { showDialog = null }
@@ -3200,6 +3335,259 @@ internal fun ControlSectionHeader(title: String, icon: ImageVector, theme: AppTh
     }
 }
 
+/**
+ * Компактная статус-полоса в шапке вкладки Управление.
+ * Тонкая, без gradient. Цветная точка-индикатор + статус-текст + быстрые actions.
+ */
+@Composable
+fun ControlHeroCard(
+    theme: AppTheme,
+    appFullyDisabled: Boolean,
+    busyEnabled: Boolean,
+    activeCount: Int,
+    onToggleFullDisable: () -> Unit
+) {
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
+
+    val statusColor = when {
+        appFullyDisabled -> Color(0xFFFF5252)
+        busyEnabled -> Color(0xFFFFA000)
+        else -> Color(0xFF00C853)
+    }
+    val statusText = when {
+        appFullyDisabled -> "FunPay Tools выключен"
+        busyEnabled -> "Режим занятости"
+        else -> "FunPay Tools активен"
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(theme.borderRadius.dp))
+            .background(surface)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            
+            val infinite = rememberInfiniteTransition(label = "pulse")
+            val pulse by infinite.animateFloat(
+                initialValue = 0.55f, targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(900, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulseAlpha"
+            )
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(statusColor.copy(alpha = if (appFullyDisabled) 1f else pulse))
+            )
+            Spacer(Modifier.width(10.dp))
+
+            
+            Column(modifier = Modifier.weight(1f)) {
+                Text(statusText, color = textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(
+                    if (appFullyDisabled) "Все функции остановлены"
+                    else "Сейчас включено всего $activeCount функций",
+                    color = textSecondary, fontSize = 11.sp
+                )
+            }
+
+            
+            if (appFullyDisabled) {
+                Button(
+                    onClick = onToggleFullDisable,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00C853)),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Включить", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                
+                IconButton(
+                    onClick = onToggleFullDisable,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.06f))
+                ) {
+                    Icon(
+                        Icons.Default.PowerSettingsNew,
+                        null,
+                        tint = textSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Поисковая строка с подсказкой "найдено в табе X" при наличии совпадений.
+ */
+@Composable
+fun ControlSearchBar(
+    query: String,
+    theme: AppTheme,
+    foundInTab: String? = null,
+    onChange: (String) -> Unit
+) {
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val surface = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
+
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(surface)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Search, null,
+                tint = textSecondary.copy(alpha = 0.7f),
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            androidx.compose.foundation.text.BasicTextField(
+                value = query,
+                onValueChange = onChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(color = textPrimary, fontSize = 13.sp),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(accent),
+                decorationBox = { inner ->
+                    if (query.isEmpty()) {
+                        Text("Найти функцию…", color = textSecondary.copy(alpha = 0.6f), fontSize = 13.sp)
+                    }
+                    inner()
+                }
+            )
+            if (query.isNotEmpty()) {
+                Icon(
+                    Icons.Default.Close, null,
+                    tint = textSecondary,
+                    modifier = Modifier.size(18.dp).clickable { onChange("") }
+                )
+            }
+        }
+        
+        if (query.isNotBlank()) {
+            Row(
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (foundInTab != null) {
+                    Icon(
+                        Icons.Default.Check, null,
+                        tint = accent,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "Найдено в разделе \"$foundInTab\"",
+                        color = textSecondary,
+                        fontSize = 11.sp
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Info, null,
+                        tint = textSecondary.copy(alpha = 0.6f),
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "Ничего не найдено",
+                        color = textSecondary.copy(alpha = 0.7f),
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * TabBar: иконка + текст вертикально, активный таб обведён скруглённым контуром
+ * "ярче" акцента, фон прозрачный, без бейджей.
+ */
+@Composable
+fun ControlTabBar(
+    tabs: List<Pair<String, ImageVector>>,
+    activeCounts: List<Int>,
+    selected: Int,
+    theme: AppTheme,
+    onSelect: (Int) -> Unit
+) {
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
+    val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
+
+    
+    
+    
+    val brightAccent = remember(theme.accentColor) {
+        val hsl = FloatArray(3)
+        androidx.core.graphics.ColorUtils.colorToHSL(
+            android.graphics.Color.parseColor(theme.accentColor), hsl
+        )
+        hsl[1] = (hsl[1] * 1.15f).coerceAtMost(1f)        
+        hsl[2] = (hsl[2] + 0.18f).coerceIn(0.4f, 0.85f)   
+        Color(androidx.core.graphics.ColorUtils.HSLToColor(hsl))
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        tabs.forEachIndexed { idx, (title, icon) ->
+            val isSel = idx == selected
+            val shape = RoundedCornerShape(14.dp)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(shape)
+                    .border(
+                        width = if (isSel) 1.5.dp else 0.dp,
+                        color = if (isSel) brightAccent else Color.Transparent,
+                        shape = shape
+                    )
+                    .clickable { onSelect(idx) }
+                    .padding(vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    icon, null,
+                    tint = if (isSel) brightAccent else textSecondary.copy(alpha = 0.75f),
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    title,
+                    color = if (isSel) textPrimary else textSecondary.copy(alpha = 0.85f),
+                    fontSize = 11.5.sp,
+                    fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun AutoTicketCard(
     settings: AutoTicketSettings, isSending: Boolean, lastResult: String?, theme: AppTheme,
@@ -3209,7 +3597,7 @@ fun AutoTicketCard(
     val surface = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.ConfirmationNumber, null, tint = accent, modifier = Modifier.size(28.dp))
@@ -3272,7 +3660,7 @@ fun AutoTicketDialog(settings: AutoTicketSettings, theme: AppTheme, onSave: (Aut
     val accent = ThemeManager.parseColor(theme.accentColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    AlertDialog(onDismissRequest = onDismiss, containerColor = ThemeManager.parseColor(theme.surfaceColor),
+    AlertDialog(onDismissRequest = onDismiss, containerColor = ThemeManager.dialogSurface(theme),
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.ConfirmationNumber, null, tint = accent, modifier = Modifier.size(22.dp))
@@ -3323,7 +3711,7 @@ fun OrderReminderCard(settings: OrderReminderSettings, theme: AppTheme, onToggle
     val surface = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Timer, null, tint = accent, modifier = Modifier.size(28.dp))
@@ -3359,7 +3747,7 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
     val accent = ThemeManager.parseColor(theme.accentColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
 
 
 
@@ -3377,11 +3765,7 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).heightIn(max = 640.dp),
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).heightIn(max = 640.dp).clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3472,12 +3856,7 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
                 Spacer(Modifier.height(18.dp))
 
 
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.28f)),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, accent.copy(alpha = 0.4f))
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.28f)).border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(10.dp))) {
                     Column(Modifier.padding(12.dp)) {
                         Text(
                             "Следующий разрешённый подъём",
@@ -3532,19 +3911,9 @@ private fun ModeCard(
     textSecondary: Color,
     onClick: () -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) accent.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.18f)
-        ),
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(
-            if (selected) 2.dp else 1.dp,
-            if (selected) accent else Color.White.copy(alpha = 0.12f)
-        )
-        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .clickable(onClick = onClick).clip(RoundedCornerShape(10.dp)).background(if (selected) accent.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.18f)).border(if (selected) 2.dp else 1.dp, if (selected) accent else Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))) {
         Row(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.Top
@@ -3578,7 +3947,7 @@ fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
     val accent = ThemeManager.parseColor(theme.accentColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
 
     fun save(newVal: FeedbackBonusSettings) {
         settings = newVal
@@ -3591,11 +3960,7 @@ fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.92f),
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.92f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
 
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -3668,7 +4033,7 @@ fun FeedbackBonusDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(settings.rules, key = { it.id }) { rule ->
+                        items(settings.rules.distinctBy { it.id }, key = { it.id }) { rule ->
                             FeedbackBonusRuleCard(
                                 rule = rule,
                                 isEditing = editingRuleId == rule.id,
@@ -3731,17 +4096,7 @@ private fun FeedbackBonusRuleCard(
     }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (rule.enabled) Color.Black.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.08f)
-        ),
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(
-            1.dp,
-            if (isEditing) accent else Color.White.copy(alpha = 0.1f)
-        )
-        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (rule.enabled) Color.Black.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.08f)).border(1.dp, if (isEditing) accent else Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp))) {
         Column(modifier = Modifier.padding(12.dp)) {
 
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3779,6 +4134,7 @@ private fun FeedbackBonusRuleCard(
                     checked = rule.enabled,
                     onCheckedChange = { onUpdate(rule.copy(enabled = it)) },
                     modifier = Modifier.scale(0.75f),
+                    enabled = true,
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = accent,
                         checkedTrackColor = accent.copy(alpha = 0.5f)
@@ -3788,16 +4144,20 @@ private fun FeedbackBonusRuleCard(
 
             if (isEditing) {
                 Spacer(Modifier.height(10.dp))
-                HorizontalDivider(color = Color.White.copy(0.08f))
+                HorizontalDivider(modifier = Modifier, thickness = 1.dp, color = Color.White.copy(0.08f))
                 Spacer(Modifier.height(10.dp))
 
 
                 OutlinedTextField(
                     value = rule.name,
                     onValueChange = { onUpdate(rule.copy(name = it)) },
-                    label = { Text("Название правила") },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = true,
+                    readOnly = false,
+                    label = { Text("Название правила") },
+                    isError = false,
                     singleLine = true,
+                    maxLines = 1,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
                         focusedBorderColor = accent, cursorColor = accent
@@ -3811,7 +4171,11 @@ private fun FeedbackBonusRuleCard(
                 Slider(
                     value = rule.minStars.toFloat(),
                     onValueChange = { onUpdate(rule.copy(minStars = it.toInt().coerceIn(1, 5))) },
-                    valueRange = 1f..5f, steps = 3,
+                    modifier = Modifier,
+                    enabled = true,
+                    valueRange = 1f..5f,
+                    steps = 3,
+                    onValueChangeFinished = null,
                     colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
                 )
 
@@ -3821,6 +4185,10 @@ private fun FeedbackBonusRuleCard(
                     value = rule.text,
                     onValueChange = { onUpdate(rule.copy(text = it)) },
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = true,
+                    readOnly = false,
+                    isError = false,
+                    singleLine = false,
                     minLines = 2, maxLines = 5,
                     placeholder = {
                         Text(
@@ -3865,7 +4233,8 @@ private fun FeedbackBonusRuleCard(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
                         },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        enabled = true
                     ) {
                         Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
@@ -3889,6 +4258,7 @@ private fun FeedbackBonusRuleCard(
                             checked = rule.imageFirst,
                             onCheckedChange = { onUpdate(rule.copy(imageFirst = it)) },
                             modifier = Modifier.scale(0.7f),
+                            enabled = true,
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = accent,
                                 checkedTrackColor = accent.copy(alpha = 0.5f)
@@ -3902,13 +4272,15 @@ private fun FeedbackBonusRuleCard(
                     Checkbox(
                         checked = rule.oncePerOrder,
                         onCheckedChange = { onUpdate(rule.copy(oncePerOrder = it)) },
+                        modifier = Modifier,
+                        enabled = true,
                         colors = CheckboxDefaults.colors(checkedColor = accent)
                     )
                     Text("Только один раз на заказ", color = textPrimary, fontSize = 12.sp)
                 }
 
                 Spacer(Modifier.height(10.dp))
-                HorizontalDivider(color = Color.White.copy(0.08f))
+                HorizontalDivider(modifier = Modifier, thickness = 1.dp, color = Color.White.copy(0.08f))
                 Spacer(Modifier.height(10.dp))
 
 
@@ -3954,6 +4326,7 @@ private fun FeedbackBonusRuleCard(
                     OutlinedButton(
                         onClick = onCopy,
                         modifier = Modifier.weight(1f),
+                        enabled = true,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = accent)
                     ) {
                         Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
@@ -3963,6 +4336,7 @@ private fun FeedbackBonusRuleCard(
                     OutlinedButton(
                         onClick = { showDeleteConfirm = true },
                         modifier = Modifier.weight(1f),
+                        enabled = true,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFE57373))
                     ) {
                         Icon(Icons.Default.Delete, null, modifier = Modifier.size(14.dp))
@@ -4009,9 +4383,13 @@ private fun CommaListField(
             val parsed = it.split(",").map { s -> s.trim() }.filter { s -> s.isNotBlank() }
             onChange(parsed)
         },
+        modifier = Modifier.fillMaxWidth(),
+        enabled = true,
+        readOnly = false,
         label = { Text(label, fontSize = 11.sp) },
         placeholder = { Text(placeholder, color = textSecondary, fontSize = 11.sp) },
-        modifier = Modifier.fillMaxWidth(),
+        isError = false,
+        singleLine = false,
         maxLines = 3,
         colors = OutlinedTextFieldDefaults.colors(
             focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
@@ -4027,7 +4405,7 @@ fun OrderReminderDialog(settings: OrderReminderSettings, theme: AppTheme, onSave
     val accent = ThemeManager.parseColor(theme.accentColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    AlertDialog(onDismissRequest = onDismiss, containerColor = ThemeManager.parseColor(theme.surfaceColor),
+    AlertDialog(onDismissRequest = onDismiss, containerColor = ThemeManager.dialogSurface(theme),
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Timer, null, tint = accent, modifier = Modifier.size(22.dp))
@@ -4073,16 +4451,9 @@ fun PremiumSettingCard(
     feature: PremiumFeature,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(theme.borderRadius.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = ThemeManager.parseColor(theme.surfaceColor)
-        ),
-        elevation = CardDefaults.cardElevation(2.dp)
-    ) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .padding(vertical = 4.dp).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor))) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -4224,11 +4595,7 @@ fun AutoRefundDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: (
     }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp),
-            modifier = Modifier.heightIn(max = 600.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.heightIn(max = 600.dp).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка Авто-возврата", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -4324,13 +4691,7 @@ fun AutoRefundDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: (
 
 @Composable
 fun SettingCard(title: String, desc: String, enabled: Boolean, icon: ImageVector, theme: AppTheme, onToggle: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
-        ),
-        shape = RoundedCornerShape(theme.borderRadius.dp)
-        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
         Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = if (enabled) ThemeManager.parseColor(theme.accentColor) else ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(32.dp))
             Spacer(modifier = Modifier.width(16.dp))
@@ -4359,6 +4720,10 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
     var newImageUri by remember { mutableStateOf<Uri?>(null) }
     var newImageFirst by remember { mutableStateOf(true) }
     var editingCmd by remember { mutableStateOf<AutoResponseCommand?>(null) }
+    
+    
+    var formExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(editingCmd) { if (editingCmd != null) formExpanded = true }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         newImageUri = uri
@@ -4368,11 +4733,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -4392,239 +4753,274 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
 
                 Spacer(Modifier.height(12.dp))
 
-
-                OutlinedTextField(
-                    value = newTrigger,
-                    onValueChange = { newTrigger = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Триггер (слово/фраза)") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                        cursorColor = ThemeManager.parseColor(theme.accentColor)
-                    ),
-                    singleLine = true
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = newResponse,
-                    onValueChange = { newResponse = it },
-                    modifier = Modifier.fillMaxWidth().height(90.dp),
-                    label = { Text("Ответ (необязательно, если есть картинка)") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                        cursorColor = ThemeManager.parseColor(theme.accentColor)
-                    ),
-                    maxLines = 4
-                )
-                Spacer(Modifier.height(6.dp))
-
-
-                var showVarsHelp by remember { mutableStateOf(false) }
+                
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { showVarsHelp = !showVarsHelp }
-                        .padding(vertical = 4.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (formExpanded) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
+                            else Color.Black.copy(alpha = 0.2f)
+                        )
+                        .clickable {
+                            if (formExpanded && editingCmd != null) {
+                                editingCmd = null
+                                newTrigger = ""; newResponse = ""
+                                exactMatch = false; caseSensitive = false; callMode = false
+                                newImageUri = null; newImageFirst = true
+                            }
+                            formExpanded = !formExpanded
+                        }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        if (showVarsHelp) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        if (formExpanded) Icons.Default.ExpandLess else Icons.Default.Add,
                         null,
                         tint = ThemeManager.parseColor(theme.accentColor),
                         modifier = Modifier.size(18.dp)
                     )
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        "Доступные переменные",
-                        color = ThemeManager.parseColor(theme.accentColor),
-                        fontSize = 11.sp, fontWeight = FontWeight.SemiBold
+                        if (editingCmd != null) "Редактирование команды (нажмите чтобы свернуть)"
+                        else if (formExpanded) "Скрыть форму создания"
+                        else "Создать новую команду",
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
-                if (showVarsHelp) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.25f)),
-                        shape = RoundedCornerShape(8.dp)
-                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+
+                if (formExpanded) {
+                    Spacer(Modifier.height(8.dp))
+
+
+                    OutlinedTextField(
+                        value = newTrigger,
+                        onValueChange = { newTrigger = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Триггер (слово/фраза)") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                            cursorColor = ThemeManager.parseColor(theme.accentColor)
+                        ),
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = newResponse,
+                        onValueChange = { newResponse = it },
+                        modifier = Modifier.fillMaxWidth().height(90.dp),
+                        label = { Text("Ответ (необязательно, если есть картинка)") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                            cursorColor = ThemeManager.parseColor(theme.accentColor)
+                        ),
+                        maxLines = 4
+                    )
+                    Spacer(Modifier.height(6.dp))
+
+
+                    var showVarsHelp by remember { mutableStateOf(false) }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showVarsHelp = !showVarsHelp }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Icon(
+                            if (showVarsHelp) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            null,
+                            tint = ThemeManager.parseColor(theme.accentColor),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
                         Text(
-                            FpPlaceholders.AVAILABLE_HELP_TEXT,
-                            color = ThemeManager.parseColor(theme.textSecondaryColor),
-                            fontSize = 10.sp, lineHeight = 14.sp,
-                            modifier = Modifier.padding(10.dp)
+                            "Доступные переменные",
+                            color = ThemeManager.parseColor(theme.accentColor),
+                            fontSize = 11.sp, fontWeight = FontWeight.SemiBold
                         )
                     }
-                }
-                Spacer(Modifier.height(6.dp))
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f))
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
-                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                        Text(
-                            if (editingCmd != null) "Параметры этой команды" else "Параметры новой команды",
-                            color = ThemeManager.parseColor(theme.accentColor),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            letterSpacing = 0.5.sp
-                        )
-                        Text(
-                            "Действуют только для той команды, которую сейчас создаёшь или редактируешь.",
-                            color = ThemeManager.parseColor(theme.textSecondaryColor),
-                            fontSize = 10.sp, lineHeight = 13.sp
-                        )
-                        Spacer(Modifier.height(6.dp))
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = exactMatch,
-                                onCheckedChange = { exactMatch = it },
-                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
-                            )
-                            Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = caseSensitive,
-                                onCheckedChange = { caseSensitive = it },
-                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
-                            )
-                            Column {
-                                Text("Учитывать регистр букв", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
-                                Text(
-                                    if (caseSensitive) "'Привет' ≠ 'привет'" else "'Привет' = 'ПРИВЕТ' = 'привет'",
-                                    color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp
-                                )
-                            }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = callMode,
-                                onCheckedChange = { callMode = it },
-                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
-                            )
-                            Column {
-                                Text("Режим вызова (звонок продавца)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
-                                Text(
-                                    "Срочное уведомление продавцу с кнопкой 'Ответить'. Удобно для !продавец, !позвать.",
-                                    color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp, lineHeight = 13.sp
-                                )
-                            }
-                        }
-                        if (callMode) {
-                            Spacer(Modifier.height(6.dp))
-                            Text("Как показывать вызов:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                            Spacer(Modifier.height(4.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                FilterChip(
-                                    selected = callStyle == "notification",
-                                    onClick = { callStyle = "notification" },
-                                    label = { Text("Уведомление", fontSize = 11.sp) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
-                                        selectedLabelColor = Color.White
-                                    )
-                                )
-                                FilterChip(
-                                    selected = callStyle == "fullscreen",
-                                    onClick = { callStyle = "fullscreen" },
-                                    label = { Text("Имитация звонка", fontSize = 11.sp) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
-                                        selectedLabelColor = Color.White
-                                    )
-                                )
-                            }
+                    if (showVarsHelp) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.25f))) {
                             Text(
-                                if (callStyle == "fullscreen")
-                                    "На весь экран появится экран входящего вызова в стиле iOS — с аватаркой, ником и кнопками 'Ответить/Сбросить'. Работает даже поверх блокировки."
-                                else
-                                    "Обычное пуш-уведомление с рингтоном и кнопками 'Ответить/Отклонить'.",
+                                FpPlaceholders.AVAILABLE_HELP_TEXT,
+                                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                fontSize = 10.sp, lineHeight = 14.sp,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Transparent).border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f), RoundedCornerShape(10.dp))) {
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text(
+                                if (editingCmd != null) "Параметры этой команды" else "Параметры новой команды",
+                                color = ThemeManager.parseColor(theme.accentColor),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 0.5.sp
+                            )
+                            Text(
+                                "Действуют только для той команды, которую сейчас создаёшь или редактируешь.",
                                 color = ThemeManager.parseColor(theme.textSecondaryColor),
                                 fontSize = 10.sp, lineHeight = 13.sp
                             )
                             Spacer(Modifier.height(6.dp))
-                            OutlinedTextField(
-                                value = callAutoReplyText,
-                                onValueChange = { callAutoReplyText = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                label = { Text("Автоответ покупателю во время вызова", fontSize = 11.sp) },
-                                placeholder = { Text("Зову хозяина, он ответит в течение часа.", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
-                                maxLines = 3,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                                    unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                                    focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                                    cursorColor = ThemeManager.parseColor(theme.accentColor)
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = exactMatch,
+                                    onCheckedChange = { exactMatch = it },
+                                    colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
                                 )
-                            )
+                                Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = caseSensitive,
+                                    onCheckedChange = { caseSensitive = it },
+                                    colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                                )
+                                Column {
+                                    Text("Учитывать регистр букв", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                    Text(
+                                        if (caseSensitive) "'Привет' ≠ 'привет'" else "'Привет' = 'ПРИВЕТ' = 'привет'",
+                                        color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp
+                                    )
+                                }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = callMode,
+                                    onCheckedChange = { callMode = it },
+                                    colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                                )
+                                Column {
+                                    Text("Режим вызова (звонок продавца)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                    Text(
+                                        "Срочное уведомление продавцу с кнопкой 'Ответить'. Удобно для !продавец, !позвать.",
+                                        color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp, lineHeight = 13.sp
+                                    )
+                                }
+                            }
+                            if (callMode) {
+                                Spacer(Modifier.height(6.dp))
+                                Text("Как показывать вызов:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                Spacer(Modifier.height(4.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    FilterChip(
+                                        selected = callStyle == "notification",
+                                        onClick = { callStyle = "notification" },
+                                        label = { Text("Уведомление", fontSize = 11.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                            selectedLabelColor = Color.White
+                                        )
+                                    )
+                                    FilterChip(
+                                        selected = callStyle == "fullscreen",
+                                        onClick = { callStyle = "fullscreen" },
+                                        label = { Text("Имитация звонка", fontSize = 11.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                            selectedLabelColor = Color.White
+                                        )
+                                    )
+                                }
+                                Text(
+                                    if (callStyle == "fullscreen")
+                                        "На весь экран появится экран входящего вызова в стиле iOS — с аватаркой, ником и кнопками 'Ответить/Сбросить'. Работает даже поверх блокировки."
+                                    else
+                                        "Обычное пуш-уведомление с рингтоном и кнопками 'Ответить/Отклонить'.",
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                    fontSize = 10.sp, lineHeight = 13.sp
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                OutlinedTextField(
+                                    value = callAutoReplyText,
+                                    onValueChange = { callAutoReplyText = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Автоответ покупателю во время вызова", fontSize = 11.sp) },
+                                    placeholder = { Text("Зову хозяина, он ответит в течение часа.", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
+                                    maxLines = 3,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                        cursorColor = ThemeManager.parseColor(theme.accentColor)
+                                    )
+                                )
+                            }
                         }
                     }
-                }
-                Spacer(Modifier.height(8.dp))
-                ImagePickerRow(
-                    imageUri = newImageUri,
-                    theme = theme,
-                    onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    onClear = { newImageUri = null }
-                )
-                if (newImageUri != null && newResponse.isNotBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    ImageOrderPicker(newImageFirst, theme) { newImageFirst = it }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (editingCmd != null) {
-                        OutlinedButton(
-                            onClick = {
-                                editingCmd = null
-                                newTrigger = ""; newResponse = ""; exactMatch = false
-                                caseSensitive = false; callMode = false
-                                callStyle = "notification"
-                                callAutoReplyText = "Зову хозяина, он ответит в течение часа."
-                                newImageUri = null; newImageFirst = true
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                    Spacer(Modifier.height(8.dp))
+                    ImagePickerRow(
+                        imageUri = newImageUri,
+                        theme = theme,
+                        onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        onClear = { newImageUri = null }
+                    )
+                    if (newImageUri != null && newResponse.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        ImageOrderPicker(newImageFirst, theme) { newImageFirst = it }
                     }
-                    Button(
-                        onClick = {
-                            val hasContent = newTrigger.isNotBlank() && (newResponse.isNotBlank() || newImageUri != null || callMode)
-                            if (hasContent) {
-                                val cmd = AutoResponseCommand(
-                                    trigger = newTrigger.trim(),
-                                    response = newResponse.trim(),
-                                    exactMatch = exactMatch,
-                                    imageUri = newImageUri?.toString(),
-                                    imageFirst = newImageFirst,
-                                    caseSensitive = caseSensitive,
-                                    callMode = callMode,
-                                    callStyle = callStyle,
-                                    callAutoReplyTextRaw = callAutoReplyText.trim().ifEmpty { null }
-                                )
-                                commands = if (editingCmd != null) {
-                                    commands.map { if (it == editingCmd) cmd else it }
-                                } else {
-                                    commands + cmd
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (editingCmd != null) {
+                            OutlinedButton(
+                                onClick = {
+                                    editingCmd = null
+                                    newTrigger = ""; newResponse = ""; exactMatch = false
+                                    caseSensitive = false; callMode = false
+                                    callStyle = "notification"
+                                    callAutoReplyText = "Зову хозяина, он ответит в течение часа."
+                                    newImageUri = null; newImageFirst = true
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                        }
+                        Button(
+                            onClick = {
+                                val hasContent = newTrigger.isNotBlank() && (newResponse.isNotBlank() || newImageUri != null || callMode)
+                                if (hasContent) {
+                                    val cmd = AutoResponseCommand(
+                                        trigger = newTrigger.trim(),
+                                        response = newResponse.trim(),
+                                        exactMatch = exactMatch,
+                                        imageUri = newImageUri?.toString(),
+                                        imageFirst = newImageFirst,
+                                        caseSensitive = caseSensitive,
+                                        callMode = callMode,
+                                        callStyle = callStyle,
+                                        callAutoReplyTextRaw = callAutoReplyText.trim().ifEmpty { null }
+                                    )
+                                    commands = if (editingCmd != null) {
+                                        commands.map { if (it == editingCmd) cmd else it }
+                                    } else {
+                                        commands + cmd
+                                    }
+                                    repository.saveCommands(commands)
+                                    editingCmd = null
+                                    newTrigger = ""; newResponse = ""; exactMatch = false
+                                    caseSensitive = false; callMode = false
+                                    callStyle = "notification"
+                                    callAutoReplyText = "Зову хозяина, он ответит в течение часа."
+                                    newImageUri = null; newImageFirst = true
                                 }
-                                repository.saveCommands(commands)
-                                editingCmd = null
-                                newTrigger = ""; newResponse = ""; exactMatch = false
-                                caseSensitive = false; callMode = false
-                                callStyle = "notification"
-                                callAutoReplyText = "Зову хозяина, он ответит в течение часа."
-                                newImageUri = null; newImageFirst = true
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                    ) { Text(if (editingCmd != null) "Сохранить" else "Добавить") }
-                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                        ) { Text(if (editingCmd != null) "Сохранить" else "Добавить") }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                } 
 
                 Spacer(Modifier.height(12.dp))
                 HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
@@ -4637,15 +5033,9 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                 } else {
                     LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         items(commands) { cmd ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (editingCmd == cmd)
-                                        ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
-                                    else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
-                                ),
-                                shape = RoundedCornerShape(10.dp)
-                                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (editingCmd == cmd)
+                                ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
+                            else ThemeManager.dialogSurface(theme).copy(alpha = 0.5f))) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -4723,7 +5113,7 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
                 Button(
                     onClick = onDismiss,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.dialogSurface(theme))
                 ) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
             }
         }
@@ -4743,10 +5133,7 @@ fun GreetingDialog(repository: FunPayRepository, settings: GreetingSettings, the
     }
 
     Dialog(onDismissRequest = {}) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка приветствия", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -4806,7 +5193,7 @@ fun GreetingDialog(repository: FunPayRepository, settings: GreetingSettings, the
                     Button(
                         onClick = { onSave(GreetingSettings(false, text, cooldown, ignoreSystem, imageUri?.toString(), imageFirst)) },
                         modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.dialogSurface(theme))
                     ) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                     Button(
                         onClick = { onSave(GreetingSettings(true, text, cooldown, ignoreSystem, imageUri?.toString(), imageFirst)) },
@@ -4830,11 +5217,7 @@ fun ReviewSettingsDialog(
     var selectedTab by remember { mutableIntStateOf(if (settings.useAi && LicenseManager.hasAccess(PremiumFeature.REVIEW_AI)) 0 else 1) }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp),
-            modifier = Modifier.heightIn(max = 700.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.heightIn(max = 700.dp).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка ответов на отзывы", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -5069,11 +5452,7 @@ fun ReviewSettingsDialog(
                         )
                     }
                     if (showReviewVarsHelp) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.25f)),
-                            shape = RoundedCornerShape(8.dp)
-                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.25f))) {
                             Text(
                                 FpPlaceholders.AVAILABLE_HELP_TEXT,
                                 color = ThemeManager.parseColor(theme.textSecondaryColor),
@@ -5093,7 +5472,7 @@ fun ReviewSettingsDialog(
                 Button(
                     onClick = onDismiss,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.dialogSurface(theme))
                 ) { Text("Закрыть", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
             }
         }
@@ -5176,11 +5555,11 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     showMultiImageDialog = true
                 }
 
-                // Сообщаем системе, что мы успешно обработали (consume)
-                // все элементы, у которых есть URI, оставляя остальное (например, текст)
+                
+                
                 transferableContent.consume { it.uri != null }
             } else {
-                // Если пришел просто текст, пропускаем его дальше
+                
                 transferableContent
             }
         }
@@ -5244,10 +5623,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
 
     if (showMultiImageDialog && selectedMultipleUris.isNotEmpty()) {
         Dialog(onDismissRequest = { showMultiImageDialog = false }) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)
-                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+            Box(modifier = Modifier.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
                 Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         "Отправить ${selectedMultipleUris.size} фото?",
@@ -5256,7 +5632,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         fontSize = 18.sp
                     )
                     Spacer(Modifier.height(12.dp))
-                    // Превью первых 4
+                    
                     val preview = selectedMultipleUris.take(4)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -5305,7 +5681,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                         if (fileId != null) {
                                             repository.sendMessage(chatId, "", fileId)
                                         }
-                                        // Небольшая задержка между отправками
+                                        
                                         if (index < urisToSend.lastIndex) {
                                             delay(800)
                                         }
@@ -5330,10 +5706,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
 
     if (showImageDialog && selectedImageUri != null) {
         Dialog(onDismissRequest = { showImageDialog = false }) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                shape = RoundedCornerShape(theme.borderRadius.dp)
-                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+            Box(modifier = Modifier.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
                 Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Отправить изображение?", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                     Spacer(modifier = Modifier.height(16.dp))
@@ -5395,7 +5768,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    // Срабатывает только если жест начат у левого края
+                    
                     if (down.position.x > backSwipeEdgePx) return@awaitEachGesture
                     var totalDx = 0f
                     var totalDy = 0f
@@ -5477,7 +5850,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             Icon(Icons.Default.ContentCopy, null, tint = ThemeManager.parseColor(theme.accentColor))
                         }
                     } else {
-                        // Обычный топбар
+                        
                         IconButton(onClick = { navController.popBackStack() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
                         }
@@ -5519,7 +5892,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             }
                         }
 
-                        // Меню ⋮
+                        
                         var showTopMenu by remember { mutableStateOf(false) }
                         Box {
                             IconButton(onClick = { showTopMenu = true }) {
@@ -5528,7 +5901,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             DropdownMenu(
                                 expanded = showTopMenu,
                                 onDismissRequest = { showTopMenu = false },
-                                modifier = Modifier.background(ThemeManager.parseColor(theme.surfaceColor))
+                                modifier = Modifier.background(ThemeManager.dialogSurface(theme))
                             ) {
                                 DropdownMenuItem(
                                     text = { Text("Поиск", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
@@ -5594,7 +5967,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     }
                 }
 
-                // Панель поиска
+                
                 AnimatedVisibility(visible = showSearch && !isSelectionMode) {
                     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
                         OutlinedTextField(
@@ -5687,11 +6060,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         if (chatInfo != null) {
             val info = chatInfo!!
             if (info.lookingAtName != null || info.registrationDate != null) {
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(8.dp),
-                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.8f)),
-                    shape = RoundedCornerShape(8.dp)
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().padding(8.dp).clip(RoundedCornerShape(8.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.8f))) {
                     Column(modifier = Modifier.padding(8.dp)) {
                         if (info.lookingAtName != null) {
                             Row(
@@ -5807,7 +6176,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     }
                 }
             }
-            items(allMessages, key = { it.id }) { msg ->
+            items(allMessages.distinctBy { it.id }, key = { it.id }) { msg ->
                 val isSelected = msg.id in selectedMessageIds
                 val isSearchHighlight = showSearch && searchQuery.isNotEmpty() &&
                         msg.text.contains(searchQuery, ignoreCase = true)
@@ -5891,16 +6260,10 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             }
         }
 
-        // Панель ответа
+        
         AnimatedVisibility(visible = replyToMessage != null) {
             replyToMessage?.let { reply ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp).clip(RoundedCornerShape(12.dp)).background(ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f))) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -5935,13 +6298,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             }
         }
 
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(24.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier
+            .fillMaxWidth()
+            .padding(8.dp).clip(RoundedCornerShape(24.dp)).background(ThemeManager.parseColor(theme.surfaceColor))) {
             Column(modifier = Modifier.fillMaxWidth()) {
 
                 if (validationError != null) {
@@ -6036,7 +6395,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         DropdownMenu(
                             expanded = showTemplatesMenu,
                             onDismissRequest = { showTemplatesMenu = false },
-                            modifier = Modifier.background(ThemeManager.parseColor(theme.surfaceColor))
+                            modifier = Modifier.background(ThemeManager.dialogSurface(theme))
                         ) {
                             val templates = repository.getMessageTemplates()
                             val templateSettings = repository.getTemplateSettings()
@@ -6225,7 +6584,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                     Box {
                         Button(
                             onClick = { showCopyMenu = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.dialogSurface(theme)),
                             enabled = !isDownloading
                         ) {
                             Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp))
@@ -6236,7 +6595,7 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                         DropdownMenu(
                             expanded = showCopyMenu,
                             onDismissRequest = { showCopyMenu = false },
-                            modifier = Modifier.background(ThemeManager.parseColor(theme.surfaceColor))
+                            modifier = Modifier.background(ThemeManager.dialogSurface(theme))
                         ) {
 
                             DropdownMenuItem(
@@ -6369,11 +6728,7 @@ fun OptimizedMessageBubble(
         val containerColor = if (isSupport) Color(0xFF1B5E20).copy(alpha = 0.6f)
         else ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = containerColor),
-            shape = RoundedCornerShape(12.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(containerColor)) {
             Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(
@@ -6414,7 +6769,7 @@ fun OptimizedMessageBubble(
         else -> message.author
     }
 
-    // Фон выделения/подсветки поиска
+    
     val rowBg = when {
         isSelected -> accentColor.copy(alpha = 0.18f)
         isSearchHighlight -> Color(0xFFFFEB3B).copy(alpha = 0.12f)
@@ -6466,7 +6821,7 @@ fun OptimizedMessageBubble(
                         totalDy += dy
                         if (!locked) {
                             if (abs(totalDy) > 12f && abs(totalDy) > abs(totalDx)) {
-                                // Это вертикальный жест (скролл) — выходим
+                                
                                 break
                             }
                             if (totalDx < -12f && abs(totalDx) > abs(totalDy) * 1.3f) {
@@ -6484,9 +6839,9 @@ fun OptimizedMessageBubble(
         horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom
     ) {
-        // Чекбокс в режиме выделения
-        if (isSelected || true) { // всегда резервируем место в режиме выделения через родительский state
-            // Здесь чекбокс не нужен — выделение через фон
+        
+        if (isSelected || true) { 
+            
         }
 
         Column(
@@ -6510,19 +6865,13 @@ fun OptimizedMessageBubble(
                 }
             }
 
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (message.isMe)
-                        ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f)
-                    else ThemeManager.parseColor(theme.surfaceColor)
-                ),
-                shape = RoundedCornerShape(
-                    topStart = if (message.isMe) 16.dp else 4.dp,
-                    topEnd = if (message.isMe) 4.dp else 16.dp,
-                    bottomStart = 16.dp, bottomEnd = 16.dp
-                ),
-                modifier = Modifier.widthIn(max = 280.dp)
-                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+            Box(modifier = Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(
+                topStart = if (message.isMe) 16.dp else 4.dp,
+                topEnd = if (message.isMe) 4.dp else 16.dp,
+                bottomStart = 16.dp, bottomEnd = 16.dp
+            )).background(if (message.isMe)
+                ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f)
+            else ThemeManager.parseColor(theme.surfaceColor))) {
                 Column(
                     modifier = Modifier.width(IntrinsicSize.Max).padding(12.dp).animateContentSize()
                 ) {
@@ -6540,7 +6889,7 @@ fun OptimizedMessageBubble(
                         if (message.text.isNotEmpty()) Spacer(Modifier.height(8.dp))
                     }
                     if (message.text.isNotEmpty()) {
-                        // Подсветка найденного текста
+                        
                         if (isSearchHighlight && searchQuery.isNotEmpty()) {
                             HighlightedText(
                                 text = message.text,
@@ -7130,11 +7479,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
         } else {
             val order = orderDetails!!
             Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                    shape = RoundedCornerShape(theme.borderRadius.dp)
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor))) {
                     Column(modifier = Modifier.padding(16.dp)) {
 
                         Text(
@@ -7239,11 +7584,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                 if (order.isBuyer) {
 
                     if (order.hasReview) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)),
-                            shape = RoundedCornerShape(theme.borderRadius.dp)
-                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f))) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(
                                     "Ваш отзыв",
@@ -7315,11 +7656,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                 } else {
 
                     if (order.hasReview) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)),
-                            shape = RoundedCornerShape(theme.borderRadius.dp)
-                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f))) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text("Отзыв покупателя (${order.reviewRating}★)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold)
                                 Text(order.reviewText, color = ThemeManager.parseColor(theme.textPrimaryColor), fontStyle = FontStyle.Italic)
@@ -7399,11 +7736,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.92f),
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.92f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
 
 
@@ -7419,7 +7752,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
 
                 if (!showForm) {
 
-                    Row(Modifier.fillMaxWidth().background(ThemeManager.parseColor(theme.surfaceColor).copy(0.5f), RoundedCornerShape(12.dp)).padding(12.dp),
+                    Row(Modifier.fillMaxWidth().background(ThemeManager.dialogSurface(theme).copy(0.5f), RoundedCornerShape(12.dp)).padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Column(Modifier.weight(1f)) {
                             Text("Отправлять сразу", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 14.sp)
@@ -7448,13 +7781,11 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                             }
                         }
                     } else {
+                        
+                        val uniqueTemplates = remember(templates) { templates.distinctBy { it.id } }
                         LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(templates, key = { it.id }) { template ->
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(0.5f)),
-                                    shape = RoundedCornerShape(12.dp)
-                                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                            items(uniqueTemplates.distinctBy { it.id }, key = { it.id }) { template ->
+                                Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(ThemeManager.dialogSurface(theme).copy(0.5f))) {
                                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -7580,10 +7911,7 @@ fun OrderConfirmDialog(repository: FunPayRepository, theme: AppTheme, onDismiss:
     }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 Text("Настройка просьбы отзыва", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 18.sp)
                 Spacer(modifier = Modifier.height(16.dp))
@@ -7686,19 +8014,8 @@ fun DonationScreen(theme: AppTheme) {
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
-                ),
-                shape = RoundedCornerShape(20.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
-                border = BorderStroke(
-                    1.5.dp,
-                    if (LicenseManager.isProActive()) Color(0xFF4CAF50).copy(alpha = 0.5f)
-                    else ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f)
-                )
-            ) {
+            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)).border(1.5.dp, if (LicenseManager.isProActive()) Color(0xFF4CAF50).copy(alpha = 0.5f)
+            else ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f), RoundedCornerShape(20.dp))) {
                 Column(modifier = Modifier.padding(24.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -7882,16 +8199,9 @@ fun DonationScreen(theme: AppTheme) {
         item {
             var expanded by remember { mutableStateOf(false) }
 
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded },
-                colors = CardDefaults.cardColors(
-                    containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
-                ),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-            ) {
+            Box(modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }.clip(RoundedCornerShape(16.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -8028,14 +8338,7 @@ fun DonationScreen(theme: AppTheme) {
         }
 
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)
-                ),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-            ) {
+            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
                 Column(
                     modifier = Modifier.padding(20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -8088,11 +8391,7 @@ fun DonationScreen(theme: AppTheme) {
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-                        shape = RoundedCornerShape(12.dp)
-                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF1E1E1E))) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text("System Model: Lenovo 20AV005HMS", color = Color(0xFF00E676), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                             Text("CPU: Intel Core i5-4200M @ 2.60GHz", color = Color(0xFF00E676), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -8146,12 +8445,7 @@ fun DonationScreen(theme: AppTheme) {
         }
 
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth().clickable { openUrl("https://t.me/AlliSighs") },
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF229ED9).copy(alpha = 0.15f)),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
+            Box(modifier = Modifier.fillMaxWidth().clickable { openUrl("https://t.me/AlliSighs") }.clip(RoundedCornerShape(16.dp)).background(Color(0xFF229ED9).copy(alpha = 0.15f))) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(20.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -8173,12 +8467,7 @@ fun DonationScreen(theme: AppTheme) {
         }
 
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)),
-                shape = RoundedCornerShape(16.dp),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-            ) {
+            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity))) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Payment, contentDescription = null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(24.dp))
@@ -8253,23 +8542,9 @@ fun ImprovedTariffCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Card(
-        modifier = modifier
-            .height(180.dp)
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = ThemeManager.parseColor(theme.surfaceColor)
-        ),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 4.dp,
-            pressedElevation = 8.dp
-        ),
-        border = BorderStroke(
-            2.dp,
-            Brush.verticalGradient(gradient)
-        )
-    ) {
+    Box(modifier = modifier
+        .height(180.dp)
+        .clickable(onClick = onClick).clip(RoundedCornerShape(16.dp)).background(ThemeManager.parseColor(theme.surfaceColor)).border(2.dp, Brush.verticalGradient(gradient), RoundedCornerShape(16.dp))) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
@@ -8355,16 +8630,9 @@ fun ImprovedCopyableField(
     theme: AppTheme,
     onCopy: (String) -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onCopy(value) },
-        colors = CardDefaults.cardColors(
-            containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)
-        ),
-        shape = RoundedCornerShape(12.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .clickable { onCopy(value) }.clip(RoundedCornerShape(12.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f))) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -8614,14 +8882,10 @@ fun BusyModeCard(settings: BusyModeSettings, onToggle: () -> Unit, onConfigure: 
     val borderColor by animateColorAsState(if (settings.enabled) busyColor else Color.Transparent, label = "bb")
     val cardH by animateDpAsState(if (settings.enabled) 80.dp else 68.dp, label = "bh")
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(cardH)
-            .border(if (settings.enabled) 1.5.dp else 0.dp, borderColor, RoundedCornerShape(theme.borderRadius.dp)),
-        colors = CardDefaults.cardColors(containerColor = cardColor),
-        shape = RoundedCornerShape(theme.borderRadius.dp)
-        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .height(cardH)
+        .border(if (settings.enabled) 1.5.dp else 0.dp, borderColor, RoundedCornerShape(theme.borderRadius.dp)).clip(RoundedCornerShape(theme.borderRadius.dp)).background(cardColor)) {
         Row(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.DoNotDisturb, null, tint = if (settings.enabled) busyColor else ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(26.dp))
             Spacer(Modifier.width(14.dp))
@@ -8650,7 +8914,7 @@ fun BusyModeCard(settings: BusyModeSettings, onToggle: () -> Unit, onConfigure: 
 @Composable
 fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Unit, onDismiss: () -> Unit, theme: AppTheme) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
     var message by remember { mutableStateOf(settings.message) }
@@ -8672,12 +8936,7 @@ fun BusyModeDialog(settings: BusyModeSettings, onSave: (BusyModeSettings) -> Uni
     }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(20.dp),
-            elevation = CardDefaults.cardElevation(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(surface)) {
             LazyColumn(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item {
                     Text("Режим занятости", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 16.sp)
@@ -8836,7 +9095,7 @@ fun ChatItemMenu(
     val currentLabels = chatLabels[chatId] ?: emptyList()
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(8.dp)) {
+        Box(modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(surface)) {
             Column(modifier = Modifier.padding(16.dp).widthIn(min = 240.dp)) {
                 Text("Чат", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 15.sp)
                 Spacer(Modifier.height(10.dp))
@@ -8974,18 +9233,13 @@ fun ManageFoldersDialog(
     theme: AppTheme
 ) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
     var newFolder by remember { mutableStateOf("") }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(20.dp),
-            elevation = CardDefaults.cardElevation(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(surface)) {
             LazyColumn(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 item {
                     Text("Готовые группы", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 15.sp)
@@ -9050,7 +9304,7 @@ fun ManageLabelsDialog(
     theme: AppTheme
 ) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
     var newLabel by remember { mutableStateOf("") }
@@ -9059,12 +9313,7 @@ fun ManageLabelsDialog(
     var pickedColor by remember { mutableStateOf(labelColors.first()) }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(20.dp),
-            elevation = CardDefaults.cardElevation(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(surface)) {
             LazyColumn(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 item {
                     Text("Метки пользователей", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 15.sp)
@@ -9126,16 +9375,9 @@ fun StrictProOnlySettingCard(
 ) {
     val isPro = LicenseManager.isProActive()
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(theme.borderRadius.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = ThemeManager.parseColor(theme.surfaceColor)
-        ),
-        elevation = CardDefaults.cardElevation(2.dp)
-    ) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .padding(vertical = 4.dp).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor))) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -9204,7 +9446,7 @@ fun BusyScheduleDialog(
     theme: AppTheme
 ) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
@@ -9238,11 +9480,7 @@ fun BusyScheduleDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -9281,12 +9519,8 @@ fun BusyScheduleDialog(
                     }
                 } else {
                     LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(slots, key = { it.id }) { slot ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth().clickable { editingSlot = slot },
-                                colors = CardDefaults.cardColors(containerColor = surface.copy(alpha = 0.6f)),
-                                shape = RoundedCornerShape(10.dp)
-                                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                        items(slots.distinctBy { it.id }, key = { it.id }) { slot ->
+                            Box(modifier = Modifier.fillMaxWidth().clickable { editingSlot = slot }.clip(RoundedCornerShape(10.dp)).background(surface.copy(alpha = 0.6f))) {
                                 Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(slot.name.ifBlank { "(без названия)" }, fontWeight = FontWeight.SemiBold, color = textPrimary, fontSize = 14.sp)
@@ -9362,11 +9596,7 @@ fun BusyScheduleSlotEditor(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("Слот расписания", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 17.sp, modifier = Modifier.weight(1f))
@@ -9551,7 +9781,7 @@ fun ReadMarkSettingsDialog(
     val accent = ThemeManager.parseColor(theme.accentColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     var s by remember { mutableStateOf(settings) }
 
     @Composable
@@ -9580,7 +9810,7 @@ fun ReadMarkSettingsDialog(
     }
 
     Dialog(onDismissRequest = { onSave(s); onDismiss() }) {
-        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.VisibilityOff, null, tint = accent, modifier = Modifier.size(24.dp))
@@ -9670,7 +9900,7 @@ fun AiVarPermissionsDialog(
     val accent = ThemeManager.parseColor(theme.accentColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     var s by remember { mutableStateOf(settings) }
 
     @Composable
@@ -9728,7 +9958,7 @@ fun AiVarPermissionsDialog(
     }
 
     Dialog(onDismissRequest = { onSave(s); onDismiss() }) {
-        Card(shape = RoundedCornerShape(theme.borderRadius.dp), colors = CardDefaults.cardColors(containerColor = surface), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+        Box(modifier = Modifier.clip(RoundedCornerShape(theme.borderRadius.dp)).background(surface)) {
             Column(modifier = Modifier.padding(20.dp)) {
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -9742,11 +9972,7 @@ fun AiVarPermissionsDialog(
                 }
 
                 Spacer(Modifier.height(8.dp))
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = accent.copy(alpha = 0.1f)),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(accent.copy(alpha = 0.1f))) {
                     Text(
                         "⚠️ Данные настройки не рекомендуются модифицировать обычным пользователям.",
                         modifier = Modifier.padding(10.dp),
@@ -9800,11 +10026,7 @@ fun AiVarPermissionsDialog(
                         "Количество звёзд, которые поставил покупатель (1–5)",
                         s.allowReviewStars) { s = s.copy(allowReviewStars = !s.allowReviewStars) }
 
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = textSecondary.copy(alpha = 0.08f)),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
-                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp)).background(textSecondary.copy(alpha = 0.08f))) {
                         Text(
                             "ℹ️ Название лота и дата для автоответов на отзывы настраиваются в разделе «Автоответ на отзывы → Настроить»",
                             modifier = Modifier.padding(10.dp),
@@ -9935,11 +10157,7 @@ fun LotScreen(
 
                 draftOrder != null -> {
                     Column(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.fillMaxWidth()
-                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(ThemeManager.parseColor(theme.surfaceColor))) {
                             Column(Modifier.padding(20.dp)) {
                                 Text(draftOrder!!.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = ThemeManager.parseColor(theme.textPrimaryColor))
                                 Spacer(Modifier.height(16.dp))
@@ -10039,7 +10257,7 @@ fun LotScreen(
 
                         if (l.params.isNotEmpty()) {
                             item {
-                                Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(theme.borderRadius.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                Box(modifier = Modifier.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor))) {
                                     Column(Modifier.fillMaxWidth().padding(12.dp)) {
                                         l.params.forEach { (k, v) ->
                                             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
@@ -10072,7 +10290,7 @@ fun LotScreen(
                         }
 
                         item {
-                            Card(colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                            Box(modifier = Modifier.clip(RoundedCornerShape(0.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.5f))) {
                                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                         Text("С баланса спишется:", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 12.sp)
@@ -10093,12 +10311,7 @@ fun LotScreen(
                         items(l.paymentMethods) { m ->
                             val selected = selectedMethod?.id == m.id
                             val bg = if (selected) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.2f) else ThemeManager.parseColor(theme.surfaceColor)
-                            Card(
-                                modifier = Modifier.fillMaxWidth().clickable { selectedMethod = m },
-                                colors = CardDefaults.cardColors(containerColor = bg),
-                                shape = RoundedCornerShape(theme.borderRadius.dp),
-                                border = if (selected) BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor)) else null
-                                , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                            Box(modifier = Modifier.fillMaxWidth().clickable { selectedMethod = m }.clip(RoundedCornerShape(theme.borderRadius.dp)).background(bg)) {
                                 Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Text(m.title, modifier = Modifier.weight(1f), color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
                                     Text(m.priceStr, color = ThemeManager.parseColor(theme.accentColor), fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -10108,7 +10321,7 @@ fun LotScreen(
 
                         if (errorMessage != null) {
                             item {
-                                Card(colors = CardDefaults.cardColors(containerColor = Color.Red.copy(alpha = 0.15f)), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                Box(modifier = Modifier.clip(RoundedCornerShape(0.dp)).background(Color.Red.copy(alpha = 0.15f))) {
                                     Text(errorMessage!!, modifier = Modifier.padding(12.dp), color = Color.Red, fontSize = 12.sp)
                                 }
                             }
@@ -10239,14 +10452,10 @@ fun BuyerHistoryScreen(
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
                     )
                 }
-                items(items, key = { it.orderId }) { order ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth().clickable {
-                            navController.navigate("order/${order.orderId}")
-                        },
-                        colors = CardDefaults.cardColors(containerColor = surf),
-                        shape = RoundedCornerShape(theme.borderRadius.dp)
-                        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                items(items.distinctBy { it.orderId }, key = { it.orderId }) { order ->
+                    Box(modifier = Modifier.fillMaxWidth().clickable {
+                        navController.navigate("order/${order.orderId}")
+                    }.clip(RoundedCornerShape(theme.borderRadius.dp)).background(surf)) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -10570,12 +10779,7 @@ fun SalesScreen(
                     filteredStats?.let { st ->
                         item {
                             Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = accent.copy(alpha = 0.12f)),
-                                    shape = RoundedCornerShape(12.dp)
-                                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(accent.copy(alpha = 0.12f))) {
                                     Row(Modifier.padding(14.dp),
                                         verticalAlignment = Alignment.CenterVertically) {
                                         Text("💰", fontSize = 28.sp)
@@ -10621,13 +10825,7 @@ fun SalesScreen(
 
                                 if (st.pendingOrders > 0) {
                                     Spacer(Modifier.height(8.dp))
-                                    Card(Modifier.fillMaxWidth().clickable {
-                                        filterStatus = "paid"
-                                        showFilter = true
-                                    },
-                                        colors = CardDefaults.cardColors(
-                                            containerColor = Color(0xFFFFA000).copy(alpha = 0.12f)),
-                                        shape = RoundedCornerShape(8.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                    Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFFFFA000).copy(alpha = 0.12f))) {
                                         Row(Modifier.padding(10.dp),
                                             verticalAlignment = Alignment.CenterVertically) {
                                             Text("⏳", fontSize = 16.sp)
@@ -10651,9 +10849,7 @@ fun SalesScreen(
 
                                 if (st.topBuyer.isNotEmpty() || st.popularCategory.isNotEmpty()) {
                                     Spacer(Modifier.height(8.dp))
-                                    Card(Modifier.fillMaxWidth(),
-                                        colors = CardDefaults.cardColors(containerColor = surf),
-                                        shape = RoundedCornerShape(8.dp), elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                                    Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(surf)) {
                                         Column(Modifier.padding(10.dp)) {
                                             if (st.topBuyer.isNotEmpty()) {
                                                 Row(Modifier.fillMaxWidth()) {
@@ -10725,14 +10921,10 @@ fun SalesScreen(
                             "refunded" -> Color(0xFFFF5722)
                             else       -> textSec
                         }
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 3.dp)
-                                .clickable { navController.navigate("order/${sale.orderId}") },
-                            colors = CardDefaults.cardColors(containerColor = surf),
-                            shape = RoundedCornerShape(10.dp)
-                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                        Box(modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 3.dp)
+                            .clickable { navController.navigate("order/${sale.orderId}") }.clip(RoundedCornerShape(10.dp)).background(surf)) {
                             Row(Modifier.padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
                                 if (sale.buyerAvatar.isNotEmpty()) {
@@ -10817,11 +11009,7 @@ private fun SalesStatCard(
     textPri: Color,
     textSec: Color
 ) {
-    Card(
-        modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = surf),
-        shape = RoundedCornerShape(10.dp)
-        , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+    Box(modifier = modifier.clip(RoundedCornerShape(10.dp)).background(surf)) {
         Column(Modifier.padding(8.dp)) {
             Text(icon, fontSize = 16.sp)
             Text(value, color = textPri, fontWeight = FontWeight.Bold,
@@ -10983,14 +11171,10 @@ fun CatalogMainScreen(navController: NavController, theme: AppTheme) {
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(filteredPacks) { pack ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                SharedCatalogPack = pack
-                                navController.navigate("catalog_import")
-                            },
-                            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor).copy(0.8f)),
-                            shape = RoundedCornerShape(12.dp)
-                            , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                        Box(modifier = Modifier.fillMaxWidth().clickable {
+                            SharedCatalogPack = pack
+                            navController.navigate("catalog_import")
+                        }.clip(RoundedCornerShape(12.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(0.8f))) {
                             Column(Modifier.padding(16.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(pack.name, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.weight(1f))
@@ -11045,12 +11229,7 @@ fun LazyListScope.dataTreeEditor(
 
             itemsIndexed(list) { index, itemMap ->
                 val isSelected = selectedItems["${category}_$index"] ?: false
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).alpha(if (isSelected) 1f else 0.4f),
-                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent)
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).alpha(if (isSelected) 1f else 0.4f).clip(RoundedCornerShape(8.dp)).background(ThemeManager.parseColor(theme.surfaceColor)).border(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent, RoundedCornerShape(8.dp))) {
                     Column(Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
                             Checkbox(
@@ -11112,12 +11291,7 @@ fun LazyListScope.dataTreeEditor(
             val itemMap = items as Map<String, Any>
             item {
                 val isSelected = selectedItems["${category}_obj"] ?: false
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).alpha(if (isSelected) 1f else 0.4f),
-                    colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent)
-                    , elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).alpha(if (isSelected) 1f else 0.4f).clip(RoundedCornerShape(8.dp)).background(ThemeManager.parseColor(theme.surfaceColor)).border(1.dp, if (isSelected) ThemeManager.parseColor(theme.accentColor).copy(0.4f) else Color.Transparent, RoundedCornerShape(8.dp))) {
                     Column(Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
                             Checkbox(

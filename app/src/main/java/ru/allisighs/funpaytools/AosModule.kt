@@ -155,7 +155,7 @@ fun AosCanvasWrapper(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.(globalScale: Float) -> Unit
 ) {
-    // ИСПРАВЛЕНИЕ СДВИГА: добавлено fillMaxSize() для жесткого центрирования
+    
     BoxWithConstraints(modifier = modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.Center) {
         val logicalW = if (isLandscape) 800f else 400f
         val logicalH = if (isLandscape) 400f else 800f
@@ -178,7 +178,7 @@ fun AosCanvasWrapper(
 @Composable
 fun AosSettingsScreen(navController: NavController, theme: AppTheme) {
     val context = LocalContext.current
-    val configuration = LocalConfiguration.current // Добавлено для безопасного вычисления ширины
+    val configuration = LocalConfiguration.current 
     var config by remember { mutableStateOf(AosManager.getConfig(context)) }
     val accentColor = ThemeManager.parseColor(theme.accentColor)
 
@@ -309,7 +309,7 @@ fun AosSettingsScreen(navController: NavController, theme: AppTheme) {
             }
         } else {
             item {
-                // ИСПРАВЛЕНИЕ ЗДЕСЬ: Безопасный вылет за границы экрана без отрицательного паддинга
+                
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp),
@@ -411,14 +411,14 @@ fun AosConstructorScreen(navController: NavController, theme: AppTheme) {
         val density = LocalDensity.current.density
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF080808)).padding(padding)) {
 
-            // Враппер гарантирует нам логическое поле 1920x1080 (или 1080x1920)
+            
             AosCanvasWrapper(isLandscape = config.isLandscape) { globalScale ->
                 Box(modifier = Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { selectedWidgetId = null } }) {
                     if (config.customBgUri != null) {
                         AsyncImage(model = config.customBgUri, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                         Box(Modifier.fillMaxSize().background(Color.Black.copy(0.4f)))
                     }
-                    // Всегда рисуем сетку поверх
+                    
                     Canvas(Modifier.fillMaxSize()) {
                         val step = 60.dp.toPx()
                         for (x in 0..size.width.toInt() step step.toInt()) drawLine(Color.White.copy(0.06f), Offset(x.toFloat(), 0f), Offset(x.toFloat(), size.height), 2f)
@@ -439,7 +439,7 @@ fun AosConstructorScreen(navController: NavController, theme: AppTheme) {
                                 .pointerInput(widget.id) {
                                     detectTransformGestures { _, pan, zoom, _ ->
                                         val newScale = (widget.scale * zoom).coerceIn(0.3f, 6f)
-                                        // pan приходит в экранных пикселях. Делим на глобальный скейл и плотность, чтобы получить dp холста
+                                        
                                         val dx = pan.x / (globalScale * density) / widget.scale
                                         val dy = pan.y / (globalScale * density) / widget.scale
                                         config = config.copy(widgets = config.widgets.map {
@@ -455,7 +455,7 @@ fun AosConstructorScreen(navController: NavController, theme: AppTheme) {
                             AosWidgetRealDataRenderer(widget.type, tint, dummyData)
                         }
 
-                        // Бейдж масштаба рисуется вне graphicsLayer, чтобы не улетал
+                        
                         if (isSelected) {
                             Box(modifier = Modifier.offset(x = widget.xDp.dp, y = (widget.yDp - 20).dp).background(tint, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp)) {
                                 Text("${"%.1f".format(widget.scale)}x", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold)
@@ -495,7 +495,7 @@ fun AosConstructorScreen(navController: NavController, theme: AppTheme) {
                     }
                 }
             }
-            // Если выбран виджет, показываем кнопку удаления в углу
+            
             if (selectedWidgetId != null) {
                 Box(modifier = Modifier.align(if (config.isLandscape) Alignment.BottomStart else Alignment.TopEnd).padding(16.dp)) {
                     IconButton(onClick = { config = config.copy(widgets = config.widgets.filter { it.id != selectedWidgetId }); AosManager.saveConfig(context, config); selectedWidgetId = null }, modifier = Modifier.background(Color(0xFFFF5252).copy(0.8f), CircleShape)) { Icon(Icons.Default.Delete, null, tint = Color.White) }
@@ -529,9 +529,9 @@ fun AosWidgetRealDataRenderer(type: AosWidgetType, color: Color, data: AosThemeD
     }
 }
 
-// =========================================================================================
-// 4. LIVE ЭКРАН (ИДЕАЛЬНАЯ ЗАЩИТА ОТ ВЫГОРАНИЯ И АВТОМАТИЗАЦИЯ В ФОНЕ)
-// =========================================================================================
+
+
+
 
 @Composable
 fun AosDisplayScreen(navController: NavController, repository: FunPayRepository, theme: AppTheme) {
@@ -561,7 +561,7 @@ fun AosDisplayScreen(navController: NavController, repository: FunPayRepository,
     var unread by remember { mutableIntStateOf(0) }
     var salesCount by remember { mutableIntStateOf(0) }
 
-    // Плавная защита от выгорания
+    
     val density = LocalDensity.current.density
     var burnInTargetX by remember { mutableFloatStateOf(0f) }
     var burnInTargetY by remember { mutableFloatStateOf(0f) }
@@ -584,7 +584,7 @@ fun AosDisplayScreen(navController: NavController, repository: FunPayRepository,
     }
 
     LaunchedEffect(Unit) {
-        // Загружаем продажи полностью в фоне если ещё не загружены
+        
         withContext(Dispatchers.IO) {
             if (!repository.isSalesFullLoaded) {
                 try {
@@ -656,7 +656,7 @@ fun AosDisplayScreen(navController: NavController, repository: FunPayRepository,
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectTapGestures(onDoubleTap = { navController.popBackStack() }, onTap = { showExitHint = true }) }) {
 
-        // Корневой Box увеличен на 1.05, чтобы при смещении не обнажались черные края
+        
         Box(modifier = Modifier.fillMaxSize().graphicsLayer { translationX = smoothOffsetX; translationY = smoothOffsetY; scaleX = 1.05f; scaleY = 1.05f }) {
             AosCanvasWrapper(isLandscape = config.isLandscape) { _ ->
                 if (config.useCustomConstructor) {
@@ -690,18 +690,18 @@ private fun parseFunPayDateToMsLocal(dateStr: String): Long {
     return 0L
 }
 
-// =========================================================================================
-// АНИМАЦИОННЫЕ ХЕЛПЕРЫ (Возвращают State)
-// =========================================================================================
+
+
+
 
 @Composable fun breathingScaleState(animate: Boolean, from: Float = 1f, to: Float = 1.06f, durationMs: Int = 2000): State<Float> { val t = rememberInfiniteTransition(label = "breathing"); return if (animate) t.animateFloat(from, to, infiniteRepeatable(tween(durationMs, easing = EaseInOutSine), RepeatMode.Reverse), label = "bs") else rememberUpdatedState(from) }
 @Composable fun pulseAlphaState(animate: Boolean, from: Float = 0.4f, to: Float = 1f, durationMs: Int = 1400): State<Float> { val t = rememberInfiniteTransition(label = "pulse"); return if (animate) t.animateFloat(from, to, infiniteRepeatable(tween(durationMs, easing = EaseInOut), RepeatMode.Reverse), label = "pa") else rememberUpdatedState(to) }
 @Composable fun rotationAngleState(animate: Boolean, durationMs: Int = 8000): State<Float> { val t = rememberInfiniteTransition(label = "rotation"); return if (animate) t.animateFloat(0f, 360f, infiniteRepeatable(tween(durationMs, easing = LinearEasing)), label = "ra") else rememberUpdatedState(0f) }
 @Composable fun infiniteScrollState(animate: Boolean, durationMs: Int = 20000): State<Float> { val t = rememberInfiniteTransition(label = "scroll"); return if (animate) t.animateFloat(0f, 100f, infiniteRepeatable(tween(durationMs, easing = LinearEasing)), label = "sc") else rememberUpdatedState(0f) }
 
-// =========================================================================================
-// 5. АДАПТИВНЫЕ ТЕМЫ AOD (1-15) - ИДЕАЛЬНАЯ ВЕРСТКА В ОБЕИХ ОРИЕНТАЦИЯХ
-// =========================================================================================
+
+
+
 
 @Composable
 fun RenderAosTheme(index: Int, color: Color, data: AosThemeData, animate: Boolean, bgUri: String?, isLandscape: Boolean) {
@@ -740,7 +740,7 @@ fun AosTheme1_Aurora(color: Color, data: AosThemeData, animate: Boolean, isLands
             }
             for (i in 0..4) { val y = size.height * (0.1f + i * 0.07f); drawRect(Brush.horizontalGradient(listOf(Color.Transparent, color.copy(0.06f + i * 0.01f), Color.Transparent)), topLeft = Offset(0f, y), size = Size(size.width, 30f)) }
         }
-        // ... остальной код темы остается таким же ...
+        
         val pad = if (isLandscape) 48.dp else 24.dp
         if (isLandscape) {
             Column(modifier = Modifier.align(Alignment.CenterStart).padding(start = pad), horizontalAlignment = Alignment.CenterHorizontally) { AuroraProfile(data, color, 80.dp) }
@@ -775,9 +775,9 @@ fun AosTheme1_Aurora(color: Color, data: AosThemeData, animate: Boolean, isLands
 }
 @Composable fun AuroraStatCard(label: String, value: String, color: Color) { Box(modifier = Modifier.background(Brush.horizontalGradient(listOf(color.copy(0.15f), Color.Transparent)), RoundedCornerShape(12.dp)).border(1.dp, Brush.horizontalGradient(listOf(color.copy(0.5f), Color.Transparent)), RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 8.dp)) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(label, color = Color.Gray, fontSize = 9.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(2.dp)); Text(value, color = color, fontSize = 18.sp, fontWeight = FontWeight.Bold) } } }
 
-// ---------------------------------------------------------
-// Theme 2: Neon Pulse
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme2_NeonPulse(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val pulse = pulseAlphaState(animate, 0.3f, 1f, 800)
@@ -817,9 +817,9 @@ fun AosTheme2_NeonPulse(color: Color, data: AosThemeData, animate: Boolean, isLa
 }
 @Composable fun NeonStat(label: String, value: String, color: Color) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(label, fontSize = 10.sp, color = color.copy(0.8f), fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text(value, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold) } }
 
-// ---------------------------------------------------------
-// Theme 3: Hologram
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme3_Hologram(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val alpha = pulseAlphaState(animate, 0.6f, 1f, 2000)
@@ -880,13 +880,13 @@ fun AosTheme4_Terminal(color: Color, data: AosThemeData, animate: Boolean, isLan
     val scanLine = infiniteScrollState(animate, 6000)
 
     Box(Modifier.fillMaxSize().background(Color(0xFF050505))) {
-        // Эффект ЭЛТ (старого монитора)
+        
         Canvas(Modifier.fillMaxSize()) {
             val step = 4.dp.toPx()
             for (i in 0..(size.height / step).toInt()) {
                 drawLine(Color.White.copy(0.03f), Offset(0f, i * step), Offset(size.width, i * step), 1f)
             }
-            // Сканирующая линия
+            
             if (animate) {
                 val y = (scanLine.value / 100f) * size.height
                 drawRect(Brush.verticalGradient(listOf(Color.Transparent, color.copy(0.2f), color.copy(0.5f), Color.Transparent), startY = y - 40f, endY = y + 40f))
@@ -894,7 +894,7 @@ fun AosTheme4_Terminal(color: Color, data: AosThemeData, animate: Boolean, isLan
         }
 
         Column(modifier = Modifier.fillMaxSize().padding(16.dp).border(1.dp, color.copy(0.3f), RoundedCornerShape(8.dp)).background(Color.Black.copy(0.4f), RoundedCornerShape(8.dp))) {
-            // MacOS-подобный хедер окна
+            
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().background(Color(0xFF151515), RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)).padding(12.dp)) {
                 Box(Modifier.size(10.dp).background(Color(0xFFFF5F56), CircleShape)); Spacer(Modifier.width(8.dp))
                 Box(Modifier.size(10.dp).background(Color(0xFFFFBD2E), CircleShape)); Spacer(Modifier.width(8.dp))
@@ -929,7 +929,7 @@ fun AosTheme4_Terminal(color: Color, data: AosThemeData, animate: Boolean, isLan
         }
     }
 }
-// Если TermLine нет, добавьте эту строчку ниже:
+
 @Composable fun TermLine(text: String, color: Color) { Text(text, color = color, fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 20.sp, style = TextStyle(shadow = Shadow(color.copy(0.5f), blurRadius = 6f)), maxLines = 1, overflow = TextOverflow.Ellipsis) }
 
 @Composable
@@ -940,10 +940,10 @@ fun AosTheme5_Orbital(color: Color, data: AosThemeData, animate: Boolean, isLand
     val pulse = pulseAlphaState(animate, 0.6f, 1f, 1000)
 
     Box(Modifier.fillMaxSize().background(Color(0xFF030305)), contentAlignment = Alignment.Center) {
-        // Огромная аватарка в центре
+        
         val avatarSize = if (isLandscape) 220.dp else 180.dp
 
-        // Сложные орбиты на фоне
+        
         Canvas(Modifier.fillMaxSize()) {
             val cx = size.width / 2; val cy = size.height / 2
             val r1 = avatarSize.toPx() / 1.8f
@@ -966,7 +966,7 @@ fun AosTheme5_Orbital(color: Color, data: AosThemeData, animate: Boolean, isLand
             }
         }
 
-        // Сама Аватарка
+        
         Box(modifier = Modifier.size(avatarSize).clip(CircleShape).background(Color.Black).border(3.dp, color.copy(pulse.value), CircleShape), contentAlignment = Alignment.Center) {
             if (data.avatarUrl != null) {
                 AsyncImage(model = data.avatarUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -976,7 +976,7 @@ fun AosTheme5_Orbital(color: Color, data: AosThemeData, animate: Boolean, isLand
             Box(Modifier.fillMaxSize().background(Brush.radialGradient(listOf(Color.Transparent, Color.Black.copy(0.6f)))))
         }
 
-        // Данные раскиданы вокруг аватара
+        
         if (isLandscape) {
             Column(Modifier.align(Alignment.CenterStart).padding(start = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(data.time, color = Color.White, fontSize = 64.sp, fontWeight = FontWeight.Black, style = TextStyle(fontFeatureSettings = "tnum", shadow = Shadow(color, blurRadius = 15f)))
@@ -1016,7 +1016,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
     val pulse = pulseAlphaState(animate, 0.7f, 1f, 1800)
     val breathe = breathingScaleState(animate, 1f, 1.03f, 3000)
 
-    // Считаем фракции для мини-баров
+    
     val balanceValue = data.balanceActive.replace(Regex("[^0-9.]"), "").toFloatOrNull() ?: 0f
     val frozenValue  = data.balanceFrozen.replace(Regex("[^0-9.]"), "").toFloatOrNull() ?: 0f
     val totalValue   = (balanceValue + frozenValue).coerceAtLeast(1f)
@@ -1029,7 +1029,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
             .fillMaxSize()
             .background(Color(0xFF070710))
     ) {
-        // Фоновый градиент-туманность
+        
         Canvas(Modifier.fillMaxSize()) {
             drawRect(
                 Brush.radialGradient(
@@ -1052,12 +1052,12 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                 modifier = Modifier.fillMaxSize().padding(20.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // ЛЕВАЯ КОЛОНКА: Время + дата + аватар
+                
                 Column(
                     modifier = Modifier.weight(1.1f).fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Карточка времени
+                    
                     BentoGlassCard(
                         modifier = Modifier.weight(1.4f).fillMaxWidth(),
                         color = color
@@ -1066,7 +1066,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.SpaceBetween
                         ) {
-                            // Точки-индикатор онлайна
+                            
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
@@ -1089,7 +1089,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                                         )
                                 )
                             }
-                            // Время
+                            
                             Text(
                                 data.time,
                                 style = TextStyle(
@@ -1104,7 +1104,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                                     scaleX = breathe.value; scaleY = breathe.value
                                 }
                             )
-                            // Дата
+                            
                             Text(
                                 data.date.uppercase(),
                                 color = color.copy(0.7f),
@@ -1115,7 +1115,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                         }
                     }
 
-                    // Карточка аватара + имя
+                    
                     BentoGlassCard(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         color = Color.White.copy(0.08f)
@@ -1175,12 +1175,12 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                     }
                 }
 
-                // СРЕДНЯЯ КОЛОНКА: Баланс + холд
+                
                 Column(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Доступный баланс
+                    
                     BentoGlassCard(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         color = Color(0xFF00E676).copy(0.15f)
@@ -1213,13 +1213,13 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                // Бар доступного баланса
+                                
                                 BentoProgressBar(fraction = activeFrac, color = Color(0xFF00E676))
                             }
                         }
                     }
 
-                    // Холд
+                    
                     BentoGlassCard(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         color = Color(0xFFFFA000).copy(0.12f)
@@ -1257,7 +1257,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                         }
                     }
 
-                    // Общий баланс
+                    
                     BentoGlassCard(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         color = color.copy(0.1f)
@@ -1275,7 +1275,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                                 overflow = TextOverflow.Ellipsis
                             )
                             Spacer(Modifier.height(4.dp))
-                            // Соотношение доступно/холд визуально
+                            
                             Row(
                                 modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp))
                             ) {
@@ -1294,12 +1294,12 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                     }
                 }
 
-                // ПРАВАЯ КОЛОНКА: Продажи + чаты
+                
                 Column(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Продажи — большая карточка
+                    
                     BentoGlassCard(
                         modifier = Modifier.weight(1.6f).fillMaxWidth(),
                         color = Color.White.copy(0.04f)
@@ -1327,7 +1327,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                         }
                     }
 
-                    // Чаты
+                    
                     BentoGlassCard(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         color = if (data.unreadCount > 0) color.copy(0.18f) else Color.White.copy(0.04f)
@@ -1364,12 +1364,12 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
                 }
             }
         } else {
-            // ПОРТРЕТНАЯ ориентация
+            
             Column(
                 modifier = Modifier.fillMaxSize().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Верх: время
+                
                 BentoGlassCard(
                     modifier = Modifier.weight(1.2f).fillMaxWidth(),
                     color = color
@@ -1497,7 +1497,7 @@ fun AosTheme6_Bento(color: Color, data: AosThemeData, animate: Boolean, isLandsc
     }
 }
 
-// Стеклянная Bento-карточка
+
 @Composable
 fun BentoGlassCard(
     modifier: Modifier = Modifier,
@@ -1524,7 +1524,7 @@ fun BentoGlassCard(
     )
 }
 
-// Минималистичный прогресс-бар
+
 @Composable
 fun BentoProgressBar(fraction: Float, color: Color) {
     Box(
@@ -1545,9 +1545,9 @@ fun BentoProgressBar(fraction: Float, color: Color) {
     }
 }
 
-// ---------------------------------------------------------
-// Theme 7: Liquid — переработка
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val t1 = rotationAngleState(animate, 18000)
@@ -1566,7 +1566,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
             .fillMaxSize()
             .background(Color(0xFF050510))
     ) {
-        // Жидкие blob-фоны
+        
         Canvas(Modifier.fillMaxSize()) {
             val a1 = Math.toRadians(t1.value.toDouble())
             val a2 = Math.toRadians(t2.value.toDouble())
@@ -1602,13 +1602,13 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // ЛЕВЫЙ БЛОК: Время + аватар
+                
                 Column(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.Start,
                     verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    // Аватар с жидким кольцом
+                    
                     Box(
                         modifier = Modifier.size(72.dp),
                         contentAlignment = Alignment.Center
@@ -1647,7 +1647,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                                 )
                             }
                         }
-                        // Онлайн-индикатор
+                        
                         Box(
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
@@ -1666,7 +1666,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                         }
                     }
 
-                    // Время — большое
+                    
                     Column {
                         Text(
                             data.time,
@@ -1689,13 +1689,13 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                     }
                 }
 
-                // ПРАВЫЙ БЛОК: Статистика жидкими пиллами
+                
                 Column(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.End,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Доступный баланс — большая пилла
+                    
                     LiquidStatPill(
                         value = data.balanceActive,
                         fraction = activeFrac,
@@ -1704,7 +1704,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                         isLarge = true
                     )
 
-                    // Холд
+                    
                     LiquidStatPill(
                         value = data.balanceFrozen,
                         fraction = (frozenValue / totalValue).coerceIn(0f, 1f),
@@ -1714,7 +1714,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        // Продажи
+                        
                         LiquidRoundStat(
                             value = "${data.salesCount}",
                             fraction = salesFrac,
@@ -1722,7 +1722,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                             icon = Icons.Default.ShoppingCart
                         )
 
-                        // Чаты
+                        
                         LiquidRoundStat(
                             value = "${data.unreadCount}",
                             fraction = if (data.unreadCount > 0) 1f else 0f,
@@ -1738,7 +1738,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Верх: аватар
+                
                 Box(modifier = Modifier.size(80.dp), contentAlignment = Alignment.Center) {
                     Canvas(Modifier.fillMaxSize()) {
                         rotate(t1.value, Offset(size.width / 2, size.height / 2)) {
@@ -1763,7 +1763,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                     }
                 }
 
-                // Время
+                
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         data.time,
@@ -1778,7 +1778,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
                     Text(data.date, color = color.copy(0.6f), fontSize = 13.sp)
                 }
 
-                // Статы
+                
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     LiquidStatPill(
                         value = data.balanceActive,
@@ -1816,7 +1816,7 @@ fun AosTheme7_Liquid(color: Color, data: AosThemeData, animate: Boolean, isLands
     }
 }
 
-// Жидкая пилла со встроенным прогресс-баром
+
 @Composable
 fun LiquidStatPill(
     value: String,
@@ -1838,7 +1838,7 @@ fun LiquidStatPill(
                 RoundedCornerShape(50.dp)
             )
     ) {
-        // Жидкое заполнение
+        
         Box(
             modifier = Modifier
                 .fillMaxWidth(fraction.coerceIn(0.03f, 1f))
@@ -1849,7 +1849,7 @@ fun LiquidStatPill(
                     )
                 )
         )
-        // Контент
+        
         Row(
             modifier = Modifier
                 .fillMaxSize()
@@ -1871,7 +1871,7 @@ fun LiquidStatPill(
     }
 }
 
-// Круглая жидкая статистика
+
 @Composable
 fun LiquidRoundStat(
     value: String,
@@ -1892,7 +1892,7 @@ fun LiquidRoundStat(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Заполнение
+        
         Box(
             modifier = Modifier
                 .fillMaxWidth(fraction.coerceIn(0f, 1f))
@@ -1913,13 +1913,13 @@ fun LiquidRoundStat(
     }
 }
 
-// ---------------------------------------------------------
-// Theme 8: Cipher
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme8_Cipher(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val alpha = pulseAlphaState(animate, 0.7f, 1f, 2000)
-    // Легковесная матрица, генерируем один раз
+    
     val matrixText = remember { buildString { repeat(80) { repeat(40) { append("0123456789ABCDEF₽$%&@#!?".random()) }; append("\n") } } }
     val scroll = infiniteScrollState(animate, 20000)
 
@@ -1955,7 +1955,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
         Color(0xFF00DFD8), Color(0xFF007CF0), Color(0xFFFF0080)
     )
 
-    // Производные данные в числа
+    
     val balanceValue = data.balanceActive.replace(Regex("[^0-9.]"), "").toFloatOrNull() ?: 0f
     val balanceMax = maxOf(balanceValue, 50000f)
     val balanceFraction = (balanceValue / balanceMax).coerceIn(0f, 1f)
@@ -1969,12 +1969,12 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
 
     Box(Modifier.fillMaxSize().background(Color(0xFF03030A)).clipToBounds()) {
 
-        // ═══ ФОНОВЫЙ СЛОЙ: Медленно движущиеся туманности ═══
+        
         Canvas(Modifier.fillMaxSize()) {
             val w = size.width; val h = size.height
             val phase = wavePhase.value / 100f * (2 * Math.PI).toFloat()
 
-            // Туманности — огромные мягкие blob'ы
+            
             rotate(slowRotation.value * 0.3f, Offset(w / 2, h / 2)) {
                 drawCircle(
                     Brush.radialGradient(
@@ -1999,7 +1999,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                 )
             }
 
-            // Синусоидальная волна снизу (красота фона)
+            
             val path = Path()
             path.moveTo(0f, h)
             for (x in 0..w.toInt() step 8) {
@@ -2015,7 +2015,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                 startY = h * 0.65f, endY = h
             ))
 
-            // Вторая волна, сдвинутая по фазе
+            
             val path2 = Path()
             path2.moveTo(0f, h)
             for (x in 0..w.toInt() step 8) {
@@ -2031,19 +2031,19 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
             ))
         }
 
-        // ═══ СРЕДНИЙ СЛОЙ: Орбиты и кольца ═══
+        
         Canvas(Modifier.fillMaxSize()) {
             val cx = size.width / 2; val cy = size.height / 2
             val avatarR = (if (isLandscape) 110.dp else 95.dp).toPx()
 
-            // Внешние декоративные орбиты
+            
             rotate(slowRotation.value, Offset(cx, cy)) {
-                // Тонкая пунктирная орбита
+                
                 drawCircle(
                     color.copy(0.12f), avatarR * 1.55f, Offset(cx, cy),
                     style = Stroke(1.5f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6f, 14f)))
                 )
-                // Яркий радужный arc — быстрее всех
+                
                 drawArc(
                     brush = Brush.sweepGradient(cList, center = Offset(cx, cy)),
                     startAngle = 0f, sweepAngle = 200f, useCenter = false,
@@ -2051,7 +2051,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                     size = Size(avatarR * 3.1f, avatarR * 3.1f),
                     style = Stroke(5f, cap = StrokeCap.Round)
                 )
-                // Точки-маркеры на орбите
+                
                 for (i in 0..5) {
                     val a = Math.toRadians(i * 60.0)
                     drawCircle(
@@ -2062,19 +2062,19 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
             }
 
             rotate(slowRotation2.value, Offset(cx, cy)) {
-                // Средняя орбита — прозрачнее
+                
                 drawCircle(
                     Brush.sweepGradient(listOf(Color.Transparent, Color(0xFF00DFD8).copy(0.3f), Color.Transparent), center = Offset(cx, cy)),
                     avatarR * 1.9f, Offset(cx, cy),
                     style = Stroke(3f)
                 )
-                // Планета на орбите
+                
                 val px = cx + avatarR * 1.9f
                 drawCircle(Color(0xFF00DFD8).copy(0.9f), 8f, Offset(px, cy))
                 drawCircle(Color(0xFF00DFD8).copy(0.3f), 16f, Offset(px, cy))
             }
 
-            // Самая внешняя орбита — еле видна
+            
             rotate(slowRotation.value * 0.4f, Offset(cx, cy)) {
                 drawCircle(
                     color.copy(0.06f), avatarR * 2.4f, Offset(cx, cy),
@@ -2084,11 +2084,11 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
             }
         }
 
-        // ═══ АВАТАР В ЦЕНТРЕ ═══
+        
         val avatarSizeDp = if (isLandscape) 220.dp else 190.dp
         Box(modifier = Modifier.align(Alignment.Center).graphicsLayer { scaleX = breathe.value; scaleY = breathe.value }) {
             Box(modifier = Modifier.size(avatarSizeDp), contentAlignment = Alignment.Center) {
-                // Радужное кольцо-ореол
+                
                 Canvas(Modifier.fillMaxSize()) {
                     rotate(slowRotation.value, Offset(size.width / 2, size.height / 2)) {
                         drawCircle(
@@ -2096,7 +2096,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                             style = Stroke(6.dp.toPx())
                         )
                     }
-                    // Внутреннее мягкое свечение
+                    
                     drawCircle(
                         Brush.radialGradient(
                             listOf(color.copy(0.3f), Color.Transparent),
@@ -2105,7 +2105,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                         )
                     )
                 }
-                // Сама аватарка
+                
                 Box(
                     Modifier.size(avatarSizeDp - 16.dp).clip(CircleShape)
                         .background(Color(0xFF0D0D1A)),
@@ -2114,7 +2114,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                     if (data.avatarUrl != null) {
                         AsyncImage(model = data.avatarUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                     } else {
-                        // Если нет аватарки — красивый абстрактный паттерн
+                        
                         Canvas(Modifier.fillMaxSize()) {
                             val c = size.width / 2f; val rr = size.width * 0.38f
                             for (i in 0..5) {
@@ -2130,10 +2130,10 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                             drawCircle(color.copy(0.15f), rr * 0.1f, Offset(c, c))
                         }
                     }
-                    // Overlay-виньетка для глубины
+                    
                     Box(Modifier.fillMaxSize().background(Brush.radialGradient(listOf(Color.Transparent, Color.Black.copy(0.55f)))))
                 }
-                // Индикатор онлайна
+                
                 Box(
                     Modifier.align(Alignment.BottomEnd).offset((-12).dp, (-12).dp)
                         .size(26.dp).background(Color(0xFF03030A), CircleShape).padding(5.dp)
@@ -2150,7 +2150,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
             }
         }
 
-        // ═══ ДАННЫЕ: Визуальные арки вокруг (без текста) ═══
+        
         Canvas(Modifier.fillMaxSize()) {
             val cx = size.width / 2; val cy = size.height / 2
             val avatarR = (if (isLandscape) 110.dp else 95.dp).toPx()
@@ -2158,7 +2158,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
             val stroke = 10.dp.toPx()
             val gapDeg = 8f
 
-            // Арка 1: Баланс (зелёная) — верхняя правая четверть
+            
             val balanceSweep = balanceFraction * (90f - gapDeg * 2)
             drawArc(
                 brush = Brush.sweepGradient(listOf(Color(0xFF00E676).copy(0.2f), Color(0xFF00E676), Color(0xFF00E676).copy(0.2f)), center = Offset(cx, cy)),
@@ -2168,7 +2168,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                 topLeft = Offset(cx - arcR, cy - arcR), size = Size(arcR * 2, arcR * 2),
                 style = Stroke(stroke, cap = StrokeCap.Round)
             )
-            // Трек арки 1 (фон)
+            
             drawArc(
                 color = Color(0xFF00E676).copy(0.08f),
                 startAngle = -90f + gapDeg, sweepAngle = 90f - gapDeg * 2, useCenter = false,
@@ -2176,7 +2176,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                 style = Stroke(stroke * 0.4f)
             )
 
-            // Арка 2: Чаты (цвет темы) — верхняя левая четверть
+            
             val unreadSweep = unreadFraction * (90f - gapDeg * 2)
             drawArc(
                 brush = Brush.sweepGradient(listOf(color.copy(0.2f), color, color.copy(0.2f)), center = Offset(cx, cy)),
@@ -2193,7 +2193,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                 style = Stroke(stroke * 0.4f)
             )
 
-            // Арка 3: Продажи (розовая) — нижняя левая
+            
             val salesSweep = salesFraction * (90f - gapDeg * 2)
             drawArc(
                 brush = Brush.sweepGradient(listOf(Color(0xFFFF0080).copy(0.2f), Color(0xFFFF0080), Color(0xFFFF0080).copy(0.2f)), center = Offset(cx, cy)),
@@ -2210,7 +2210,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                 style = Stroke(stroke * 0.4f)
             )
 
-            // Арка 4: Замороженный баланс (оранжевая) — нижняя правая
+            
             val frozenSweep = frozenFraction * (90f - gapDeg * 2)
             drawArc(
                 brush = Brush.sweepGradient(listOf(Color(0xFFFFA000).copy(0.2f), Color(0xFFFFA000), Color(0xFFFFA000).copy(0.2f)), center = Offset(cx, cy)),
@@ -2227,7 +2227,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                 style = Stroke(stroke * 0.4f)
             )
 
-            // Светящиеся торцы заполненных арок
+            
             listOf(
                 Triple(-90f + gapDeg + balanceSweep, arcR, Color(0xFF00E676)),
                 Triple(-180f + gapDeg + (if (data.unreadCount > 0) unreadSweep else 0f), arcR, color),
@@ -2241,9 +2241,9 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
             }
         }
 
-        // ═══ ВРЕМЯ: Крупное, снаружи аватара (позиционировано по ориентации) ═══
+        
         if (isLandscape) {
-            // Время — слева
+            
             Box(modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp)) {
                 Text(
                     data.time,
@@ -2256,14 +2256,14 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                     modifier = Modifier.graphicsLayer { alpha = pulse2.value }
                 )
             }
-            // Дата — снизу слева (только дата, без слов — это число+месяц)
-            // Мы покажем дату как точки/тире паттерн дня недели визуально
-            // Точки дня недели
+            
+            
+            
             Box(modifier = Modifier.align(Alignment.BottomStart).padding(start = 40.dp, bottom = 28.dp)) {
                 Canvas(Modifier.size(140.dp, 12.dp)) {
                     val cal = Calendar.getInstance()
-                    val dayOfWeek = cal.get(Calendar.DAY_OF_WEEK) // 1=Sun..7=Sat
-                    // 7 точек = дни недели, текущий день — яркий
+                    val dayOfWeek = cal.get(Calendar.DAY_OF_WEEK) 
+                    
                     for (i in 0..6) {
                         val isSunday = i == 0; val dayNum = if (isSunday) 1 else i + 1
                         val isToday = dayNum == dayOfWeek
@@ -2277,16 +2277,16 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                     }
                 }
             }
-            // Числа продаж — справа, крупно
+            
             Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 36.dp)) {
                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                    // Иконка-блок вместо текста
+                    
                     SpectrumIconBlock(data.salesCount.toString(), Color.White, Icons.Default.ShoppingCart, Color.White.copy(0.1f))
                     SpectrumIconBlock(data.unreadCount.toString(), if (data.unreadCount > 0) color else Color.Gray, Icons.Default.ChatBubble, if (data.unreadCount > 0) color.copy(0.1f) else Color.Gray.copy(0.05f))
                 }
             }
         } else {
-            // Время — сверху
+            
             Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp)) {
                 Text(
                     data.time,
@@ -2299,14 +2299,14 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
                     modifier = Modifier.graphicsLayer { alpha = pulse2.value }
                 )
             }
-            // Иконки снизу
+            
             Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
                     SpectrumIconBlock(data.salesCount.toString(), Color.White, Icons.Default.ShoppingCart, Color.White.copy(0.08f))
                     SpectrumIconBlock(data.unreadCount.toString(), if (data.unreadCount > 0) color else Color.Gray, Icons.Default.ChatBubble, if (data.unreadCount > 0) color.copy(0.1f) else Color.Gray.copy(0.05f))
                 }
             }
-            // Точки-дни недели снизу
+            
             Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)) {
                 Canvas(Modifier.size(100.dp, 8.dp)) {
                     val cal = Calendar.getInstance()
@@ -2327,7 +2327,7 @@ fun AosTheme9_Spectrum(color: Color, data: AosThemeData, animate: Boolean, isLan
     }
 }
 
-// Блок с иконкой и цифрой — без единого слова
+
 @Composable
 fun SpectrumIconBlock(value: String, color: Color, icon: androidx.compose.ui.graphics.vector.ImageVector, bg: Color) {
     Row(
@@ -2346,13 +2346,13 @@ fun SpectrumIconBlock(value: String, color: Color, icon: androidx.compose.ui.gra
 @Composable
 fun SpectrumHugeAvatar(data: AosThemeData, cList: List<Color>, rotation: Float, sizeDp: Dp) {
     Box(modifier = Modifier.size(sizeDp), contentAlignment = Alignment.Center) {
-        // Медленно вращающееся радужное кольцо спектра
+        
         Canvas(Modifier.fillMaxSize()) {
             rotate(rotation, Offset(size.width / 2, size.height / 2)) {
                 drawCircle(Brush.sweepGradient(cList, center = Offset(size.width / 2, size.height / 2)), style = Stroke(8.dp.toPx()))
             }
         }
-        // Сама аватарка
+        
         Box(Modifier.size(sizeDp - 20.dp).clip(CircleShape).background(Color(0xFF111111)), contentAlignment = Alignment.Center) {
             if (data.avatarUrl != null) {
                 AsyncImage(model = data.avatarUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -2360,7 +2360,7 @@ fun SpectrumHugeAvatar(data: AosThemeData, cList: List<Color>, rotation: Float, 
                 Text(data.username.take(1).uppercase(), style = TextStyle(fontSize = (sizeDp.value * 0.4f).sp, fontWeight = FontWeight.Black, brush = Brush.linearGradient(cList)))
             }
         }
-        // Массивный индикатор онлайна
+        
         Box(Modifier.align(Alignment.BottomEnd).offset(x = (-20).dp, y = (-20).dp).size(32.dp).background(Color(0xFF05050A), CircleShape).padding(6.dp)) {
             Box(Modifier.fillMaxSize().background(if(data.online) Color(0xFF00E676) else Color(0xFFFF5252), CircleShape))
         }
@@ -2370,16 +2370,16 @@ fun SpectrumHugeAvatar(data: AosThemeData, cList: List<Color>, rotation: Float, 
 @Composable
 fun SpectrumHugeStat(label: String, value: String, accent: Color) {
     Column(horizontalAlignment = Alignment.End) {
-        // Цифры огромного размера со светящейся тенью
+        
         Text(value, color = Color.White, fontSize = 56.sp, fontWeight = FontWeight.Black, style = TextStyle(shadow = Shadow(accent.copy(0.6f), blurRadius = 24f)))
         Text(label, color = accent, fontSize = 14.sp, letterSpacing = 3.sp, fontWeight = FontWeight.ExtraBold)
     }
 }
 @Composable fun SpectrumStatRow(label: String, value: String, color: Color) { Row(modifier = Modifier.background(color.copy(0.08f), RoundedCornerShape(12.dp)).border(1.dp, color.copy(0.2f), RoundedCornerShape(12.dp)).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) { Text(label, color = Color.Gray, fontSize = 12.sp, modifier = Modifier.width(80.dp), textAlign = TextAlign.End); Text(value, color = color, fontSize = 20.sp, fontWeight = FontWeight.Bold) } }
 
-// ---------------------------------------------------------
-// Theme 10: Depth
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme10_Depth(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val breathe = breathingScaleState(animate, 1f, 1.02f, 5000)
@@ -2401,9 +2401,9 @@ fun AosTheme10_Depth(color: Color, data: AosThemeData, animate: Boolean, isLands
 }
 @Composable fun DepthStat(label: String, value: String, color: Color) { Column { Text(label, color = Color.Gray, fontSize = 9.sp, letterSpacing = 1.sp); Text(value, color = color, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1) } }
 
-// ---------------------------------------------------------
-// Theme 11: Plasma
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme11_Plasma(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val rotation = rotationAngleState(animate, 4000)
@@ -2436,9 +2436,9 @@ fun AosTheme11_Plasma(color: Color, data: AosThemeData, animate: Boolean, isLand
 }
 @Composable fun PlasmaCorner(modifier: Modifier, label: String, value: String, color: Color, alignEnd: Boolean = false) { Column(modifier = modifier, horizontalAlignment = if (alignEnd) Alignment.End else Alignment.Start) { Text(label, color = Color.Gray, fontSize = 10.sp, letterSpacing = 1.sp); Text(value, color = color, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 1) } }
 
-// ---------------------------------------------------------
-// Theme 12: Zen
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme12_Zen(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val breathe = breathingScaleState(animate, 1f, 1.015f, 5000)
@@ -2492,14 +2492,14 @@ fun AosTheme13_Inferno(color: Color, data: AosThemeData, animate: Boolean, isLan
 }
 @Composable fun InfernoCard(label: String, value: String, color: Color, modifier: Modifier) { Box(modifier = modifier.background(Brush.verticalGradient(listOf(color.copy(0.2f), color.copy(0.05f))), RoundedCornerShape(14.dp)).border(1.dp, color.copy(0.4f), RoundedCornerShape(14.dp)).padding(16.dp)) { Column { Text(label, color = Color.Gray, fontSize = 10.sp, letterSpacing = 1.sp); Text(value, color = color, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1) } } }
 
-// ---------------------------------------------------------
-// Theme 14: Arctic
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme14_Arctic(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val iceColor = Color(0xFF00B0FF); val snowColor = Color(0xFFE3F2FD)
 
-    // Генерируем снежинки один раз (случайные координаты 0.0..1.0)
+    
     val flakes = remember { List(8) { Pair(Math.random().toFloat(), Math.random().toFloat()) } }
 
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF001F3F), Color(0xFF001020))))) {
@@ -2523,9 +2523,9 @@ fun AosTheme14_Arctic(color: Color, data: AosThemeData, animate: Boolean, isLand
 }
 @Composable fun ArcticStat(label: String, value: String, color: Color) { Column { Text(label, color = Color.Gray, fontSize = 10.sp, letterSpacing = 2.sp); Text(value, color = color, fontSize = 32.sp, fontWeight = FontWeight.Light, letterSpacing = 1.sp); Box(Modifier.width(64.dp).height(1.dp).background(color.copy(0.3f))) } }
 
-// ---------------------------------------------------------
-// Theme 15: Prism
-// ---------------------------------------------------------
+
+
+
 @Composable
 fun AosTheme15_Prism(color: Color, data: AosThemeData, animate: Boolean, isLandscape: Boolean) {
     val prismColors = listOf(Color(0xFFFF0080), Color(0xFF7928CA), Color(0xFF00DFD8), Color(0xFF007CF0))

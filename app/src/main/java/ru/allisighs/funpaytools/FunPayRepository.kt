@@ -82,7 +82,7 @@ import java.util.regex.Pattern
 import kotlin.apply
 import kotlin.compareTo
 
-const val APP_VERSION = "1.2.5"
+const val APP_VERSION = "1.3"
 
 data class AutoRefundSettings(
     val enabled: Boolean = false,

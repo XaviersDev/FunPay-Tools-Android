@@ -64,15 +64,15 @@ fun ConcurentDialog(
     val scope = rememberCoroutineScope()
 
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val bg = ThemeManager.parseColor(theme.backgroundColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
     var settings by remember { mutableStateOf(ConcurentManager.getSettings(context)) }
 
-    // UI-state
-    var tab by remember { mutableIntStateOf(0) } // 0 сообщения, 1 игры, 2 настройки, 3 статистика
+    
+    var tab by remember { mutableIntStateOf(0) } 
     var editingMessageId by remember { mutableStateOf<String?>(null) }
     var editingMessageText by remember { mutableStateOf("") }
     var showAddMessage by remember { mutableStateOf(false) }
@@ -93,13 +93,13 @@ fun ConcurentDialog(
         ConcurentManager.saveSettings(context, s)
     }
 
-    // Подхватываем результат от встроенного браузера (если нам вернули nodeId+name)
+    
     LaunchedEffect(pendingBrowserResult) {
         if (pendingBrowserResult != null) {
             val (nodeId, name) = pendingBrowserResult
             val url = ConcurentManager.buildUrl(nodeId)
             val newGame = ConcurentGame(name = name.ifBlank { "Чат $nodeId" }, nodeId = nodeId, url = url)
-            // Не дублируем
+            
             if (settings.games.none { it.nodeId == nodeId }) {
                 persist(settings.copy(games = settings.games + newGame))
                 Toast.makeText(context, "Добавлено: ${newGame.name}", Toast.LENGTH_SHORT).show()
@@ -110,13 +110,10 @@ fun ConcurentDialog(
         }
     }
 
-    // ── ДИАЛОГ ИМПОРТА ────────────────────────────────────────────────────
+    
     if (showImportDialog) {
         Dialog(onDismissRequest = { showImportDialog = false }) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = surface),
-                shape = RoundedCornerShape(16.dp)
-            ) {
+            Box(modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(surface)) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Импорт настроек из расширения", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 16.sp)
                     Spacer(Modifier.height(4.dp))
@@ -154,16 +151,12 @@ fun ConcurentDialog(
         }
     }
 
-    // ── ОСНОВНОЙ ДИАЛОГ ──────────────────────────────────────────────────
+    
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.94f),
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(20.dp)
-        ) {
+        Box(modifier = Modifier.fillMaxWidth(0.96f).fillMaxHeight(0.94f).clip(RoundedCornerShape(20.dp)).background(surface)) {
             Column(Modifier.fillMaxSize().padding(16.dp)) {
 
-                // Заголовок + главный переключатель
+                
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Campaign, null, tint = accent, modifier = Modifier.size(28.dp))
                     Spacer(Modifier.width(10.dp))
@@ -196,11 +189,11 @@ fun ConcurentDialog(
                     }
                 }
 
-                // Статус-плашка
+                
                 Spacer(Modifier.height(10.dp))
                 ConcurentStatusBar(settings, accent, surface, textPrimary, textSecondary)
 
-                // Предупреждение о малом интервале
+                
                 if (settings.intervalSeconds < ConcurentManager.SAFE_INTERVAL) {
                     Spacer(Modifier.height(8.dp))
                     Row(
@@ -219,12 +212,12 @@ fun ConcurentDialog(
                     }
                 }
 
-                // Табы
+                
                 Spacer(Modifier.height(12.dp))
                 ConcurentTabs(tab, theme) { tab = it }
                 Spacer(Modifier.height(12.dp))
 
-                // Контент выбранного таба
+                
                 Box(Modifier.weight(1f)) {
                     when (tab) {
                         0 -> ConcurentMessagesTab(
@@ -285,7 +278,7 @@ fun ConcurentDialog(
     }
 }
 
-// ── STATUS BAR ──────────────────────────────────────────────────────────────
+
 
 @Composable
 private fun ConcurentStatusBar(
@@ -295,9 +288,9 @@ private fun ConcurentStatusBar(
     textPrimary: Color,
     textSecondary: Color
 ) {
-    // Тикаем раз в секунду, пока диалог открыт и Concurent включён.
-    // Без этого System.currentTimeMillis() читался один раз на рекомпозиции и
-    // таймер "замораживался" — обновлялся лишь при переключении вкладок.
+    
+    
+    
     var tick by remember { mutableIntStateOf(0) }
     LaunchedEffect(s.enabled, s.nextPostAt) {
         while (s.enabled && s.nextPostAt > 0L) {
@@ -347,7 +340,7 @@ private fun formatSeconds(s: Int): String {
     return "${h}ч ${m % 60}м"
 }
 
-// ── TABS ────────────────────────────────────────────────────────────────────
+
 
 @Composable
 private fun ConcurentTabs(selected: Int, theme: AppTheme, onSelect: (Int) -> Unit) {
@@ -384,7 +377,7 @@ private fun ConcurentTabs(selected: Int, theme: AppTheme, onSelect: (Int) -> Uni
     }
 }
 
-// ── TAB 0: MESSAGES ─────────────────────────────────────────────────────────
+
 
 @Composable
 private fun ConcurentMessagesTab(
@@ -401,14 +394,14 @@ private fun ConcurentMessagesTab(
     setEditingMessageText: (String) -> Unit
 ) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
-    // State: какое сообщение сейчас редактирует таргет (привязку к чатам)
+    
     var targetingMessageId by remember { mutableStateOf<String?>(null) }
 
-    // Модальный выбор таргетов
+    
     if (targetingMessageId != null) {
         val msg = settings.messages.firstOrNull { it.id == targetingMessageId }
         if (msg != null) {
@@ -431,7 +424,7 @@ private fun ConcurentMessagesTab(
     }
 
     Column(Modifier.fillMaxSize()) {
-        // Форма добавления
+        
         if (showAddMessage) {
             OutlinedTextField(
                 value = newMessageText, onValueChange = setNewMessageText,
@@ -476,12 +469,8 @@ private fun ConcurentMessagesTab(
                 Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(settings.messages, key = { it.id }) { msg ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = surface.copy(alpha = 0.55f)),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
+                items(settings.messages.distinctBy { it.id }, key = { it.id }) { msg ->
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(surface.copy(alpha = 0.55f))) {
                         Column(Modifier.padding(10.dp)) {
                             if (editingMessageId == msg.id) {
                                 OutlinedTextField(
@@ -531,7 +520,7 @@ private fun ConcurentMessagesTab(
                                             maxLines = 3,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        // Плашка с таргетом: "Во все чаты" или "Только в: name1, name2…"
+                                        
                                         Spacer(Modifier.height(4.dp))
                                         val targetLabel = if (msg.targetGameIds.isEmpty()) {
                                             "🌐 Во все активные чаты"
@@ -573,7 +562,7 @@ private fun ConcurentMessagesTab(
     }
 }
 
-// ── TAB 1: GAMES (чаты) ─────────────────────────────────────────────────────
+
 
 @Composable
 private fun ConcurentGamesTab(
@@ -591,19 +580,19 @@ private fun ConcurentGamesTab(
 ) {
     val context = LocalContext.current
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
-    // Локальное состояние пикера каталога игр.
+    
     var showPicker by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
-        // Три кнопки. Главный flow — "Поиск по каталогу" (яркая, accent).
-        // "Браузер" (outlined, тусклая) и "Вручную" (text, самая тусклая) — запасные.
+        
+        
         Row(verticalAlignment = Alignment.CenterVertically) {
 
-            // 1. ОСНОВНАЯ — Поиск по каталогу.
+            
             Button(
                 onClick = { showPicker = true },
                 modifier = Modifier.weight(1f),
@@ -618,7 +607,7 @@ private fun ConcurentGamesTab(
 
             Spacer(Modifier.width(6.dp))
 
-            // 2. Вторичная — Браузер.
+            
             OutlinedButton(
                 onClick = onOpenBrowser,
                 shape = RoundedCornerShape(10.dp),
@@ -632,7 +621,7 @@ private fun ConcurentGamesTab(
 
             Spacer(Modifier.width(4.dp))
 
-            // 3. Третичная — Вручную.
+            
             TextButton(
                 onClick = { setShowAddGame(!showAddGame) },
                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
@@ -648,15 +637,15 @@ private fun ConcurentGamesTab(
                 )
             }
         }
-        // Подсказка под кнопками
+        
         Spacer(Modifier.height(4.dp))
         Text(
             "Поиск по каталогу — самый быстрый способ. Браузер — если чат нестандартный. Вручную — если знаете node.",
             color = textSecondary, fontSize = 10.sp, lineHeight = 13.sp
         )
 
-        // Диалог поиска по каталогу: 124 игровых чата, транслит, группы.
-        // Не закрывается сразу после выбора — можно добавить несколько подряд.
+        
+        
         if (showPicker) {
             ConcurentGamePickerDialog(
                 theme = theme,
@@ -729,12 +718,8 @@ private fun ConcurentGamesTab(
             ConcurentEmptyState(icon = Icons.Default.Chat, text = "Нет чатов. Добавьте хотя бы один.", theme = theme)
         } else {
             LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(settings.games, key = { it.id }) { game ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = surface.copy(alpha = 0.55f)),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
+                items(settings.games.distinctBy { it.id }, key = { it.id }) { game ->
+                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(surface.copy(alpha = 0.55f))) {
                         Column(Modifier.padding(10.dp)) {
                             if (editingGameId == game.id) {
                                 OutlinedTextField(
@@ -825,7 +810,7 @@ private fun ConcurentGamesTab(
     }
 }
 
-// ── TAB 2: OPTIONS ──────────────────────────────────────────────────────────
+
 
 @Composable
 private fun ConcurentOptionsTab(
@@ -834,12 +819,12 @@ private fun ConcurentOptionsTab(
     onPersist: (ConcurentSettings) -> Unit
 ) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        // Интервал
+        
         Text("Интервал публикации", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Text("Сейчас: ${formatSeconds(settings.intervalSeconds)}", color = textSecondary, fontSize = 11.sp)
         Spacer(Modifier.height(4.dp))
@@ -851,7 +836,7 @@ private fun ConcurentOptionsTab(
             valueRange = ConcurentManager.MIN_INTERVAL.toFloat()..7200f,
             colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
         )
-        // Быстрые пресеты
+        
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(
                 "30с" to 30,
@@ -876,7 +861,7 @@ private fun ConcurentOptionsTab(
 
         Spacer(Modifier.height(16.dp))
 
-        // Джиттер
+        
         Text("Случайный разброс: ±${settings.jitterPercent}%", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Text("Интервал будет плавать вокруг базового — чтобы паттерн не выглядел машинным", color = textSecondary, fontSize = 11.sp, lineHeight = 14.sp)
         Slider(
@@ -888,7 +873,7 @@ private fun ConcurentOptionsTab(
 
         Spacer(Modifier.height(12.dp))
 
-        // Тихие часы
+        
         ConcurentSwitchRow(
             title = "Тихие часы",
             desc = "Не постить в указанном диапазоне часов",
@@ -918,7 +903,7 @@ private fun ConcurentOptionsTab(
 
         Spacer(Modifier.height(4.dp))
 
-        // Пауза на занятость
+        
         ConcurentSwitchRow(
             title = "Пауза в «Режиме занятости»",
             desc = "Не постить пока включён Busy Mode",
@@ -934,7 +919,7 @@ private fun ConcurentOptionsTab(
             onCheckedChange = { onPersist(settings.copy(pauseOnSchedule = it)) }
         )
 
-        // AI
+        
         ConcurentSwitchRow(
             title = "AI-рерайт",
             desc = "Каждый раз слегка перефразировать сообщение через нейросеть — ниже шанс попасть под антиспам",
@@ -945,7 +930,7 @@ private fun ConcurentOptionsTab(
 
         Spacer(Modifier.height(10.dp))
 
-        // Режим сообщений
+        
         Text("Порядок сообщений", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             FilterChip(
@@ -968,7 +953,7 @@ private fun ConcurentOptionsTab(
 
         Spacer(Modifier.height(10.dp))
 
-        // Режим игр
+        
         Text("Порядок чатов", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(
@@ -992,7 +977,7 @@ private fun ConcurentOptionsTab(
 
         Spacer(Modifier.height(12.dp))
 
-        // Стоп после N
+        
         Text("Стоп после публикаций: ${if (settings.stopAfterCount == 0) "без ограничения" else settings.stopAfterCount}",
             color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Slider(
@@ -1006,7 +991,7 @@ private fun ConcurentOptionsTab(
     }
 }
 
-// ── TAB 3: STATS ────────────────────────────────────────────────────────────
+
 
 @Composable
 private fun ConcurentStatsTab(
@@ -1017,7 +1002,7 @@ private fun ConcurentStatsTab(
     onResetStats: () -> Unit
 ) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
@@ -1025,7 +1010,7 @@ private fun ConcurentStatsTab(
     val total = ok + fail
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        // Карточки
+        
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ConcurentStatCard("✅ Успешно", ok.toString(), accent, surface, textPrimary, textSecondary, Modifier.weight(1f))
             ConcurentStatCard("❌ Ошибки", fail.toString(), Color(0xFFE53935), surface, textPrimary, textSecondary, Modifier.weight(1f))
@@ -1038,17 +1023,14 @@ private fun ConcurentStatsTab(
 
         Spacer(Modifier.height(16.dp))
 
-        // Мини-график: просто последние 20 событий с иконками
+        
         Text("Последние публикации", color = textPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
         if (settings.stats.isEmpty()) {
             Text("Пока ничего не опубликовано", color = textSecondary, fontSize = 12.sp)
         } else {
             val last = settings.stats.takeLast(20).reversed()
-            Card(
-                colors = CardDefaults.cardColors(containerColor = surface.copy(alpha = 0.5f)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
+            Box(modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(surface.copy(alpha = 0.5f))) {
                 Column(Modifier.padding(10.dp)) {
                     last.forEach { ev ->
                         Row(
@@ -1074,7 +1056,7 @@ private fun ConcurentStatsTab(
 
         Spacer(Modifier.height(16.dp))
 
-        // Импорт/экспорт/сброс
+        
         OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.FileDownload, null, modifier = Modifier.size(16.dp), tint = textPrimary)
             Spacer(Modifier.width(6.dp))
@@ -1107,11 +1089,7 @@ private fun ConcurentStatCard(
     accent: Color, surface: Color, textPrimary: Color, textSecondary: Color,
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = surface.copy(alpha = 0.55f)),
-        shape = RoundedCornerShape(12.dp)
-    ) {
+    Box(modifier = modifier.clip(RoundedCornerShape(12.dp)).background(surface.copy(alpha = 0.55f))) {
         Column(Modifier.padding(12.dp)) {
             Text(title, color = textSecondary, fontSize = 11.sp)
             Spacer(Modifier.height(4.dp))
@@ -1120,7 +1098,7 @@ private fun ConcurentStatCard(
     }
 }
 
-// ── Общие утилиты ───────────────────────────────────────────────────────────
+
 
 @Composable
 private fun ConcurentSwitchRow(
@@ -1168,7 +1146,7 @@ private fun fpOutlinedColors(accent: Color, textPrimary: Color, textSecondary: C
         cursorColor = accent
     )
 
-// ── Диалог выбора таргетов: к каким чатам привязано сообщение ───────────────
+
 
 @Composable
 private fun ConcurentTargetPickerDialog(
@@ -1179,20 +1157,16 @@ private fun ConcurentTargetPickerDialog(
     onDismiss: () -> Unit
 ) {
     val accent = ThemeManager.parseColor(theme.accentColor)
-    val surface = ThemeManager.parseColor(theme.surfaceColor)
+    val surface = ThemeManager.dialogSurface(theme)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
-    // "во все чаты" → пустой список. Отдельный чекбокс для этого состояния.
+    
     var allChats by remember { mutableStateOf(message.targetGameIds.isEmpty()) }
     var selected by remember { mutableStateOf(message.targetGameIds.toSet()) }
 
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = surface),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(surface)) {
             Column(Modifier.padding(16.dp)) {
                 Text("Куда отправлять это объявление?", fontWeight = FontWeight.Bold, color = textPrimary, fontSize = 15.sp)
                 Spacer(Modifier.height(2.dp))
@@ -1202,7 +1176,7 @@ private fun ConcurentTargetPickerDialog(
                 )
                 Spacer(Modifier.height(12.dp))
 
-                // Чекбокс "во все чаты"
+                
                 Row(
                     Modifier.fillMaxWidth().clickable {
                         allChats = !allChats
@@ -1236,7 +1210,7 @@ private fun ConcurentTargetPickerDialog(
                                     modifier = Modifier.padding(8.dp))
                             }
                         }
-                        items(games, key = { it.id }) { g ->
+                        items(games.distinctBy { it.id }, key = { it.id }) { g ->
                             val isSel = selected.contains(g.id)
                             Row(
                                 Modifier.fillMaxWidth().clickable {

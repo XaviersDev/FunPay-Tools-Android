@@ -78,11 +78,11 @@ fun EpicNicknameText(
         blurRadius = 15f
     ) else null
 
-    // ОПТИМИЗАЦИЯ: Обычный список вместо StateList, чтобы избежать рекомпозиций при мутации
+    
     val particles = remember { ArrayList<MiniParticle>() }
     val overlayType = config.ov
 
-    // Этот тик обновляет ТОЛЬКО Canvas слой каждую миллисекунду, не затрагивая UI элементы (Text)
+    
     val drawTick by infiniteTransition.animateFloat(
         initialValue = 0f, targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "tick"
@@ -105,11 +105,11 @@ fun EpicNicknameText(
             val pColorHex = config.pc
 
             Canvas(modifier = Modifier.matchParentSize()) {
-                val _tick = drawTick // Читаем state, чтобы Compose перерисовывал Canvas каждый кадр
+                val _tick = drawTick 
                 val w = size.width
                 val h = size.height
 
-                // Спавн частиц
+                
                 if (particles.size < 6) {
                     when (overlayType) {
                         "fire" -> if (Random.nextFloat() < 0.2f) particles.add(MiniParticle(Random.nextFloat() * 100f, 100f, Random.nextFloat() * 3f + 1f, (Random.nextFloat() - 0.5f) * 1f, Random.nextFloat() * -2f - 1f, 1f))
@@ -121,7 +121,7 @@ fun EpicNicknameText(
                     }
                 }
 
-                // Физика и отрисовка
+                
                 val iterator = particles.iterator()
                 while (iterator.hasNext()) {
                     val p = iterator.next()
@@ -174,7 +174,7 @@ fun EpicNicknameText(
     }
 }
 
-// Функция-помощник: если кастомный цвет установлен — используем его + применяем текущую альфу, иначе дефолтный
+
 fun getParticleColor(customHex: String?, defaultColor: Color, alpha: Float): Color {
     val a = alpha.coerceIn(0f, 1f)
     if (!customHex.isNullOrBlank()) {

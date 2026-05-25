@@ -56,7 +56,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
     val textColor          = ThemeManager.parseColor(theme.textPrimaryColor)
     val secondaryTextColor = ThemeManager.parseColor(theme.textSecondaryColor)
 
-    // ВСЕ brush/listOf в remember — иначе каждый кадр аллокация!
+    
     val bgBrush = remember(accentColor, bgColor) {
         Brush.radialGradient(
             colors = listOf(
@@ -81,7 +81,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
     var showTitle by remember { mutableStateOf(false) }
     var showSubtitle by remember { mutableStateOf(false) }
 
-    // === Появление иконки ===
+    
     val iconScale by animateFloatAsState(
         targetValue = if (startAnimation) 1f else 0.2f,
         animationSpec = spring(
@@ -96,7 +96,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
         label = "iconAlpha"
     )
 
-    // === Орбита: ОДНА бесконечная анимация для угла спутника ===
+    
     val infinite = rememberInfiniteTransition(label = "infinite")
     val orbitAngle by infinite.animateFloat(
         initialValue = 0f,
@@ -114,7 +114,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
         label = "ringAlpha"
     )
 
-    // Таймлайн
+    
     LaunchedEffect(Unit) {
         startAnimation = true
         delay(280)
@@ -132,19 +132,19 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
         .background(bgBrush)
     ) {
 
-        // ============ ЦЕНТР ============
+        
         Column(
             modifier = Modifier.align(Alignment.Center),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
 
-            // Композит "иконка + орбита"
+            
             Box(
                 modifier = Modifier.size(260.dp),
                 contentAlignment = Alignment.Center
             ) {
 
-                // 1. Статичное кольцо (Box с border, без Canvas)
+                
                 Box(
                     modifier = Modifier
                         .size(220.dp)
@@ -153,8 +153,8 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
                         .background(accentColor.copy(alpha = 0.05f))
                 )
 
-                // 2. Спутник на орбите — иконка FunPay
-                //    Вычисляем offset один раз через State, без пересоздания модификаторов
+                
+                
                 val angleRad = (orbitAngle.toDouble()) * Math.PI / 180.0
                 val orbitRadiusDp = 102f
                 val dx = (orbitRadiusDp * cos(angleRad)).toFloat()
@@ -177,7 +177,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
                     )
                 }
 
-                // 3. Центральная иконка приложения (загружается один раз, без лагов)
+                
                 Box(
                     modifier = Modifier
                         .size(132.dp)
@@ -216,7 +216,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "Автоматизация продаж",
+                        text = "Приложение для автоматизации FunPay",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
                         color = accentColor,
@@ -224,7 +224,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "v1.2 • by AlliSighs",
+                        text = "v1.3 • by AlliSighs",
                         fontSize = 11.sp,
                         color = secondaryTextColor,
                         modifier = Modifier.alpha(0.55f)
@@ -233,7 +233,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
             }
         }
 
-        // === Низ: "Загрузка..." с тремя точками ===
+        
         val bottomAlpha by animateFloatAsState(
             targetValue = if (showSubtitle) 1f else 0f,
             animationSpec = tween(800),

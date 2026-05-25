@@ -89,7 +89,7 @@ fun ColorPickerDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
 
-                // === Поле S/V ===
+                
                 SaturationValuePanel(
                     hue = hue,
                     sat = sat,
@@ -99,13 +99,13 @@ fun ColorPickerDialog(
                     }
                 )
 
-                // === Hue slider ===
+                
                 HueSlider(
                     hue = hue,
                     onHueChange = { hue = it }
                 )
 
-                // === Alpha slider ===
+                
                 if (allowAlpha) {
                     AlphaSlider(
                         color = Color(
@@ -119,12 +119,12 @@ fun ColorPickerDialog(
                     )
                 }
 
-                // === Превью + Hex ===
+                
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Превью с шахматкой
+                    
                     Box(
                         modifier = Modifier
                             .size(56.dp)
@@ -145,7 +145,7 @@ fun ColorPickerDialog(
                         value = hexInput,
                         onValueChange = { newValue ->
                             hexInput = newValue.uppercase()
-                            // Парсим только если строка похожа на полный hex
+                            
                             if (newValue.length >= 7) {
                                 val parsed = parseHexColorSafe(newValue)
                                 val arr = FloatArray(3)
@@ -176,9 +176,9 @@ fun ColorPickerDialog(
     )
 }
 
-// =============================================================================
-//                              SUB-COMPONENTS
-// =============================================================================
+
+
+
 
 @Composable
 private fun SaturationValuePanel(
@@ -198,7 +198,7 @@ private fun SaturationValuePanel(
             .fillMaxWidth()
             .height(200.dp)
             .clip(RoundedCornerShape(8.dp))
-            // Базовый слой: hue → белый (по горизонтали)
+            
             .background(
                 Brush.horizontalGradient(
                     colors = listOf(Color.White, pureHueColor)
@@ -206,7 +206,7 @@ private fun SaturationValuePanel(
             )
             .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
     ) {
-        // Поверх: прозрачный → чёрный (по вертикали)
+        
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -235,7 +235,7 @@ private fun SaturationValuePanel(
                     }
                 }
         ) {
-            // Курсор
+            
             androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                 val cx = sat * this.size.width
                 val cy = (1f - value) * this.size.height
@@ -292,7 +292,7 @@ private fun HueSlider(hue: Float, onHueChange: (Float) -> Unit) {
                 }
             }
     ) {
-        // Thumb
+        
         val thumbX = with(density) {
             val px = (hue / 360f).coerceIn(0f, 1f) * widthPx
             px.toDp()
@@ -322,7 +322,7 @@ private fun AlphaSlider(color: Color, alpha: Float, onAlphaChange: (Float) -> Un
             .background(checkerboardBrush())
             .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(14.dp))
     ) {
-        // Градиент прозрачности
+        
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -362,13 +362,13 @@ private fun AlphaSlider(color: Color, alpha: Float, onAlphaChange: (Float) -> Un
     }
 }
 
-// =============================================================================
-//                              HELPERS
-// =============================================================================
+
+
+
 
 /** Шахматка для подсветки прозрачности. */
 private fun checkerboardBrush(): Brush {
-    // Простой "клетчатый" эффект через linear gradient — не идеально, но быстро.
+    
     return Brush.linearGradient(
         colors = listOf(Color(0xFFCCCCCC), Color(0xFF888888)),
         start = Offset(0f, 0f),
@@ -381,7 +381,7 @@ private fun checkerboardBrush(): Brush {
 private fun parseHexColorSafe(hex: String): Int {
     return try {
         var s = hex.trim().removePrefix("#")
-        // Принимаем форматы: RGB, RRGGBB, AARRGGBB
+        
         s = when (s.length) {
             3 -> "FF" + s.map { "$it$it" }.joinToString("")
             6 -> "FF$s"

@@ -14,6 +14,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -55,7 +56,7 @@ data class AutoDeliverySettings(
 
 data class AutoDeliveryLot(
     @SerializedName("id") val id: String = UUID.randomUUID().toString(),
-    @SerializedName("lotName") val lotName: String = "", 
+    @SerializedName("lotName") val lotName: String = "",
     @SerializedName("responseText") val responseText: String = "Спасибо за покупку, \$username!\n\nВаш товар:\n\$product",
     @SerializedName("productsFileName") val productsFileName: String? = null,
     @SerializedName("disabled") val disabled: Boolean = false,
@@ -101,7 +102,7 @@ object AutoDeliveryManager {
         if (!file.exists()) return null
 
         val lines = file.readLines().map { it.trim() }.filter { it.isNotBlank() }
-        if (lines.size < amount) return null 
+        if (lines.size < amount) return null
 
         val taken = lines.take(amount)
         val remaining = lines.drop(amount)
@@ -109,31 +110,31 @@ object AutoDeliveryManager {
         return taken
     }
 
-    
+
     suspend fun checkAutoDelivery(chat: ChatItem, repo: FunPayRepository, context: Context): Boolean {
         val settings = getSettings(context)
         if (!settings.enabled) return false
 
         val msgLower = chat.lastMessage.lowercase()
-        
+
         if (!msgLower.contains("оплатил заказ") && !msgLower.contains("paid for order")) return false
 
         val orderIdMatch = Regex("#([A-Za-z0-9]+)").find(chat.lastMessage)
         val orderId = orderIdMatch?.groupValues?.get(1) ?: return false
 
-        
+
         val processedPrefs = context.getSharedPreferences("autodelivery_processed", Context.MODE_PRIVATE)
         if (processedPrefs.getBoolean(orderId, false)) return false
 
         LogManager.addLog("⚡ Автовыдача: Обнаружена оплата заказа #$orderId от ${chat.username}")
 
-        
+
         val orderDetails = repo.getOrderDetails(orderId) ?: return false
         val purchasedLotName = orderDetails.shortDesc.trim()
         val amountStr = orderDetails.params.entries.find { it.key.contains("Количество", true) || it.key.contains("Amount", true) }?.value ?: "1"
         val amount = amountStr.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 1
 
-        
+
         val lotConfig = settings.lots.find {
             !it.disabled && (purchasedLotName.equals(it.lotName, ignoreCase = true) || purchasedLotName.startsWith(it.lotName, ignoreCase = true))
         }
@@ -146,7 +147,7 @@ object AutoDeliveryManager {
         var finalText = lotConfig.responseText
         var takenProducts: List<String>? = null
 
-        
+
         if (!lotConfig.productsFileName.isNullOrBlank()) {
             val isMulti = settings.multiDelivery && !lotConfig.disableMultiDelivery
             val neededAmount = if (isMulti) amount else 1
@@ -157,7 +158,7 @@ object AutoDeliveryManager {
                 LogManager.addLog("❌ Автовыдача: Недостаточно товара в файле ${lotConfig.productsFileName} для заказа #$orderId!")
                 repo.sendMessage(chat.id, "Здравствуйте! К сожалению, товар закончился в базе автовыдачи. Пожалуйста, подождите, я выдам его вручную как только смогу, или сделаю возврат.")
 
-                
+
                 if (settings.autoDisable) {
                     orderDetails.lotId?.let { repo.toggleLotState(it, false) }
                     LogManager.addLog("🛑 Автовыдача: Лот '$purchasedLotName' деактивирован из-за нехватки товара.")
@@ -171,13 +172,13 @@ object AutoDeliveryManager {
             finalText = finalText.replace("\$product", productsString)
         }
 
-        
+
         finalText = finalText
             .replace("\$username", chat.username)
             .replace("\$order_id", orderId)
             .replace("\$lot_name", purchasedLotName)
 
-        
+
         val success = repo.sendMessage(chat.id, finalText)
         if (success) {
             LogManager.addLog("✅ Автовыдача: Заказ #$orderId успешно выдан!")
@@ -185,7 +186,7 @@ object AutoDeliveryManager {
 
             if (repo.getReadMarkSettings().markAfterAutoReply) repo.markChatAsRead(chat.id)
 
-            
+
             if (settings.autoDisable && !lotConfig.productsFileName.isNullOrBlank()) {
                 val remaining = getProductsCount(context, lotConfig.productsFileName)
                 if (remaining == 0) {
@@ -196,7 +197,7 @@ object AutoDeliveryManager {
             return true
         } else {
             LogManager.addLog("❌ Автовыдача: Ошибка отправки сообщения в чат для заказа #$orderId")
-            
+
             takenProducts?.let {
                 val current = readProductsContent(context, lotConfig.productsFileName!!)
                 saveProductsContent(context, lotConfig.productsFileName, it.joinToString("\n") + "\n" + current)
@@ -222,13 +223,9 @@ fun AutoDeliveryCard(
     )
     val borderColor by animateColorAsState(if (settings.enabled) accent else Color.Transparent, label = "bb")
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(if (settings.enabled) 1.5.dp else 0.dp, borderColor, RoundedCornerShape(theme.borderRadius.dp)),
-        colors = CardDefaults.cardColors(containerColor = cardColor),
-        shape = RoundedCornerShape(theme.borderRadius.dp)
-    ) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .border(if (settings.enabled) 1.5.dp else 0.dp, borderColor, RoundedCornerShape(theme.borderRadius.dp)).clip(RoundedCornerShape(theme.borderRadius.dp)).background(cardColor)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.FlashOn, null, tint = if (settings.enabled) accent else ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(26.dp))
@@ -304,11 +301,7 @@ fun AutoDeliverySettingsDialog(
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f),
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.9f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.FlashOn, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(24.dp))
@@ -354,11 +347,7 @@ fun AutoDeliverySettingsDialog(
                     items(settings.lots) { lot ->
                         val count = if (lot.productsFileName != null) AutoDeliveryManager.getProductsCount(context, lot.productsFileName) else 0
 
-                        Card(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).clickable { editingLot = lot }.alpha(if(lot.disabled) 0.5f else 1f),
-                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.2f)),
-                            border = BorderStroke(1.dp, Color.White.copy(0.05f))
-                        ) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).clickable { editingLot = lot }.alpha(if(lot.disabled) 0.5f else 1f).clip(RoundedCornerShape(0.dp)).background(Color.Black.copy(alpha = 0.2f)).border(1.dp, Color.White.copy(0.05f), RoundedCornerShape(0.dp))) {
                             Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(lot.lotName.ifBlank { "Без названия" }, color = ThemeManager.parseColor(theme.textPrimaryColor), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -427,11 +416,7 @@ fun AutoDeliveryLotEditor(
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.95f),
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.95f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Text("Редактирование лота", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
                 Spacer(Modifier.height(16.dp))
@@ -460,11 +445,7 @@ fun AutoDeliveryLotEditor(
                     }
 
                     item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color.Black.copy(0.2f)),
-                            border = BorderStroke(1.dp, accent.copy(0.3f))
-                        ) {
+                        Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(0.dp)).background(Color.Black.copy(0.2f)).border(1.dp, accent.copy(0.3f), RoundedCornerShape(0.dp))) {
                             Column(Modifier.padding(12.dp)) {
                                 Text("База товаров (Файл)", color = accent, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                                 Spacer(Modifier.height(4.dp))
@@ -537,11 +518,7 @@ fun ProductsEditorDialog(
     val accent = ThemeManager.parseColor(theme.accentColor)
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.95f),
-            colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)),
-            shape = RoundedCornerShape(theme.borderRadius.dp)
-        ) {
+        Box(modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.95f).clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.dialogSurface(theme))) {
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Text("Редактор товаров", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor))
                 Text("Каждая строка = 1 товар", fontSize = 12.sp, color = ThemeManager.parseColor(theme.textSecondaryColor))

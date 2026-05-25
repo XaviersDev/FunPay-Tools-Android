@@ -86,7 +86,7 @@ fun SettingsScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
-                
+
                 item {
                     SectionHeader(
                         title = "Аккаунт",
@@ -106,7 +106,7 @@ fun SettingsScreen(
                                 iconColor = ThemeManager.parseColor("#FFD700"),
                                 theme = currentTheme,
                                 onClick = {
-                                    
+
                                     navController.navigate("auth_method")
                                 }
                             )
@@ -124,7 +124,7 @@ fun SettingsScreen(
                                 iconColor = ThemeManager.parseColor(currentTheme.accentColor),
                                 theme = currentTheme,
                                 onClick = {
-                                    
+
                                     navController.navigate("accounts")
                                 }
                             )
@@ -148,7 +148,7 @@ fun SettingsScreen(
                     )
                 }
 
-                
+
                 item {
                     SectionHeader(
                         title = "Персонализация",
@@ -168,7 +168,7 @@ fun SettingsScreen(
                                 iconColor = ThemeManager.parseColor("#E91E63"),
                                 theme = currentTheme,
                                 onClick = {
-                                    
+
                                     navController.navigate("theme_selector")
                                 }
                             )
@@ -185,7 +185,7 @@ fun SettingsScreen(
                                 iconColor = ThemeManager.parseColor("#9C27B0"),
                                 theme = currentTheme,
                                 onClick = {
-                                    
+
                                     navController.navigate("theme_customization")
                                 }
                             )
@@ -209,7 +209,7 @@ fun SettingsScreen(
                     )
                 }
 
-                
+
                 item {
                     SectionHeader(
                         title = "Данные",
@@ -275,7 +275,7 @@ fun SettingsScreen(
 
 
 
-                
+
                 item {
                     SectionHeader(
                         title = "Информация",
@@ -295,7 +295,7 @@ fun SettingsScreen(
                                 iconColor = ThemeManager.parseColor("#4CAF50"),
                                 theme = currentTheme,
                                 onClick = {
-                                    
+
                                     try {
                                         val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/AlliSighs"))
                                         context.startActivity(intent)
@@ -317,7 +317,7 @@ fun SettingsScreen(
 
                             InfoRow(
                                 label = "Версия приложения",
-                                value = "1.2.4",
+                                value = "1.3",
                                 theme = currentTheme
                             )
 
@@ -341,7 +341,7 @@ fun SettingsScreen(
                 }
             }
 
-            
+
             AnimatedVisibility(
                 visible = showSuccessMessage,
                 enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
@@ -359,27 +359,27 @@ fun SettingsScreen(
         }
     }
 
-    
+
     if (showDeleteConfirmDialog) {
         DeleteConfirmDialog(
             currentTheme = currentTheme,
             onDismiss = { showDeleteConfirmDialog = false },
             onConfirm = {
                 scope.launch {
-                    
+
                     repository.clearAllData()
 
-                    
+
                     val defaultTheme = ThemeManager.defaultThemes[0]
                     ThemeManager.saveTheme(context, defaultTheme)
                     onThemeChange(defaultTheme)
 
-                    
+
                     showDeleteConfirmDialog = false
 
-                    
+
                     navController.navigate("welcome") {
-                        
+
                         popUpTo(0) { inclusive = true }
                     }
                 }
@@ -387,7 +387,7 @@ fun SettingsScreen(
         )
     }
 
-    
+
     LaunchedEffect(showSuccessMessage) {
         if (showSuccessMessage) {
             kotlinx.coroutines.delay(3000)
@@ -432,14 +432,14 @@ private fun SettingsCard(
     theme: AppTheme,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = ThemeManager.parseColor(theme.surfaceColor)
-                .copy(alpha = theme.containerOpacity)
-        ),
-        shape = RoundedCornerShape(theme.borderRadius.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(theme.borderRadius.dp))
+            .background(
+                ThemeManager.parseColor(theme.surfaceColor)
+                    .copy(alpha = theme.containerOpacity)
+            )
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             content()
@@ -571,15 +571,12 @@ private fun SuccessMessage(
     accentColor: Color,
     onDismiss: () -> Unit
 ) {
-    Card(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = accentColor.copy(alpha = 0.95f)
-        ),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            .padding(horizontal = 16.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(accentColor.copy(alpha = 0.95f))
     ) {
         Row(
             modifier = Modifier
@@ -662,6 +659,6 @@ private fun DeleteConfirmDialog(
                 )
             }
         },
-        containerColor = ThemeManager.parseColor(currentTheme.surfaceColor)
+        containerColor = ThemeManager.dialogSurface(currentTheme)
     )
 }

@@ -19,7 +19,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.random.Random
 
-// ── Модели ───────────────────────────────────────────────────────────────────
+
 
 /**
  * Одна "игра" / назначение публикации. По сути — это пара (название, nodeId общего чата).
@@ -38,8 +38,8 @@ data class ConcurentMessage(
     val id: String = UUID.randomUUID().toString(),
     val text: String = "",
     val enabled: Boolean = true,
-    // Если список пустой — сообщение идёт во ВСЕ активные чаты (старое поведение).
-    // Если заполнен — только в указанные (по game.id).
+    
+    
     val targetGameIds: List<String> = emptyList()
 )
 
@@ -54,44 +54,44 @@ data class ConcurentStatEvent(
 data class ConcurentSettings(
     val enabled: Boolean = false,
 
-    // базовый интервал в секундах между публикациями (минимум 10)
+    
     val intervalSeconds: Int = 1800,
 
-    // ±% случайного джиттера к интервалу (0..50). Делает паттерн "человечнее".
+    
     val jitterPercent: Int = 15,
 
-    // если true — пропускаем публикацию когда включён Busy Mode
+    
     val pauseOnBusy: Boolean = true,
 
-    // если true — пропускаем публикацию, если по расписанию занятости сейчас "занят"
+    
     val pauseOnSchedule: Boolean = false,
 
-    // тихие часы: не постить в диапазоне [quietFrom; quietTo), если enabled
+    
     val quietHoursEnabled: Boolean = false,
     val quietFromHour: Int = 2,
     val quietToHour: Int = 7,
 
-    // пройтись по сообщениям: "sequence" (по порядку) или "random"
+    
     val messageMode: String = "sequence",
 
-    // пройтись по играм: "sequence" (после каждого круга сообщений), "random" (каждая публикация — рандом),
-    // "each_post" (каждый пост — следующая игра, сообщения идут параллельно)
+    
+    
     val gameMode: String = "sequence",
 
-    // AI-рерайт сообщения перед отправкой (использует существующий repository.rewriteMessage)
+    
     val aiRewriteEnabled: Boolean = false,
 
-    // стоп после N публикаций (0 = без ограничения)
+    
     val stopAfterCount: Int = 0,
 
-    // текущее состояние (двигается движком)
+    
     val currentMessageIndex: Int = 0,
     val currentGameIndex: Int = 0,
     val postsSinceEnable: Int = 0,
     val lastPostAt: Long = 0L,
     val nextPostAt: Long = 0L,
 
-    // данные
+    
     val messages: List<ConcurentMessage> = listOf(
         ConcurentMessage(text = "🔥 Лучшие цены на FunPay — пишите в ЛС!")
     ),
@@ -99,23 +99,23 @@ data class ConcurentSettings(
         ConcurentGame(name = "Общий чат", nodeId = "flood", url = "https://funpay.com/chat/?node=flood")
     ),
 
-    // история (храним последние 200 событий — этого хватает для суточной статистики)
+    
     val stats: List<ConcurentStatEvent> = emptyList()
 )
 
-// ── Менеджер ─────────────────────────────────────────────────────────────────
+
 
 object ConcurentManager {
     private const val PREFS_NAME = "funpay_prefs"
     private const val KEY = "concurent_settings_v2"
     private val gson = Gson()
 
-    // Минимум/максимум интервала (сек). Ниже 10 сек — это мгновенный бан, блокируем.
+    
     const val MIN_INTERVAL = 10
     const val MAX_INTERVAL = 24 * 3600
 
-    // Порог "безопасного" интервала — ниже этого показываем красное предупреждение.
-    const val SAFE_INTERVAL = 1800 // 30 минут
+    
+    const val SAFE_INTERVAL = 1800 
 
     fun getSettings(context: Context): ConcurentSettings {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -151,17 +151,17 @@ object ConcurentManager {
         if (settings.messages.none { it.enabled && it.text.isNotBlank() }) return false
         if (settings.games.none { it.enabled && it.nodeId.isNotBlank() }) return false
 
-        // Стоп после N публикаций
+        
         if (settings.stopAfterCount > 0 && settings.postsSinceEnable >= settings.stopAfterCount) {
             return false
         }
 
-        // Тихие часы
+        
         if (settings.quietHoursEnabled && isInQuietHours(settings)) {
             return false
         }
 
-        // Занятость
+        
         if (settings.pauseOnBusy) {
             try {
                 val busy = ChatFolderManager.getBusyMode(context)
@@ -175,9 +175,9 @@ object ConcurentManager {
             } catch (_: Exception) {}
         }
 
-        // Время пришло?
+        
         val now = System.currentTimeMillis()
-        if (settings.lastPostAt == 0L) return true // первый запуск
+        if (settings.lastPostAt == 0L) return true 
         return now >= settings.nextPostAt
     }
 
@@ -188,7 +188,7 @@ object ConcurentManager {
         val to = s.quietToHour.coerceIn(0, 23)
         return if (from == to) false
         else if (from < to) hour in from until to
-        else hour >= from || hour < to // через полночь (например, 22 → 7)
+        else hour >= from || hour < to 
     }
 
     /** Считаем время следующей публикации с учётом джиттера. */
@@ -218,12 +218,12 @@ object ConcurentManager {
         var msgIdx = settings.currentMessageIndex.coerceAtLeast(0) % activeMessages.size
         var gameIdx = settings.currentGameIndex.coerceAtLeast(0) % activeGames.size
 
-        // Вспомогательная функция: подходит ли сообщение к конкретной игре
+        
         fun messageFitsGame(msg: ConcurentMessage, game: ConcurentGame): Boolean {
             return msg.targetGameIds.isEmpty() || msg.targetGameIds.contains(game.id)
         }
 
-        // Случайный режим: тупо перебором берём валидную пару
+        
         if (settings.messageMode == "random" || settings.gameMode == "random") {
             val shuffledGames = activeGames.shuffled()
             for (game in shuffledGames) {
@@ -245,9 +245,9 @@ object ConcurentManager {
             return null
         }
 
-        // Последовательный режим: пытаемся взять текущее сообщение для текущей игры.
-        // Если не подходит — прокручиваем сообщения. Если все сообщения для этой игры не подходят —
-        // прокручиваем игру. Всего — один круг, чтобы не зациклиться.
+        
+        
+        
         repeat(activeGames.size) { gameAttempt ->
             repeat(activeMessages.size) { msgAttempt ->
                 val message = activeMessages[msgIdx]
@@ -263,7 +263,7 @@ object ConcurentManager {
                 }
                 msgIdx = (msgIdx + 1) % activeMessages.size
             }
-            // В этой игре ни одно сообщение не подходит — идём к следующей
+            
             gameIdx = (gameIdx + 1) % activeGames.size
             msgIdx = 0
         }
@@ -291,7 +291,7 @@ object ConcurentManager {
             return
         }
 
-        // AI-рерайт (если включён) — подставим для вариативности
+        
         val textToSend = if (s.aiRewriteEnabled) {
             try {
                 val rewritten = repository.rewriteMessage(
@@ -305,7 +305,7 @@ object ConcurentManager {
             }
         } else pick.message.text
 
-        // Подстановка переменных (юзернейм тут неоткуда взять, но {date}/{time} пригодятся)
+        
         val finalText = try {
             processTemplateVariables(textToSend, username = "")
         } catch (_: Exception) { textToSend }
@@ -320,7 +320,7 @@ object ConcurentManager {
 
         val now = System.currentTimeMillis()
         val newEvent = ConcurentStatEvent(now, ok, pick.game.nodeId)
-        val fresh = getSettings(context) // перечитываем на случай, если UI что-то поменял
+        val fresh = getSettings(context) 
         val updated = fresh.copy(
             currentMessageIndex = pick.newMessageIndex,
             currentGameIndex = pick.newGameIndex,
@@ -335,7 +335,7 @@ object ConcurentManager {
             LogManager.addLog("✅ Concurent: опубликовано (#${updated.postsSinceEnable})")
         }
 
-        // Между играми даём небольшую паузу, чтобы не лететь подряд при редких условиях
+        
         delay(300)
     }
 
@@ -358,13 +358,13 @@ object ConcurentManager {
     fun parseNodeId(input: String): String? {
         val trimmed = input.trim()
         if (trimmed.isBlank()) return null
-        // Уже чистый nodeId
+        
         if (!trimmed.contains("/") && !trimmed.contains("?")) return trimmed
-        // chat/?node=XXX
+        
         Regex("node=([^&\\s]+)").find(trimmed)?.let {
             return it.groupValues[1].takeIf { v -> v.isNotBlank() }
         }
-        // lots/<id>/ → чат этой категории обычно называется game-<id>
+        
         Regex("/lots/(\\d+)/?").find(trimmed)?.let {
             return "game-${it.groupValues[1]}"
         }

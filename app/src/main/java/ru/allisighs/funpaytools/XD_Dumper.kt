@@ -60,18 +60,18 @@ data class DumperLotConfig(
     val isChip: Boolean = false,
     val enabled: Boolean = false,
     val displayName: String = "",
-    val dumpMode: String = "standard", 
+    val dumpMode: String = "standard",
     val pinnedPosition: Int = 1,
     val priceMin: Double = 1.0,
     val priceMax: Double = 99999.0,
-    val priceStep: Double = 1.0,
+    val priceStep: Double = 5.0,
     val priceDivider: Double = 1.0,
     val priceMarkupPct: Double = 0.0,
     val useNetPrice: Boolean = false,
     val priceInForeign: Boolean = false,
     val keywords: String = "",
     val categoryFilters: Map<String, List<String>> = emptyMap(),
-    val ratingMin: Int = 0,
+    val ratingMin: Int = 5,
     val positionMax: Int = 999,
     val ignoreZeroRating: Boolean = false,
     val ignoreFriends: Boolean = false,
@@ -127,7 +127,7 @@ object LiveFeedManager {
     private val lastHoldPush = mutableMapOf<String, Long>()
 
     fun push(event: FeedEvent) {
-        
+
         if (event.action == MarketAction.HOLD) {
             val last = lastHoldPush[event.lotId] ?: 0L
             if (System.currentTimeMillis() - last < 60_000L) return
@@ -239,41 +239,43 @@ object XDDumperEngine {
             val rawCompetitors = mutableListOf<CompetitorData>()
 
             for (item in items) {
+                position++
+                
+                
+                if (position > config.positionMax) break
+
                 val sellerName = item.select(".media-user-name").text().trim()
                 if (sellerName == activeAcc.username) continue
 
-                
+
                 if (config.ignoreFriends && global.friendsGlobal.contains(sellerName)) continue
                 if (config.onlyCompetitors && (!global.competitorsGlobal.contains(sellerName) || global.competitorsDisabled.contains(sellerName))) continue
                 val isOnline = item.attr("data-online") == "1"
                 if (config.onlineOnly && !isOnline) continue
 
-                
+
                 if (!isMatchingManualFilters(item, config.categoryFilters)) continue
 
-                
+
                 if (config.matchAllMethods && !isMatchingAutoFilters(item, autoLotFilterFields)) continue
 
                 val desc = item.select(".tc-desc-text").text().trim().lowercase()
 
-                
+
                 if (config.subscriptionType != "any" || config.subscriptionPeriod != "any") {
                     if (!checkSubscriptionFilters(desc, config)) continue
                 }
 
-                
+
                 if (keywords.isNotEmpty()) {
                     val descForKeyword = if (config.matchAllMethods && desc.contains(",")) desc.substringBeforeLast(",").trim() else desc
                     if (keywords.none { descForKeyword.contains(it) }) continue
                 }
 
-                
+
                 val starsCount = item.select(".rating-stars i.fas").size
                 if (starsCount == 0 && config.ignoreZeroRating) continue
                 if (starsCount < config.ratingMin) continue
-
-                position++
-                if (position > config.positionMax) continue
 
                 val compLotId = item.attr("href").substringAfter("id=").substringBefore("&")
                 val basePrice = item.select(".tc-price").attr("data-s").toDoubleOrNull() ?: 9999999.0
@@ -286,7 +288,7 @@ object XDDumperEngine {
                 return@withContext
             }
 
-            
+
             val competitorsPrices = mutableListOf<Double>()
             val rate = if (config.priceInForeign) global.exchangeRate else 1.0
             val effMin = if (config.useNetPrice) config.priceMin * rate * commission else config.priceMin * rate
@@ -312,20 +314,35 @@ object XDDumperEngine {
 
             val minCompPrice = competitorsPrices.minOrNull() ?: return@withContext
 
+            
+            
             var rawTarget = minCompPrice * (1.0 + config.priceMarkupPct / 100.0) - config.priceStep
-            if (config.dumpMode == "pinned" && competitorsPrices.size >= config.pinnedPosition) {
-                rawTarget = competitorsPrices[config.pinnedPosition - 1] * (1.0 + config.priceMarkupPct / 100.0) - 0.01
+
+            
+            
+            
+            if (config.dumpMode == "pinned") {
+                val sortedPrices = competitorsPrices.sorted()
+                if (sortedPrices.size >= config.pinnedPosition) {
+                    
+                    rawTarget = sortedPrices[config.pinnedPosition - 1] * (1.0 + config.priceMarkupPct / 100.0) - 0.01
+                } else if (sortedPrices.isNotEmpty()) {
+                    
+                    rawTarget = sortedPrices.last() * (1.0 + config.priceMarkupPct / 100.0) - 0.01
+                }
             }
 
             if (config.priceDivider > 1.0) rawTarget -= (rawTarget % config.priceDivider)
             var targetPrice = rawTarget.coerceIn(effMin, effMax)
 
             if (config.enforceMinProfit) {
-                val profit = (targetPrice / commission) - (targetPrice / commission * (1 - commission))
                 if (targetPrice / commission < 1.0) targetPrice = commission * 1.01
             }
             if (targetPrice < 1.0) targetPrice = 1.0
 
+            
+            
+            
             when {
                 targetPrice < currentPriceWithComm - 0.01 -> {
                     if (updateLotPrice(repo, context, config.lotId, targetPrice, commission, config.isChip)) {
@@ -334,16 +351,40 @@ object XDDumperEngine {
                     }
                     if (config.aggressiveMode && attempt < maxAttempts) { delay(2000); continue }
                 }
-                targetPrice > currentPriceWithComm + 0.01 && config.autoRaise -> {
-                    val diff = targetPrice - currentPriceWithComm
-                    val percent = if (currentPriceWithComm > 0) (diff / currentPriceWithComm) * 100 else 100.0
-                    if (targetPrice < minCompPrice && diff <= 100.0 && percent <= 15.0) {
-                        if (updateLotPrice(repo, context, config.lotId, targetPrice, commission, config.isChip)) {
-                            LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} поднят → ${"%.2f".format(targetPrice)}₽")
-                            LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.RAISE, currentPriceWithComm, targetPrice, message = "Цена повышена"))
-                        }
+                targetPrice > currentPriceWithComm + 0.01 -> {
+                    if (!config.autoRaise) {
+                        LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Авто-повышение выключено"))
                     } else {
-                        LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Слишком большой разрыв, холд"))
+                        val priceDiff = targetPrice - currentPriceWithComm
+                        val priceDiffPct = if (currentPriceWithComm > 0) (priceDiff / currentPriceWithComm) * 100 else 100.0
+
+                        
+                        val forcedRaiseDueToBelowMin = currentPriceWithComm < effMin - 0.01
+
+                        if (forcedRaiseDueToBelowMin) {
+                            
+                            if (updateLotPrice(repo, context, config.lotId, targetPrice, commission, config.isChip)) {
+                                LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} ПРИНУДИТЕЛЬНО поднят (был ниже мин) → ${"%.2f".format(targetPrice)}₽")
+                                LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.RAISE, currentPriceWithComm, targetPrice, message = "Поднят с ниже-минимальной"))
+                            }
+                        } else {
+                            
+                            
+                            var finalTarget = targetPrice
+                            if (priceDiff > 100.0 && priceDiffPct > 10.0) {
+                                val maxAllowedJump = maxOf(100.0, currentPriceWithComm * 0.10)
+                                var steppedTarget = currentPriceWithComm + maxAllowedJump
+                                if (config.priceDivider > 1.0) {
+                                    steppedTarget -= (steppedTarget % config.priceDivider)
+                                }
+                                
+                                finalTarget = maxOf(effMin, minOf(targetPrice, steppedTarget))
+                            }
+                            if (updateLotPrice(repo, context, config.lotId, finalTarget, commission, config.isChip)) {
+                                LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} поднят → ${"%.2f".format(finalTarget)}₽")
+                                LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.RAISE, currentPriceWithComm, finalTarget, message = "Цена повышена"))
+                            }
+                        }
                     }
                 }
                 else -> {
@@ -456,22 +497,46 @@ object XDDumperEngine {
         }
 
         
+        
+        val radioFieldNames = mutableSetOf<String>()
+        doc.select("input[type=radio][checked]").forEach { el ->
+            val name = el.attr("name")
+            val value = el.attr("value")
+            if (name.isNotEmpty() && value.isNotEmpty() && name !in radioFieldNames) {
+                formBuilder.add(name, value)
+                radioFieldNames.add(name)
+            }
+        }
+
         doc.select("select").forEach { el ->
             val name = el.attr("name")
             var selOpt = el.select("option[selected]").first()
             if (selOpt == null || selOpt.attr("value") == "0" || selOpt.attr("value") == "") {
-                selOpt = el.select("option:not([value='0']):not([value=''])").first() 
+                selOpt = el.select("option:not([value='0']):not([value=''])").first()
             }
             if (name.isNotEmpty() && selOpt != null) formBuilder.add(name, selOpt.attr("value"))
         }
 
+        
+        
+        
         doc.select("div.lot-field[data-id]").forEach { div ->
             val fid = div.attr("data-id")
-            var btn = div.select("button.active, button.btn-primary").first()
-            if (btn == null) {
-                btn = div.select("button.btn").first() 
+            if (fid.isEmpty()) return@forEach
+            val fieldName = "fields[$fid]"
+            
+            val activeBtn = div.select("button.btn.active[value]").first()
+                ?: div.select("button.active[value]").first()
+                ?: div.select("label.active input[value]").first()
+                ?: div.select("button[aria-pressed=true][value]").first()
+                ?: div.select("button.btn-primary[value]").first()
+                ?: div.select("button.active").first()
+                ?: div.select("button.btn-primary").first()
+                ?: div.select("button.btn").first()  
+            if (activeBtn != null) {
+                val v = activeBtn.attr("value").ifEmpty { activeBtn.text().trim() }
+                if (v.isNotEmpty()) formBuilder.add(fieldName, v)
             }
-            if (btn != null) formBuilder.add("fields[$fid]", btn.attr("value").ifEmpty { btn.text() })
         }
 
         formBuilder.add("price", String.format(Locale.US, "%.2f", priceNoComm))
@@ -494,8 +559,23 @@ object XDDumperEngine {
             LogManager.addLog("❌ Ошибка сохранения лота $lotId: $errorMsg")
 
             if (errorMsg.contains("Заполните", ignoreCase = true) || errorMsg.contains("required", ignoreCase = true)) {
-                LogManager.addLog("⛔ Лот $lotId деактивирован. Требуется ручное вмешательство, автозаполнение не справилось.")
-                sendAlertNotification(context, lotId, "XD Dumper: Ошибка Лота", "Лот $lotId отключен! FunPay требует заполнить новые обязательные поля.")
+                
+                val errFields = mutableListOf<String>()
+                try {
+                    val errArr = json.optJSONArray("errors")
+                    if (errArr != null) {
+                        for (i in 0 until errArr.length()) {
+                            val pair = errArr.optJSONArray(i)
+                            if (pair != null && pair.length() > 0) {
+                                errFields.add(pair.optString(0))
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                val fieldsStr = if (errFields.isNotEmpty()) " (${errFields.joinToString(", ")})" else ""
+                LogManager.addLog("⛔ Лот $lotId деактивирован$fieldsStr. Автозаполнение не справилось — нужно вручную заполнить новые поля FunPay.")
+                sendAlertNotification(context, lotId, "XD Dumper: Ошибка Лота", "Лот $lotId отключен! FunPay требует заполнить новые обязательные поля$fieldsStr.")
 
                 val settings = getSettings(context)
                 val newLots = settings.lots.map { if (it.lotId == lotId) it.copy(enabled = false) else it }
@@ -533,13 +613,13 @@ object XDDumperEngine {
         val now = System.currentTimeMillis()
         priceCache[lotId]?.let { if (now - it.second < CACHE_TTL) return it.first }
         try {
-            
+
             val req = Request.Builder().url("https://funpay.com/lots/offer?id=$lotId").header("Cookie", repo.getCookieString()).build()
             val html = repo.repoClient.newCall(req).execute().body?.string() ?: return null
             val doc = Jsoup.parse(html)
             val prices = mutableListOf<Double>()
             doc.select("select[name=method] option").forEach { opt ->
-                if (opt.attr("data-cy") == "rub") { 
+                if (opt.attr("data-cy") == "rub") {
                     val factors = opt.attr("data-factors").split(",")
                     if (factors.size >= 2) {
                         val base = factors[0].toDoubleOrNull() ?: 0.0
@@ -686,7 +766,7 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
         var markupInput by remember { mutableStateOf("") }
         var applyForeign by remember { mutableStateOf(false) }
         var isForeignEnabled by remember { mutableStateOf(false) }
-        var targetType by remember { mutableStateOf(0) } 
+        var targetType by remember { mutableStateOf(0) }
         var catInput by remember { mutableStateOf("") }
 
         AlertDialog(
@@ -811,10 +891,10 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
 
                 items(feedEvents) { ev ->
                     val color = when(ev.action) {
-                        MarketAction.LOWER -> Color(0xFF22C55E) 
-                        MarketAction.RAISE -> Color(0xFF3B82F6) 
+                        MarketAction.LOWER -> Color(0xFF22C55E)
+                        MarketAction.RAISE -> Color(0xFF3B82F6)
                         MarketAction.HOLD -> Color.Gray
-                        MarketAction.ERROR, MarketAction.FIELD_ERROR -> Color(0xFFEF4444) 
+                        MarketAction.ERROR, MarketAction.FIELD_ERROR -> Color(0xFFEF4444)
                     }
                     val icon = when(ev.action) {
                         MarketAction.LOWER -> Icons.Default.TrendingDown
@@ -853,7 +933,7 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
         ) {
             item { Spacer(Modifier.height(8.dp)) }
 
-            
+
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -884,7 +964,7 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
                 }
             }
 
-            
+
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -985,7 +1065,7 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
                 }
             }
 
-            
+
             item {
                 Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.padding(16.dp)) {
@@ -1040,7 +1120,7 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
                 }
             }
 
-            
+
             item {
                 Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.padding(16.dp)) {
@@ -1107,7 +1187,7 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
                 }
             }
 
-            
+
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Настроенные лоты (${settings.lots.size})", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textSecondaryColor))
@@ -1273,7 +1353,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp)) {
 
-            
+
             SettingSectionTitle("ОСНОВНЫЕ ДАННЫЕ", "Привязка бота к конкретному товару на FunPay.")
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1318,7 +1398,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                 }
             }
 
-            
+
             SettingSectionTitle("РЕЖИМ РАБОТЫ", "С кем мы будем воевать за место под солнцем.")
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1359,7 +1439,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                 }
             }
 
-            
+
             SettingSectionTitle("ГРАНИЦЫ И СКИДКИ", "Настройки цен, шага и защиты от слива в ноль.")
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1370,7 +1450,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                     Text("Бот НИКОГДА не опустит цену ниже минималки и не поднимет выше максималки.", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = lotConfig.priceStep.toString(), onValueChange = { lotConfig = lotConfig.copy(priceStep = it.toDoubleOrNull() ?: 1.0) }, label = { Text("Шаг демпинга") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
+                        OutlinedTextField(value = lotConfig.priceStep.toString(), onValueChange = { lotConfig = lotConfig.copy(priceStep = it.toDoubleOrNull() ?: 5.0) }, label = { Text("Шаг демпинга") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
                         OutlinedTextField(value = lotConfig.priceDivider.toString(), onValueChange = { lotConfig = lotConfig.copy(priceDivider = it.toDoubleOrNull() ?: 0.0) }, label = { Text("Округление") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
                     }
                     Text("Шаг: на сколько рублей перебивать конкурента. Округление: цена будет кратна этому числу (например 10 -> 140, 150).", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
@@ -1386,7 +1466,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                 }
             }
 
-            
+
             SettingSectionTitle("ДИНАМИЧЕСКИЕ ФИЛЬТРЫ", "Выбор Сервера, ОС и прочих галочек с сайта.")
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1412,7 +1492,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                 }
             }
 
-            
+
             SettingSectionTitle("ПОДПИСКИ (ДЛЯ SPOTIFY/TG)", "Для обычных товаров оставьте 'Любой'.")
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1433,7 +1513,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                 }
             }
 
-            
+
             SettingSectionTitle("ФИЛЬТРАЦИЯ И СЛЕПОТА", "Кого из конкурентов не замечать.")
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1441,7 +1521,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                     Text("Бот будет демпить ТОЛЬКО тех конкурентов, у которых в описании есть хоть одно из этих слов. Пусто = бьем всех.", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = lotConfig.ratingMin.toString(), onValueChange = { lotConfig = lotConfig.copy(ratingMin = it.toIntOrNull() ?: 0) }, label = { Text("Мин. звёзд (0-5)") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
+                        OutlinedTextField(value = lotConfig.ratingMin.toString(), onValueChange = { lotConfig = lotConfig.copy(ratingMin = it.toIntOrNull() ?: 5) }, label = { Text("Мин. звёзд (0-5)") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
                         OutlinedTextField(value = lotConfig.positionMax.toString(), onValueChange = { lotConfig = lotConfig.copy(positionMax = it.toIntOrNull() ?: 999) }, label = { Text("Игнор ниже N места") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ThemeManager.parseColor(theme.accentColor), focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor), unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor)))
                     }
                     Text("Можно игнорировать конкурентов с плохим рейтингом или тех, кто висит в самом низу списка.", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp, bottom = 4.dp))
@@ -1456,7 +1536,7 @@ fun XDDumperLotEditScreen(lotId: String, navController: NavController, repositor
                 }
             }
 
-            
+
             SettingSectionTitle("АГРЕССИЯ И ОБХОДЫ", "Настройки скорости и точности парсинга.")
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = ThemeManager.parseColor(theme.surfaceColor)), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1541,7 +1621,7 @@ fun CategoryFiltersDialog(
                                             val currentList = selectedFilters[fId]?.toMutableList() ?: mutableListOf()
                                             if (isSelected) currentList.remove(optValue) else currentList.add(optValue)
                                             if (currentList.isEmpty()) selectedFilters.remove(fId) else selectedFilters[fId] = currentList
-                                            
+
                                             selectedFilters = selectedFilters.toMutableMap()
                                         },
                                         label = { Text(optLabel) },

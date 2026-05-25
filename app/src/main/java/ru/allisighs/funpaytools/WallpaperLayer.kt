@@ -42,10 +42,10 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun WallpaperLayer(theme: AppTheme, modifier: Modifier = Modifier) {
-    // ВАЖНО: state объявляем БЕЗУСЛОВНО, до возможного early return,
-    // чтобы Compose не словил start/end imbalance при смене темы.
-    // wallpaperVersion в ключе — чтобы при ЗАМЕНЕ файла обоев (тот же path)
-    // bitmap перегружался заново.
+    
+    
+    
+    
     val cacheKey = "${theme.wallpaperPath}#${theme.wallpaperVersion}"
     var bitmap by remember(cacheKey) { mutableStateOf<Bitmap?>(null) }
 
@@ -59,8 +59,8 @@ fun WallpaperLayer(theme: AppTheme, modifier: Modifier = Modifier) {
         }
     }
 
-    // Параллакс state — тоже всегда регистрируем (чтобы Compose не видел разное
-    // количество хуков в разных рекомпозициях).
+    
+    
     val parallax = rememberParallaxOffset(
         enabled = theme.useWallpaper && theme.wallpaperEffect == WallpaperEffect.PARALLAX,
         intensity = theme.parallaxIntensity
@@ -142,9 +142,9 @@ private fun rememberParallaxOffset(enabled: Boolean, intensity: Float): Pair<Flo
     return offsetX to offsetY
 }
 
-// =============================================================================
-//                              HELPERS FOR THEME
-// =============================================================================
+
+
+
 
 fun AppTheme.effectiveBackground(): Color =
     if (useWallpaper) Color.Transparent
