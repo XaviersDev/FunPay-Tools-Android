@@ -196,6 +196,10 @@ object ApiFactory {
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .hostnameVerifier { _, _ -> true }
+            // Актуальные куки (PHPSESSID/golden_seal) для каждого запроса + повтор при 428
+            .addInterceptor(FpSessionInterceptor())
+            // Set-Cookie с каждого ответа, включая редиректы
+            .addNetworkInterceptor(FpCookieCaptureInterceptor())
 
         val pHost = account?.proxyHost ?: ""
         val pPort = account?.proxyPort ?: 0
@@ -231,6 +235,9 @@ object ApiFactory {
         }
         return builder.build()
     }
+
+    /** Общий клиент без прокси — для мест, где раньше создавался голый OkHttpClient(). */
+    val shared: okhttp3.OkHttpClient by lazy { createClient(null) }
 
     fun create(account: Account? = null): FunPayApi {
         return Retrofit.Builder()

@@ -54,6 +54,13 @@ class FunPayService : Service() {
         val prefs = getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
         if (prefs.getBoolean("app_fully_disabled", false)) {
             LogManager.addLog("⏸ SERVICE: Приложение выключено полностью — сервис не запускается")
+            // Если нас запустили через startForegroundService, без startForeground Android 12+ крашит приложение
+            try {
+                createNotificationChannel()
+                startForegroundCompat("FunPay Tools выключен")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
+                else @Suppress("DEPRECATION") stopForeground(true)
+            } catch (_: Exception) {}
             try {
                 getSystemService(NotificationManager::class.java)?.cancel(1)
             } catch (_: Exception) {}
@@ -66,31 +73,86 @@ class FunPayService : Service() {
             startService(Intent(this, WatchdogDaemon::class.java))
         } catch (e: Exception) {}
 
-        try {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "FunPayTools::ServiceWakeLock"
-            )
-            wakeLock?.acquire(24 * 60 * 60 * 1000L)
-            LogManager.addLog("🔋 WakeLock активирован")
-        } catch (e: Exception) {
-            LogManager.addLog("❌ Ошибка WakeLock: ${e.message}")
-        }
+        ensureWakeLock()
 
         createNotificationChannel()
-        startForeground(1, createNotification("FunPay Tools работает"))
+        try {
+            startForegroundCompat("FunPay Tools работает")
+        } catch (e: Exception) {
+            // Android 12+: перезапуск сервиса системой из фона может запретить startForeground — не падаем
+            LogManager.addLog("⚠️ SERVICE: не удалось перейти в foreground: ${e.message}")
+        }
         LogManager.addLog("✅ SERVICE: Запущен менеджер мультиаккаунтов")
         startWorkLoop()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android 12+: каждый startForegroundService() обязан закончиться startForeground(),
+        // иначе система убивает приложение (ForegroundServiceDidNotStartInTimeException).
+        // Watchdog шлёт такие вызовы регулярно — подтверждаем foreground каждый раз.
+        try {
+            if (!getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE).getBoolean("app_fully_disabled", false)) {
+                startForegroundCompat("FunPay Tools работает")
+            }
+        } catch (e: Exception) {
+            LogManager.addLogDebug("startForeground: ${e.message}")
+        }
         return START_STICKY
+    }
+
+    private fun startForegroundCompat(text: String) {
+        val notification = createNotification(text)
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        } else {
+            startForeground(1, notification)
+        }
+    }
+
+    /** WakeLock раньше брался один раз на 24 часа и больше не продлевался. */
+    private fun ensureWakeLock() {
+        try {
+            val wl = wakeLock
+            if (wl == null || !wl.isHeld) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FunPayTools::ServiceWakeLock").apply {
+                    setReferenceCounted(false)
+                    acquire(6 * 60 * 60 * 1000L)
+                }
+                LogManager.addLogDebug("🔋 WakeLock продлён")
+            }
+        } catch (e: Exception) {
+            LogManager.addLogDebug("WakeLock: ${e.message}")
+        }
+    }
+
+    private fun scheduleRestart(requestCode: Int) {
+        val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {
+            action = "ru.allisighs.funpaytools.RESTART_SERVICE"
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, requestCode, restartIntent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val at = android.os.SystemClock.elapsedRealtime() + 3000
+        try {
+            val canExact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
+            if (canExact) {
+                alarmManager.setExactAndAllowWhileIdle(android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pendingIntent)
+            } else {
+                alarmManager.setAndAllowWhileIdle(android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pendingIntent)
+            }
+        } catch (e: SecurityException) {
+            // Android 14+: точные будильники могут быть запрещены — не падаем
+            try { alarmManager.setAndAllowWhileIdle(android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pendingIntent) } catch (_: Exception) {}
+        } catch (_: Exception) {}
     }
 
     private fun startWorkLoop() {
         serviceScope.launch {
             while (isActive) {
+                ensureWakeLock()
                 if (!isNetworkAvailable(this@FunPayService)) {
                     updateNotification("Ожидание сети...")
                     delay(25000)
@@ -490,19 +552,7 @@ class FunPayService : Service() {
 
         LogManager.addLog("🛑 SERVICE: Убит системой, запускаю дефибриллятор")
         if (mainRepository.getSetting("auto_start_on_boot")) {
-            val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {
-                action = "ru.allisighs.funpaytools.RESTART_SERVICE"
-            }
-            val pendingIntent = PendingIntent.getBroadcast(
-                this, 2, restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            alarmManager.setExactAndAllowWhileIdle(
-                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                android.os.SystemClock.elapsedRealtime() + 3000,
-                pendingIntent
-            )
+            scheduleRestart(2)
         }
         super.onDestroy()
     }
@@ -518,20 +568,7 @@ class FunPayService : Service() {
         }
 
         if (mainRepository.getSetting("auto_start_on_boot")) {
-            val restartIntent = Intent(applicationContext, PhoenixReceiver::class.java).apply {
-                action = "ru.allisighs.funpaytools.RESTART_SERVICE"
-            }
-            val pendingIntent = PendingIntent.getBroadcast(
-                this, 1, restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-
-            alarmManager.setExactAndAllowWhileIdle(
-                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                android.os.SystemClock.elapsedRealtime() + 3000,
-                pendingIntent
-            )
+            scheduleRestart(1)
         }
         super.onTaskRemoved(rootIntent)
     }

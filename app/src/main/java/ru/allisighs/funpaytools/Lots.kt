@@ -70,13 +70,26 @@ data class Lot(
     val hasAutoDelivery: Boolean = false
 )
 
+data class LotFieldCondition(
+    /** Имя поля формы, например "fields[type]". */
+    val fieldName: String,
+    /** Значения (без учёта регистра), при которых поле показывается. */
+    val values: List<String>
+)
+
 data class LotField(
     val name: String,
+    /** text | number | textarea | select | checkbox | hidden */
     val type: String,
     val value: String,
     val label: String = "",
     val options: List<Pair<String, String>> = emptyList(),
-    val locale: String? = null
+    val locale: String? = null,
+    val conditions: List<LotFieldCondition> = emptyList(),
+    val hint: String = "",
+    val placeholder: String = "",
+    /** У чекбокса есть hidden-двойник с тем же name — при выключении шлём пустое значение. */
+    val sendEmptyWhenOff: Boolean = false
 )
 
 data class LotImage(
@@ -99,7 +112,9 @@ data class LotFieldsData(
     val imageUrls: List<String> = emptyList(),
     val images: List<LotImage> = emptyList(),
     val buyerPriceRows: List<BuyerPriceRow> = emptyList(),
-    val initialSellerPrice: Double = 0.0
+    val initialSellerPrice: Double = 0.0,
+    /** Количество в БД FunPay (data-offer). 0 → лот фактически неактивен. */
+    val dbAmount: Int? = null
 )
 
 sealed class LotsUiState {
@@ -337,9 +352,8 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
     return withContext(Dispatchers.IO) {
         try {
             val (_, userId) = getCsrfAndId() ?: return@withContext emptyList()
-            val cookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
 
-            val response = api.getUserProfile(userId, cookie, "Mozilla/5.0")
+            val response = api.getUserProfile(userId, getCookieString(), FpSession.UA)
             val html = response.body()?.string() ?: return@withContext emptyList()
             val doc = Jsoup.parse(html)
 
@@ -350,9 +364,6 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
                     val categoryName = categoryLink.text().trim()
                     val categoryHref = categoryLink.attr("href")
 
-                    
-                    
-                    
                     val parsedCat = LotUrlParser.parse(categoryHref)
                     val nodeId = parsedCat?.nodeId
                         ?: parsedCat?.id?.takeIf { it.all { ch -> ch.isDigit() } }
@@ -364,10 +375,6 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
                         val href = row.attr("href")
                         val parsed = LotUrlParser.parse(href)
 
-                        
-                        
-                        
-                        
                         val id = parsed?.id
                             ?: Regex("""(?:offer=|id=)([0-9A-Za-z\-]+)""")
                                 .find(href)?.groupValues?.get(1)
@@ -379,7 +386,7 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
                         val currency = priceDiv?.select(".unit")?.text()
                         val server = row.select(".tc-server").text().trim().ifEmpty { null }
                         val side = row.select(".tc-side").text().trim().ifEmpty { null }
-                        val amount = row.select(".tc-amount").text().replace(" ", "").toIntOrNull()
+                        val amount = row.select(".tc-amount").text().replace(" ", "").replace(" ", "").toIntOrNull()
                         val isActive = !row.classNames().contains("warning")
                         val hasAutoDelivery = row.select(".auto-dlv-icon").isNotEmpty()
 
@@ -395,295 +402,380 @@ suspend fun FunPayRepository.getMyLots(): List<Lot> {
     }
 }
 
-suspend fun FunPayRepository.getLotFields(lotId: String): LotFieldsData {
-    return withContext(Dispatchers.IO) {
-        val currentCookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
+/* ============================================================================
+ *  Разбор формы редактирования лота (lots/offerEdit).
+ *
+ *  Логика повторяет FunPay Cardinal (Account.get_lot_fields):
+ *   - берём ТОЛЬКО поля внутри form.form-offer-editor;
+ *   - textarea читаем с переносами строк (wholeText), иначе описание и
+ *     товары автовыдачи склеивались в одну строку;
+ *   - "Наличие" (amount) — обычное редактируемое поле;
+ *   - условные поля из data-fields (например "Тип реакции" появляется только
+ *     при "Тип услуги = Реакции") показываются/отправляются по условию;
+ *   - чекбоксы (Активное, Деактивировать после продажи, Автовыдача) — видимые.
+ * ==========================================================================*/
 
-        val response = api.getChatPage(
-            "https://funpay.com/lots/offerEdit?offer=$lotId",
-            currentCookie,
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
+private fun parseFieldConditions(form: org.jsoup.nodes.Element): Map<String, List<LotFieldCondition>> {
+    val result = mutableMapOf<String, List<LotFieldCondition>>()
+    form.select("div.lot-fields[data-fields]").forEach { box ->
+        try {
+            val arr = JSONArray(box.attr("data-fields"))
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                val conds = obj.optJSONArray("conditions") ?: continue
+                val list = mutableListOf<LotFieldCondition>()
+                for (j in 0 until conds.length()) {
+                    val c = conds.optJSONObject(j) ?: continue
+                    val values = mutableListOf<String>()
+                    val l = c.optJSONArray("list")
+                    if (l != null) for (k in 0 until l.length()) values.add(l.optString(k))
+                    list.add(LotFieldCondition("fields[${c.optString("id")}]", values))
+                }
+                if (id.isNotEmpty() && list.isNotEmpty()) result[id] = list
+            }
+        } catch (_: Exception) {}
+    }
+    return result
+}
+
+private fun localeOf(group: org.jsoup.nodes.Element?, name: String): String? = when {
+    group?.attr("data-locale")?.isNotEmpty() == true -> group.attr("data-locale")
+    name.endsWith("[ru]") -> "ru"
+    name.endsWith("[en]") -> "en"
+    else -> null
+}
+
+fun parseLotEditForm(html: String, lotId: String): LotFieldsData {
+    val doc = Jsoup.parse(html)
+
+    doc.selectFirst("p.lead")?.let { lead ->
+        val txt = lead.text().trim()
+        if (txt.isNotEmpty() && doc.selectFirst("form.form-offer-editor") == null) throw Exception(txt)
+    }
+
+    val form = doc.selectFirst("form.form-offer-editor")
+        ?: throw Exception(
+            if (html.contains("account/login") || html.contains("Необходимо авторизоваться"))
+                "FunPay не авторизовал запрос. Войдите в аккаунт заново."
+            else "Форма редактирования лота не найдена"
         )
 
-        var freshCookies = currentCookie
-        val setCookies = response.headers().values("Set-Cookie")
-        if (setCookies.isNotEmpty()) {
-            val newPhpsessid = setCookies.find { it.startsWith("PHPSESSID") }?.split(";")?.first()
-            if (newPhpsessid != null) {
-                freshCookies = "golden_key=${getGoldenKey()}; $newPhpsessid"
-            }
-        }
-
-        val html = response.body()?.string() ?: throw Exception("Не удалось загрузить форму")
-        val doc = Jsoup.parse(html)
-
-        var csrfToken = ""
+    var csrfToken = form.selectFirst("input[name=csrf_token]")?.attr("value").orEmpty()
+    if (csrfToken.isEmpty()) {
         try {
-            val appDataStr = doc.select("body").attr("data-app-data")
-            if (appDataStr.isNotEmpty()) {
-                val json = JSONObject(appDataStr)
-                csrfToken = json.optString("csrf-token")
+            val appData = doc.select("body").attr("data-app-data")
+            if (appData.isNotEmpty()) csrfToken = JSONObject(appData).optString("csrf-token")
+        } catch (_: Exception) {}
+    }
+    if (csrfToken.isEmpty()) throw Exception("CSRF токен не найден")
+
+    val conditionsById = parseFieldConditions(form)
+    val fields = LinkedHashMap<String, LotField>()
+    val hiddenTwins = mutableSetOf<String>()
+
+    for (el in form.select("input[name], textarea[name], select[name]")) {
+        val name = el.attr("name")
+        if (name.isEmpty() || name == "csrf_token" || name == "query" || name.startsWith("cc-option")) continue
+
+        val group = el.parents().firstOrNull { it.hasClass("form-group") || it.hasClass("lot-field") }
+        val fieldId = el.parents().firstOrNull { it.hasClass("lot-field") && it.hasAttr("data-id") }?.attr("data-id")
+        val conds = fieldId?.let { conditionsById[it] }.orEmpty()
+        val locale = localeOf(group, name)
+        val rawLabel = (group?.selectFirst("label.control-label") ?: group?.selectFirst("label"))?.text()?.trim().orEmpty()
+        val hint = group?.selectFirst(".help-block")?.text()?.trim().orEmpty()
+
+        when (el.tagName()) {
+            "textarea" -> {
+                // wholeText сохраняет переносы строк (text() их схлопывает)
+                val value = el.wholeText().removePrefix("\r\n").removePrefix("\n")
+                fields[name] = LotField(name, "textarea", value, rawLabel.ifEmpty { name }, locale = locale,
+                    conditions = conds, hint = hint)
             }
-        } catch (e: Exception) { }
-
-        if (csrfToken.isEmpty()) {
-            csrfToken = doc.select("input[name='csrf_token']").first()?.attr("value") ?: ""
-        }
-
-        if (csrfToken.isEmpty()) throw Exception("CSRF токен не найден")
-
-        val fields = mutableMapOf<String, LotField>()
-        val seenNames = mutableSetOf<String>()
-
-        doc.select("input[name]").forEach { input ->
-            val name = input.attr("name")
-            if (name.isEmpty() || name == "query" || name.startsWith("cc-option") || name == "csrf_token") return@forEach
-
-            if (name == "amount") {
-                fields[name] = LotField(name, "hidden", input.attr("value") ?: "", locale = null)
-                return@forEach
+            "select" -> {
+                val options = el.select("option").map { it.attr("value") to it.text().replace(' ', ' ').trim() }
+                val value = el.selectFirst("option[selected]")?.attr("value").orEmpty()
+                fields[name] = LotField(name, "select", value, rawLabel.ifEmpty { name }, options, locale,
+                    conditions = conds, hint = hint)
             }
-
-            val inputType = input.attr("type").ifEmpty { "text" }
-            val formGroup = input.parents().firstOrNull { it.hasClass("form-group") }
-            val label = formGroup?.select("label")?.text() ?: name
-
-            if (inputType == "checkbox" &&
-                (label.contains("Активное", ignoreCase = true) && label.contains("Деактивировать", ignoreCase = true) ||
-                        label.contains("деактивировать после продажи", ignoreCase = true))) {
-                fields[name] = LotField(name, "hidden", if (input.hasAttr("checked")) "on" else "", locale = null)
-                return@forEach
-            }
-
-            if (inputType != "hidden" && seenNames.contains(name)) {
-                return@forEach
-            }
-            seenNames.add(name)
-
-            val locale = when {
-                formGroup?.attr("data-locale")?.isNotEmpty() == true -> formGroup.attr("data-locale")
-                name.contains("[ru]") -> "ru"
-                name.contains("[en]") -> "en"
-                else -> null
-            }
-
-            fields[name] = when (inputType) {
-                "checkbox" -> LotField(name, "checkbox",
-                    if (input.hasAttr("checked")) "on" else "", label, locale = locale)
-                "hidden" -> LotField(name, "hidden", input.attr("value") ?: "", locale = locale)
-                "radio" -> LotField(name, "radio",
-                    if (input.hasAttr("checked")) input.attr("value") else "", label, locale = locale)
-                else -> LotField(name, "text", input.attr("value") ?: "", label, locale = locale)
-            }
-        }
-
-        doc.select("textarea[name]").forEach { textarea ->
-            val name = textarea.attr("name")
-            if (name.isEmpty() || seenNames.contains(name)) return@forEach
-            seenNames.add(name)
-
-            val formGroup = textarea.parents().firstOrNull { it.hasClass("form-group") }
-            val label = formGroup?.select("label")?.text() ?: name
-
-            val locale = when {
-                formGroup?.attr("data-locale")?.isNotEmpty() == true -> formGroup.attr("data-locale")
-                name.contains("[ru]") -> "ru"
-                name.contains("[en]") -> "en"
-                else -> null
-            }
-
-            fields[name] = LotField(name, "textarea", textarea.text(), label, locale = locale)
-        }
-
-        doc.select("select[name]").forEach { select ->
-            val name = select.attr("name")
-            if (name.isEmpty() || seenNames.contains(name)) return@forEach
-            seenNames.add(name)
-
-            val formGroup = select.parents().firstOrNull { it.hasClass("form-group") }
-            if (formGroup?.hasClass("hidden") == true) return@forEach
-
-            val label = formGroup?.select("label")?.text() ?: name
-            val options = select.select("option").map { it.attr("value") to it.text() }
-            val value = select.select("option[selected]").attr("value")
-
-            val locale = when {
-                formGroup?.attr("data-locale")?.isNotEmpty() == true -> formGroup.attr("data-locale")
-                name.contains("[ru]") -> "ru"
-                name.contains("[en]") -> "en"
-                else -> null
-            }
-
-            fields[name] = LotField(name, "select", value, label, options, locale)
-        }
-
-        
-        if (!fields.containsKey("node_id") || fields["node_id"]?.value.isNullOrEmpty()) {
-            val backLink = doc.select("a.js-back-link, a[href*='/lots/'][href$='/trade']").firstOrNull()
-                ?: doc.select("a[href*='/lots/']").firstOrNull { it.attr("href").matches(Regex(".*/lots/\\d+/.*")) }
-            val nodeIdFromUrl = backLink?.attr("href")?.let {
-                Regex("""/(?:lots|chips)/(\d+)/""").find(it)?.groupValues?.get(1)
-            }
-            if (!nodeIdFromUrl.isNullOrEmpty()) {
-                fields["node_id"] = LotField("node_id", "hidden", nodeIdFromUrl, locale = null)
-            }
-        }
-
-        
-        if (!fields.containsKey("game") || fields["game"]?.value.isNullOrEmpty()) {
-            val gameId = doc.select("[data-game]").firstOrNull()?.attr("data-game")
-            if (!gameId.isNullOrEmpty()) {
-                fields["game"] = LotField("game", "hidden", gameId, locale = null)
-            }
-        }
-
-        val currency = doc.select(".form-control-feedback").text()
-
-        val initialSellerPrice = doc.select("input[name='price']").attr("value").toDoubleOrNull() ?: 0.0
-        val buyerPriceRows = mutableListOf<BuyerPriceRow>()
-        if (initialSellerPrice > 0.0) {
-            doc.select(".js-calc-table-body tr").forEach { row ->
-                val method = row.select("th").text().trim()
-                val priceText = row.select("td").text().trim()
-                val currencySymbol = priceText.replace(Regex("[\\d.,\\s]"), "").trim()
-                val buyerPrice = priceText.replace(Regex("[^\\d.,]"), "").replace(",", ".").toDoubleOrNull()
-                if (method.isNotEmpty() && buyerPrice != null && buyerPrice > 0.0) {
-                    buyerPriceRows.add(BuyerPriceRow(method, buyerPrice / initialSellerPrice, currencySymbol))
+            else -> {
+                when (val type = el.attr("type").lowercase().ifEmpty { "text" }) {
+                    "hidden" -> {
+                        if (fields.containsKey(name)) continue
+                        if (form.select("input[type=checkbox][name=\"$name\"]").isNotEmpty()) {
+                            // <input type=hidden name=X value=""> + чекбокс X — как в браузере
+                            hiddenTwins.add(name)
+                            continue
+                        }
+                        fields[name] = LotField(name, "hidden", el.attr("value"), name, locale = locale, conditions = conds)
+                    }
+                    "checkbox" -> {
+                        val label = el.parent()?.takeIf { it.tagName() == "label" }?.text()?.trim()
+                            ?: rawLabel.ifEmpty { name }
+                        fields[name] = LotField(name, "checkbox", if (el.hasAttr("checked")) "on" else "",
+                            label, locale = locale, conditions = conds, hint = hint,
+                            sendEmptyWhenOff = name in hiddenTwins)
+                    }
+                    "radio" -> {
+                        val existing = fields[name]
+                        val opt = el.attr("value") to (el.parent()?.text()?.trim()?.ifEmpty { null } ?: el.attr("value"))
+                        val checkedVal = if (el.hasAttr("checked")) el.attr("value") else null
+                        fields[name] = if (existing == null) {
+                            LotField(name, "select", checkedVal.orEmpty(), rawLabel.ifEmpty { name }, listOf(opt),
+                                locale, conditions = conds, hint = hint)
+                        } else {
+                            existing.copy(
+                                options = existing.options + opt,
+                                value = checkedVal ?: existing.value
+                            )
+                        }
+                    }
+                    else -> {
+                        val isNumber = name == "price" || name == "amount" ||
+                                el.attr("inputmode") == "decimal" || type == "number"
+                        val label = when (name) {
+                            "amount" -> rawLabel.ifEmpty { "Наличие" }
+                            "price" -> rawLabel.ifEmpty { "Цена" }
+                            else -> rawLabel.ifEmpty { name }
+                        }
+                        fields[name] = LotField(name, if (isNumber) "number" else "text", el.attr("value"),
+                            label, locale = locale, conditions = conds, hint = hint,
+                            placeholder = el.attr("placeholder"))
+                    }
                 }
             }
         }
+    }
 
-        val imageUrls = mutableListOf<String>()
-        val images = mutableListOf<LotImage>()
+    if (fields["offer_id"]?.value.isNullOrEmpty() && lotId != "0") {
+        fields["offer_id"] = LotField("offer_id", "hidden", lotId, "offer_id")
+    }
 
-        doc.select("li.attachments-item[data-file-id]").forEach { li ->
-            val fileId = li.attr("data-file-id")
-            if (fileId.isEmpty()) return@forEach
-            val aThumb = li.selectFirst("a.attachments-thumb") ?: return@forEach
-            val fullUrl = aThumb.attr("href")
-            val styleAttr = aThumb.attr("style")
-            val thumbUrl = Regex("""url\(([^)]+)\)""").find(styleAttr)?.groupValues?.get(1)?.trim() ?: fullUrl
-            if (fullUrl.isNotEmpty()) {
-                images.add(LotImage(fileId, thumbUrl, fullUrl))
-                imageUrls.add(fullUrl)
+    val currency = form.selectFirst(".form-control-feedback")?.text()?.trim().orEmpty()
+    val initialSellerPrice = fields["price"]?.value?.replace(",", ".")?.toDoubleOrNull() ?: 0.0
+    val buyerPriceRows = mutableListOf<BuyerPriceRow>()
+    if (initialSellerPrice > 0.0) {
+        form.select(".js-calc-table-body tr").forEach { row ->
+            val method = row.select("th").text().trim()
+            val priceText = row.select("td").text().trim()
+            val currencySymbol = priceText.replace(Regex("[\\d.,\\s ]"), "").trim()
+            val buyerPrice = priceText.replace(Regex("[^\\d.,]"), "").replace(",", ".").toDoubleOrNull()
+            if (method.isNotEmpty() && buyerPrice != null && buyerPrice > 0.0) {
+                buyerPriceRows.add(BuyerPriceRow(method, buyerPrice / initialSellerPrice, currencySymbol))
             }
         }
+    }
 
-        if (images.isEmpty()) {
-            doc.select("a.field-image-thumb, a.attachments-thumb").forEach { a ->
-                val href = a.attr("href")
-                if (href.isNotEmpty()) imageUrls.add(href)
-            }
+    val imageUrls = mutableListOf<String>()
+    val images = mutableListOf<LotImage>()
+    form.select("li.attachments-item[data-file-id]").forEach { li ->
+        val fileId = li.attr("data-file-id")
+        if (fileId.isEmpty()) return@forEach
+        val aThumb = li.selectFirst("a.attachments-thumb") ?: return@forEach
+        val fullUrl = aThumb.attr("href")
+        val thumbUrl = Regex("""url\(([^)]+)\)""").find(aThumb.attr("style"))?.groupValues?.get(1)
+            ?.trim()?.trim('"', '\'') ?: fullUrl
+        if (fullUrl.isNotEmpty()) {
+            images.add(LotImage(fileId, thumbUrl, fullUrl))
+            imageUrls.add(fullUrl)
         }
+    }
 
-        if (imageUrls.isEmpty()) {
-            doc.select(".field-images img, .offer-images img").forEach { img ->
-                val src = img.attr("src")
-                if (src.isNotEmpty()) imageUrls.add(
-                    if (src.startsWith("http")) src else "https://funpay.com$src"
-                )
-            }
+    val dbAmount = try {
+        JSONObject(form.attr("data-offer").ifEmpty { "{}" }).opt("amount")?.toString()?.toIntOrNull()
+    } catch (_: Exception) { null }
+
+    return LotFieldsData(
+        fields = fields,
+        currency = currency,
+        csrfToken = csrfToken,
+        activeCookies = "",
+        imageUrls = imageUrls,
+        images = images,
+        buyerPriceRows = buyerPriceRows,
+        initialSellerPrice = initialSellerPrice,
+        dbAmount = dbAmount
+    )
+}
+
+private suspend fun FunPayRepository.fetchOfferEditHtml(query: String): String = withContext(Dispatchers.IO) {
+    getCsrfAndId() // гарантирует живую сессию + golden_seal
+    val request = Request.Builder()
+        .url("https://funpay.com/lots/offerEdit?$query")
+        .header("Cookie", getCookieString())
+        .header("User-Agent", FpSession.UA)
+        .header("Referer", "https://funpay.com/")
+        .build()
+    repoClient.newCall(request).execute().use { resp ->
+        val body = resp.body?.string().orEmpty()
+        if (resp.code == 403 || resp.code == 401) {
+            throw Exception("FunPay не авторизовал запрос (HTTP ${resp.code}). Войдите в аккаунт заново.")
         }
-
-        LotFieldsData(fields, currency, csrfToken, freshCookies, imageUrls, images, buyerPriceRows, initialSellerPrice)
+        if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: не удалось загрузить форму лота")
+        body
     }
 }
 
+suspend fun FunPayRepository.getLotFields(lotId: String): LotFieldsData {
+    val html = fetchOfferEditHtml("offer=$lotId")
+    return parseLotEditForm(html, lotId).copy(activeCookies = getCookieString())
+}
+
+suspend fun FunPayRepository.getNewLotFields(nodeId: String): LotFieldsData {
+    val html = fetchOfferEditHtml("node=$nodeId")
+    return parseLotEditForm(html, "0").copy(activeCookies = getCookieString())
+}
+
+/** Активно ли поле с учётом условий data-fields (например "Тип реакции" только для "Реакции"). */
+fun LotField.isActiveFor(values: Map<String, String>): Boolean {
+    if (conditions.isEmpty()) return true
+    return conditions.all { cond ->
+        val current = values[cond.fieldName].orEmpty().trim().lowercase()
+        cond.values.any { it.trim().lowercase() == current }
+    }
+}
+
+/**
+ * Собирает тело offerSave ровно так, как его отправил бы браузер:
+ * неактивные условные поля не отправляются, выключенные чекбоксы — пропускаются
+ * (или отправляются пустыми, если у них есть hidden-двойник).
+ */
+fun buildOfferSaveForm(data: LotFieldsData, overrides: Map<String, String>): List<Pair<String, String>> {
+    val values = LinkedHashMap<String, String>()
+    data.fields.forEach { (name, f) -> values[name] = f.value }
+    values.putAll(overrides)
+
+    val out = mutableListOf<Pair<String, String>>()
+    out.add("csrf_token" to data.csrfToken)
+    val seen = mutableSetOf("csrf_token")
+
+    for ((name, field) in data.fields) {
+        if (!field.isActiveFor(values)) continue
+        val v = values[name].orEmpty()
+        when (field.type) {
+            "checkbox" -> {
+                if (field.sendEmptyWhenOff) out.add(name to "")
+                if (v == "on" || v == "true" || v == "1") out.add(name to "on")
+            }
+            "number" -> out.add(name to v.replace(',', '.').replace(" ", "").replace(" ", ""))
+            else -> out.add(name to v)
+        }
+        seen.add(name)
+    }
+    // Поля, которых не было в форме, но их явно передали (например offer_id=0 при копировании)
+    for ((name, v) in overrides) {
+        if (name !in seen && data.fields[name] == null) out.add(name to v)
+    }
+    return out
+}
+
+data class OfferSaveResult(val ok: Boolean, val error: String? = null)
+
+suspend fun FunPayRepository.postOfferSave(form: List<Pair<String, String>>, referer: String): OfferSaveResult =
+    withContext(Dispatchers.IO) {
+        try {
+            val body = FormBody.Builder().apply { form.forEach { (k, v) -> add(k, v) } }.build()
+            val request = Request.Builder()
+                .url("https://funpay.com/lots/offerSave")
+                .post(body)
+                .header("Cookie", getCookieString())
+                .header("User-Agent", FpSession.UA)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                .header("Origin", "https://funpay.com")
+                .header("Referer", referer)
+                .build()
+
+            repoClient.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (response.code == 428) {
+                    return@withContext OfferSaveResult(false,
+                        "HTTP 428: FunPay не выдал golden_seal. Откройте «Аккаунты» → «Войти заново» через сайт FunPay и повторите.")
+                }
+                if (!response.isSuccessful) {
+                    return@withContext OfferSaveResult(false, "HTTP ${response.code}: ${text.take(200)}")
+                }
+                val json = try { JSONObject(text) } catch (_: Exception) { null }
+                    ?: return@withContext OfferSaveResult(true)
+
+                val errorFlag = json.opt("error")
+                val hasError = when (errorFlag) {
+                    is Boolean -> errorFlag
+                    is Number -> errorFlag.toInt() != 0
+                    is String -> errorFlag.isNotBlank() && errorFlag != "0" && errorFlag != "false"
+                    else -> false
+                }
+                val errorsArr = json.optJSONArray("errors")
+                if (!hasError && (errorsArr == null || errorsArr.length() == 0)) {
+                    return@withContext OfferSaveResult(true)
+                }
+
+                val parts = mutableListOf<String>()
+                json.optString("msg").takeIf { it.isNotBlank() }?.let { parts.add(it) }
+                if (errorsArr != null) {
+                    for (i in 0 until errorsArr.length()) {
+                        val pair = errorsArr.optJSONArray(i)
+                        if (pair != null && pair.length() >= 2) parts.add("${pair.optString(0)}: ${pair.optString(1)}")
+                        else errorsArr.optString(i).takeIf { it.isNotBlank() }?.let { parts.add(it) }
+                    }
+                }
+                if (parts.isEmpty() && errorFlag is String && errorFlag.isNotBlank()) parts.add(errorFlag)
+                OfferSaveResult(false, parts.joinToString("\n").ifEmpty { "Ошибка FunPay: ${text.take(200)}" })
+            }
+        } catch (e: Exception) {
+            OfferSaveResult(false, e.message ?: "Неизвестная ошибка")
+        }
+    }
+
+suspend fun FunPayRepository.saveLotFields(
+    lotId: String,
+    data: LotFieldsData,
+    values: Map<String, String>
+): Pair<Boolean, String?> {
+    val form = buildOfferSaveForm(data, values)
+    val referer = if (lotId == "0")
+        "https://funpay.com/lots/offerEdit?node=${values["node_id"] ?: data.fields["node_id"]?.value.orEmpty()}"
+    else "https://funpay.com/lots/offerEdit?offer=$lotId"
+    val result = postOfferSave(form, referer)
+    return Pair(result.ok, result.error)
+}
+
+/**
+ * Старая сигнатура (используется плагинами). Поля перечитываются с FunPay,
+ * а переданные значения накладываются поверх — так в форму попадают все
+ * обязательные поля, даже если вызывающий код передал не всё.
+ */
 suspend fun FunPayRepository.saveLot(
     lotId: String,
     fieldsData: Map<String, String>,
     csrfToken: String,
     cookies: String
 ): Pair<Boolean, String?> {
-    return withContext(Dispatchers.IO) {
-        try {
-            val formBody = FormBody.Builder().apply {
-                add("csrf_token", csrfToken)
-
-                fieldsData.forEach { (name, value) ->
-                    when (name) {
-                        "csrf_token" -> {}
-                        "location" -> add(name, if (value.isNullOrEmpty()) "trade" else value)
-                        "active" -> if (value == "on") add(name, value)
-                        else -> add(name, value)
-                    }
-                }
-
-                if (!fieldsData.containsKey("location")) add("location", "trade")
-                if (!fieldsData.containsKey("secrets")) add("secrets", "")
-                if (!fieldsData.containsKey("fields[images]")) add("fields[images]", "")
-            }.build()
-
-            val refererUrl = if(lotId == "0")
-                "https://funpay.com/lots/offerEdit?node=${fieldsData["node_id"]}"
-            else
-                "https://funpay.com/lots/offerEdit?offer=$lotId"
-
-            val request = Request.Builder()
-                .url("https://funpay.com/lots/offerSave")
-                .post(formBody)
-                .header("Cookie", cookies)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .header("Origin", "https://funpay.com")
-                .header("Referer", refererUrl)
-                .build()
-
-            val response = OkHttpClient().newCall(request).execute()
-            val body = response.body?.string()
-
-            if (!response.isSuccessful) {
-                return@withContext Pair(false, "HTTP ${response.code}: ${body?.take(200)}")
-            }
-
-            if (body?.contains("\"done\":true") == true || body?.contains("\"done\": true") == true) {
-                return@withContext Pair(true, null)
-            }
-
-            if (body?.contains("\"error\"") == true || body?.contains("error") == true) {
-                val msgMatch = Regex(""""msg"\s*:\s*"([^"]+)"""").find(body)
-                val error = msgMatch?.groupValues?.get(1) ?: "Ошибка: $body"
-                return@withContext Pair(false, error)
-            }
-
-            Pair(true, null)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Pair(false, e.message ?: "Неизвестная ошибка")
-        }
+    return try {
+        val fresh = if (lotId == "0") {
+            val node = fieldsData["node_id"] ?: return Pair(false, "Не указан node_id")
+            getNewLotFields(node)
+        } else getLotFields(lotId)
+        saveLotFields(lotId, fresh, fieldsData.filterKeys { it != "csrf_token" })
+    } catch (e: Exception) {
+        Pair(false, e.message ?: "Неизвестная ошибка")
     }
 }
-
 
 suspend fun FunPayRepository.deleteLot(lotId: String): Boolean {
     return withContext(Dispatchers.IO) {
         try {
-            
-            val fieldsData = getLotFields(lotId)
-            val csrf = fieldsData.csrfToken
-            val cookie = fieldsData.activeCookies
-
-            val formBody = FormBody.Builder()
-                .add("csrf_token", csrf)
-                .add("offer_id", lotId)
-                .add("deleted", "1")
-                .build()
-
-            val request = Request.Builder()
-                .url("https://funpay.com/lots/offerSave")
-                .post(formBody)
-                .header("Cookie", cookie)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .header("Referer", "https://funpay.com/lots/offerEdit?offer=$lotId")
-                .build()
-
-            val response = OkHttpClient().newCall(request).execute()
-            val body = response.body?.string()
-
-            body?.contains("\"done\":true") == true || body?.contains("\"done\": true") == true
-                    || response.isSuccessful
+            val data = getLotFields(lotId)
+            val form = listOf(
+                "csrf_token" to data.csrfToken,
+                "offer_id" to lotId,
+                "deleted" to "1"
+            )
+            val res = postOfferSave(form, "https://funpay.com/lots/offerEdit?offer=$lotId")
+            if (!res.ok) LogManager.addLog("❌ Удаление лота $lotId: ${res.error}")
+            res.ok
         } catch (e: Exception) {
+            LogManager.addLog("❌ Удаление лота $lotId: ${e.message}")
             false
         }
     }
@@ -696,37 +788,34 @@ suspend fun FunPayRepository.uploadImageToFunPay(
     cookies: String
 ): String? {
     return withContext(Dispatchers.IO) {
-        try {
-            val processedBytes = resizeImageIfNeeded(imageBytes)
+        val processedBytes = resizeImageIfNeeded(imageBytes)
 
-            val fileName = if (mimeType.contains("png")) "image.png" else "image.jpg"
-            val requestBody = processedBytes.toRequestBody("image/jpeg".toMediaType())
-            val multipartBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("csrf_token", csrfToken)
-                .addFormDataPart("file", fileName, requestBody)
-                .build()
+        val fileName = if (mimeType.contains("png")) "image.png" else "image.jpg"
+        val requestBody = processedBytes.toRequestBody("image/jpeg".toMediaType())
+        val multipartBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("csrf_token", csrfToken)
+            .addFormDataPart("file", fileName, requestBody)
+            .build()
 
-            val request = Request.Builder()
-                .url("https://funpay.com/file/addOfferImage")
-                .post(multipartBody)
-                .header("Cookie", cookies)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .header("Origin", "https://funpay.com")
-                .header("Referer", "https://funpay.com/lots/offerEdit")
-                .build()
+        val request = Request.Builder()
+            .url("https://funpay.com/file/addOfferImage")
+            .post(multipartBody)
+            .header("Cookie", getCookieString())
+            .header("User-Agent", FpSession.UA)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("Origin", "https://funpay.com")
+            .header("Referer", "https://funpay.com/lots/offerEdit")
+            .build()
 
-            val response = OkHttpClient().newCall(request).execute()
+        repoClient.newCall(request).execute().use { response ->
             val body = response.body?.string() ?: return@withContext null
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code}: ${body.take(150)}")
             val json = JSONObject(body)
             if (json.has("error") && json.optInt("error") == 1) {
                 throw Exception(json.optString("msg", "Ошибка загрузки изображения"))
             }
             json.optString("fileId").takeIf { it.isNotEmpty() }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            throw e
         }
     }
 }
@@ -767,26 +856,21 @@ fun resizeImageIfNeeded(imageBytes: ByteArray): ByteArray {
 suspend fun FunPayRepository.toggleLotStatus(lotId: String, forceState: Boolean? = null): Pair<Boolean, String?> {
     return withContext(Dispatchers.IO) {
         try {
-            val fieldsData = getLotFields(lotId)
-
-            val currentActive = fieldsData.fields["active"]?.value == "on"
-            val updatedFields = fieldsData.fields.mapValues { it.value.value }.toMutableMap()
-
+            val data = getLotFields(lotId)
+            val currentActive = data.fields["active"]?.value == "on" && data.dbAmount != 0
             val shouldBeActive = forceState ?: !currentActive
 
-            if (shouldBeActive) {
-                updatedFields["active"] = "on"
+            val overrides = mutableMapOf("active" to if (shouldBeActive) "on" else "")
+            if (data.fields["node_id"]?.value.isNullOrEmpty()) {
+                getMyLots().find { it.id == lotId }?.let { overrides["node_id"] = it.nodeId }
+            }
+            val res = saveLotFields(lotId, data, overrides)
+            if (res.first) {
+                LogManager.addLog("✅ Лот $lotId ${if (shouldBeActive) "активирован" else "деактивирован"}")
             } else {
-                updatedFields.remove("active")
+                LogManager.addLog("❌ Лот $lotId: ${res.second}")
             }
-
-            
-            if (updatedFields["node_id"].isNullOrEmpty()) {
-                val lot = getMyLots().find { it.id == lotId }
-                if (lot != null) updatedFields["node_id"] = lot.nodeId
-            }
-
-            saveLot(lotId, updatedFields, fieldsData.csrfToken, fieldsData.activeCookies)
+            res
         } catch (e: Exception) {
             Pair(false, e.message ?: "Ошибка переключения статуса")
         }
@@ -799,66 +883,33 @@ suspend fun FunPayRepository.copyLot(
 ): Pair<Boolean, String?> {
     return withContext(Dispatchers.IO) {
         try {
-            val originalData = getLotFields(lotId)
-            val originalFields = originalData.fields.mapValues { it.value.value }.toMutableMap()
+            val original = getLotFields(lotId)
+            val originalValues = original.fields.mapValues { it.value.value }
 
-            var currentCookie = originalData.activeCookies
-            var currentCsrf = originalData.csrfToken
-
-            
-            val nodeIdFromForm = originalFields["node_id"]?.takeIf { it.isNotEmpty() }
-            val nodeId = targetNodeId
-                ?: nodeIdFromForm
+            val sourceNode = originalValues["node_id"]?.takeIf { it.isNotEmpty() }
                 ?: getMyLots().find { it.id == lotId }?.nodeId
+            val nodeId = targetNodeId ?: sourceNode
                 ?: return@withContext Pair(false, "Не удалось определить категорию")
 
-            val finalFields = if (targetNodeId != null && targetNodeId != originalFields["node_id"]) {
-                val newCategoryResponse = api.getChatPage(
-                    "https://funpay.com/lots/offerEdit?node=$targetNodeId",
-                    currentCookie,
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
-                )
-
-                val setCookies = newCategoryResponse.headers().values("Set-Cookie")
-                if (setCookies.isNotEmpty()) {
-                    val newPhpsessid = setCookies.find { it.startsWith("PHPSESSID") }?.split(";")?.first()
-                    if (newPhpsessid != null) {
-                        currentCookie = "golden_key=${getGoldenKey()}; $newPhpsessid"
-                    }
+            // Пустая форма нужной категории — в ней правильный набор полей.
+            val blank = getNewLotFields(nodeId)
+            val values = mutableMapOf<String, String>()
+            for ((name, field) in blank.fields) {
+                val src = originalValues[name]
+                values[name] = when {
+                    name == "offer_id" -> "0"
+                    name == "node_id" -> nodeId
+                    name == "deleted" -> ""
+                    src == null -> field.value
+                    field.type == "select" && field.options.none { it.first == src } -> field.value
+                    else -> src
                 }
-
-                val newCategoryHtml = newCategoryResponse.body()?.string() ?: throw Exception("Не удалось загрузить форму категории")
-                val newCategoryDoc = Jsoup.parse(newCategoryHtml)
-
-                currentCsrf = newCategoryDoc.select("input[name='csrf_token']").first()?.attr("value") ?: currentCsrf
-
-                val newFields = mutableMapOf<String, String>()
-                newCategoryDoc.select("input[name], textarea[name], select[name]").forEach { element ->
-                    val name = element.attr("name")
-                    if (name.isNotEmpty() && name != "query" && !name.startsWith("cc-option")) {
-                        newFields[name] = element.attr("value") ?: element.text()
-                    }
-                }
-
-                if (originalFields["fields[summary][ru]"]?.isNotEmpty() == true) newFields["fields[summary][ru]"] = originalFields["fields[summary][ru]"]!!
-                if (originalFields["fields[summary][en]"]?.isNotEmpty() == true) newFields["fields[summary][en]"] = originalFields["fields[summary][en]"]!!
-                if (originalFields["fields[desc][ru]"]?.isNotEmpty() == true) newFields["fields[desc][ru]"] = originalFields["fields[desc][ru]"]!!
-                if (originalFields["fields[desc][en]"]?.isNotEmpty() == true) newFields["fields[desc][en]"] = originalFields["fields[desc][en]"]!!
-                if (originalFields["price"]?.isNotEmpty() == true) newFields["price"] = originalFields["price"]!!
-                if (originalFields["amount"]?.isNotEmpty() == true) newFields["amount"] = originalFields["amount"]!!
-
-                newFields
-            } else {
-                originalFields
             }
+            values["offer_id"] = "0"
+            values["node_id"] = nodeId
+            if (blank.fields.containsKey("active")) values["active"] = "on"
 
-            val fieldsToSave = finalFields.toMutableMap()
-            fieldsToSave["offer_id"] = "0"
-            fieldsToSave["node_id"] = nodeId
-            fieldsToSave["active"] = "on"
-
-            saveLot("0", fieldsToSave, currentCsrf, currentCookie)
-
+            saveLotFields("0", blank, values)
         } catch (e: Exception) {
             Pair(false, e.message ?: "Неизвестная ошибка копирования")
         }
@@ -1567,6 +1618,7 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
 
                                 val missingFields = data.fields.filter { (name, field) ->
                                     field.type != "hidden" &&
+                                            field.isActiveFor(fieldValues) &&
                                             field.label.contains("*") &&
                                             fieldValues[name].isNullOrBlank()
                                 }
@@ -1577,10 +1629,7 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                     return@launch
                                 }
 
-                                val allFields = data.fields.mapValues { it.value.value }.toMutableMap()
-                                allFields.putAll(fieldValues)
-
-                                val (ok, error) = repository.saveLot(lotId, allFields, data.csrfToken, data.activeCookies)
+                                val (ok, error) = repository.saveLotFields(lotId, data, fieldValues)
                                 isSaving = false
                                 if (ok) {
                                     navController.popBackStack()
@@ -1645,9 +1694,13 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                             }
                         }
 
-                        val ruFields = state.fieldsData.fields.filter { it.value.locale == "ru" }
-                        val enFields = state.fieldsData.fields.filter { it.value.locale == "en" }
-                        val commonFields = state.fieldsData.fields.filter { it.value.locale == null && it.value.type != "hidden" }
+                        // Условные поля (data-fields → conditions) показываем только когда они активны
+                        val visible = state.fieldsData.fields.filter {
+                            it.value.type != "hidden" && it.value.isActiveFor(fieldValues)
+                        }
+                        val ruFields = visible.filter { it.value.locale == "ru" }
+                        val enFields = visible.filter { it.value.locale == "en" }
+                        val commonFields = visible.filter { it.value.locale == null }
 
                         val hasMultiLang = ruFields.isNotEmpty() || enFields.isNotEmpty()
 
@@ -1989,17 +2042,36 @@ fun BuyerPriceTable(sellerPriceText: String, rows: List<BuyerPriceRow>, theme: A
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FieldEditor(name: String, field: LotField, value: String, theme: AppTheme, onValueChange: (String) -> Unit) {
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+        unfocusedBorderColor = ThemeManager.parseColor(theme.textSecondaryColor).copy(0.3f),
+        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+        focusedLabelColor = ThemeManager.parseColor(theme.accentColor),
+        unfocusedLabelColor = ThemeManager.parseColor(theme.textSecondaryColor),
+        cursorColor = ThemeManager.parseColor(theme.accentColor)
+    )
+    val hint: (@Composable () -> Unit)? = field.hint.takeIf { it.isNotBlank() }?.let { h ->
+        { Text(h, fontSize = 11.sp, color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+    }
     when (field.type) {
-        "text" -> {
+        "text", "number" -> {
             OutlinedTextField(
                 value = value,
                 onValueChange = onValueChange,
                 label = { Text(field.label) },
+                placeholder = field.placeholder.takeIf { it.isNotBlank() }?.let { p -> { Text(p) } },
+                supportingText = hint,
+                singleLine = true,
+                keyboardOptions = if (field.type == "number")
+                    androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal)
+                else androidx.compose.foundation.text.KeyboardOptions.Default,
+                trailingIcon = when (name) {
+                    "amount" -> ({ Text("шт.", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 13.sp) })
+                    else -> null
+                },
                 modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                    unfocusedBorderColor = ThemeManager.parseColor(theme.textSecondaryColor).copy(0.3f)
-                ),
+                colors = fieldColors,
                 shape = RoundedCornerShape(theme.borderRadius.dp)
             )
         }
@@ -2008,12 +2080,11 @@ fun FieldEditor(name: String, field: LotField, value: String, theme: AppTheme, o
                 value = value,
                 onValueChange = onValueChange,
                 label = { Text(field.label) },
-                modifier = Modifier.fillMaxWidth().height(120.dp),
-                maxLines = 5,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                    unfocusedBorderColor = ThemeManager.parseColor(theme.textSecondaryColor).copy(0.3f)
-                ),
+                supportingText = hint,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp),
+                minLines = 4,
+                maxLines = 14,
+                colors = fieldColors,
                 shape = RoundedCornerShape(theme.borderRadius.dp)
             )
         }
@@ -2025,16 +2096,15 @@ fun FieldEditor(name: String, field: LotField, value: String, theme: AppTheme, o
                     {},
                     readOnly = true,
                     label = { Text(field.label) },
+                    supportingText = hint,
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
                     modifier = Modifier.fillMaxWidth().menuAnchor(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                        unfocusedBorderColor = ThemeManager.parseColor(theme.textSecondaryColor).copy(0.3f)
-                    )
+                    colors = fieldColors,
+                    shape = RoundedCornerShape(theme.borderRadius.dp)
                 )
                 ExposedDropdownMenu(expanded, { expanded = false }) {
                     field.options.forEach { (optValue, optLabel) ->
-                        DropdownMenuItem({ Text(optLabel) }, {
+                        DropdownMenuItem({ Text(optLabel.ifBlank { "—" }) }, {
                             onValueChange(optValue)
                             expanded = false
                         })

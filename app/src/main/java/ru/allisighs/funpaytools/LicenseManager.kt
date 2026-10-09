@@ -160,7 +160,8 @@ object LicenseManager {
     private const val K_AI_BONUS   = "ai_ad_bonus"
     private const val K_DEVICE_ID  = "device_id"
 
-    private const val AD_DURATION_MS = 48L * 3_600_000L
+    /** Доступ за рекламу — 5 минут: попробовать, но не пользоваться бесплатно. */
+    private const val AD_DURATION_MS = 5L * 60_000L
     private const val CACHE_VALID_MS  = 6L * 3_600_000L
 
     const val AI_FREE_DAILY = 25
@@ -195,9 +196,26 @@ object LicenseManager {
 
     fun isAdUnlocked(f: PremiumFeature): Boolean {
         val c = ctx ?: return false
-        val t = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getLong(K_AD_PREFIX + f.name, 0L)
-        return t > 0 && System.currentTimeMillis() < t
+        val p = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        var t = p.getLong(K_AD_PREFIX + f.name, 0L)
+        val now = System.currentTimeMillis()
+        // Старые разблокировки на 48 ч урезаем до нового лимита
+        if (t - now > AD_DURATION_MS) {
+            t = now + AD_DURATION_MS
+            p.edit().putLong(K_AD_PREFIX + f.name, t).apply()
+        }
+        return t > 0 && now < t
+    }
+
+    /** Сколько осталось от доступа за рекламу, коротко: "45 с" / "1 мин". */
+    fun adUnlockLeftLabel(f: PremiumFeature): String {
+        if (!isAdUnlocked(f)) return ""
+        val c = ctx ?: return ""
+        val rem = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getLong(K_AD_PREFIX + f.name, 0L) - System.currentTimeMillis()
+        if (rem <= 0) return ""
+        val sec = (rem + 999) / 1000
+        return if (sec >= 60) "${sec / 60} мин" else "$sec с"
     }
 
     fun adUnlockHoursLeft(f: PremiumFeature): Long {
@@ -589,7 +607,7 @@ fun PremiumDialog(
     var showKey    by remember { mutableStateOf(false) }
     var keySuccess by remember { mutableStateOf(false) }
 
-    val adHours = LicenseManager.adUnlockHoursLeft(feature)
+    val adLeft = LicenseManager.adUnlockLeftLabel(feature)
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -632,14 +650,14 @@ fun PremiumDialog(
                 )
 
 
-                if (adHours > 0) {
+                if (adLeft.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = Color(0xFF00C853).copy(alpha = 0.1f)
                     ) {
                         Text(
-                            "Открыто рекламой ещё на $adHours ч",
+                            "Открыто рекламой ещё на $adLeft",
                             modifier  = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                             fontSize  = 12.sp,
                             color     = Color(0xFF4CAF50),
@@ -651,8 +669,8 @@ fun PremiumDialog(
 
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Если функция включена, она продолжит работать в фоне после 48 часов. " +
-                            "Для изменения настроек потребуется снова открыть доступ.",
+                    "Реклама открывает функцию на 5 минут. " +
+                            "Для постоянного доступа и настройки — PRO.",
                     fontSize   = 11.sp,
                     lineHeight = 16.sp,
                     color      = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.65f),
@@ -701,7 +719,7 @@ fun PremiumDialog(
                             Spacer(Modifier.width(8.dp))
                             Text("Загрузка...")
                         } else {
-                            Text("Открыть на 48 часов (реклама)", fontWeight = FontWeight.Medium)
+                            Text("Открыть на 5 минут (реклама)", fontWeight = FontWeight.Medium)
                         }
                     }
 
@@ -1131,13 +1149,13 @@ fun LockBadge(feature: PremiumFeature, theme: AppTheme) {
         LicenseManager.isProActive() -> Unit
 
         LicenseManager.isAdUnlocked(feature) -> {
-            val h = LicenseManager.adUnlockHoursLeft(feature)
+            val h = LicenseManager.adUnlockLeftLabel(feature)
             Surface(
                 shape = RoundedCornerShape(4.dp),
                 color = Color(0xFF1565C0).copy(alpha = 0.2f)
             ) {
                 Text(
-                    text       = "${h}h",
+                    text       = h,
                     modifier   = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
                     fontSize   = 10.sp,
                     color      = Color(0xFF42A5F5),

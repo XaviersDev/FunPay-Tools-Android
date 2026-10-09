@@ -749,9 +749,7 @@ class FPTJsBridge(private val context: Context, private val repository: FunPayRe
     @JavascriptInterface fun changeLotPrice(id: String, newPrice: Double): Boolean = ioBlockingBool {
         try {
             val data = repository.getLotFields(id)
-            val fields = data.fields.mapValues { it.value.value }.toMutableMap()
-            fields["price"] = newPrice.toString()
-            repository.saveLot(id, fields, data.csrfToken, data.activeCookies).first
+            repository.saveLotFields(id, data, mapOf("price" to String.format(java.util.Locale.US, "%.2f", newPrice))).first
         } catch (_: Exception) { false }
     }
     @JavascriptInterface fun copyLot(id: String, targetNodeId: String) = ioBlocking { gson.toJson(repository.copyLot(id, targetNodeId.ifEmpty { null })) }
@@ -1411,7 +1409,7 @@ fun PluginCreateCodeDialog(theme: AppTheme, context: Context, repository: FunPay
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onDismiss, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) {
+                    Button(onClick = onDismiss, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))) {
                         Text("Отмена", color = ThemeManager.parseColor(theme.textPrimaryColor))
                     }
                     Button(
@@ -1610,7 +1608,7 @@ fun PluginCard(plugin: PluginMeta, theme: AppTheme, context: Context, repository
                     )
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { showUpdateDiff = false }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) {
+                        Button(onClick = { showUpdateDiff = false }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))) {
                             Text("Отклонить", color = ThemeManager.parseColor(theme.textPrimaryColor))
                         }
                         Button(
@@ -1648,7 +1646,7 @@ fun PluginCard(plugin: PluginMeta, theme: AppTheme, context: Context, repository
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { showEditor = false }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) { Text("Отмена", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
+                        Button(onClick = { showEditor = false }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))) { Text("Отмена", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                         Button(
                             onClick = {
                                 val updatedMeta = plugin.copy(sourceCode = editedCode, securityWarnings = PluginScanner.scan(editedCode), hasUpdate = false, newSourceCode = null)

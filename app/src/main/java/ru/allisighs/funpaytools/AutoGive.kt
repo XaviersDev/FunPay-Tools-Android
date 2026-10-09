@@ -251,7 +251,7 @@ fun AutoDeliveryCard(
                     Button(
                         onClick = onConfigure,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                     ) {
                         Icon(Icons.Default.Tune, null, tint = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))

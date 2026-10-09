@@ -269,7 +269,7 @@ object GameChatsRegistry {
 
 
 
-enum class ChatListMode { PERSONAL, GAMES }
+enum class ChatListMode { PERSONAL, GAMES, GLOBAL }
 
 @Composable
 fun ChatModeSegmentedControl(
@@ -290,10 +290,16 @@ fun ChatModeSegmentedControl(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        listOf(
-            ChatListMode.PERSONAL to "ЛИЧНЫЕ",
-            ChatListMode.GAMES to "ИГРОВЫЕ"
-        ).forEachIndexed { idx, pair ->
+        val context = androidx.compose.ui.platform.LocalContext.current
+        // "ОБЩИЙ" можно спрятать удалённо (public-chat.json → display)
+        val showGlobal = remember { GlobalChatApi.cachedConfig(context).display }
+        val tabs = buildList {
+            add(ChatListMode.PERSONAL to "ЛИЧНЫЕ")
+            add(ChatListMode.GAMES to "ИГРОВЫЕ")
+            if (showGlobal) add(ChatListMode.GLOBAL to "ОБЩИЙ")
+        }
+        val stretch = if (tabs.size > 2) 1.3f else 1.6f
+        tabs.forEachIndexed { idx, pair ->
             val (m, label) = pair
 
             key(m) {
@@ -321,16 +327,16 @@ fun ChatModeSegmentedControl(
                         modifier = Modifier
                             .layout { measurable, constraints ->
                                 val placeable = measurable.measure(constraints)
-                                val scaledWidth = (placeable.width * 1.6f).toInt()
+                                val scaledWidth = (placeable.width * stretch).toInt()
                                 layout(scaledWidth, placeable.height) {
                                     placeable.placeRelative((scaledWidth - placeable.width) / 2, 0)
                                 }
                             }
-                            .graphicsLayer { scaleX = 1.6f }
+                            .graphicsLayer { scaleX = stretch }
                     )
                 }
 
-                if (idx == 0) Spacer(Modifier.width(16.dp))
+                if (idx < tabs.lastIndex) Spacer(Modifier.width(if (tabs.size > 2) 6.dp else 16.dp))
             }
         }
     }

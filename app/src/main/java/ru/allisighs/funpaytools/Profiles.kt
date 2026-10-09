@@ -94,7 +94,7 @@ enum class SubmitState {
 private suspend fun FunPayRepository.resolveUserIdFromNode(nodeId: String): String {
     return withContext(Dispatchers.IO) {
         val cookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
-        val client = OkHttpClient()
+        val client = ApiFactory.shared
         val request = Request.Builder()
             .url("https://funpay.com/chat/?node=$nodeId")
             .header("Cookie", cookie)
@@ -119,7 +119,7 @@ private suspend fun FunPayRepository.resolveUserIdFromNode(nodeId: String): Stri
 private suspend fun FunPayRepository.fetchMoreReviews(userId: String, continueToken: String): Pair<List<ProfileReview>, String?> {
     return withContext(Dispatchers.IO) {
         val cookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
-        val client = OkHttpClient()
+        val client = ApiFactory.shared
 
         val requestBody = FormBody.Builder()
             .add("user_id", userId)
@@ -164,7 +164,7 @@ private fun parseReviewsFromHtml(html: String): List<ProfileReview> {
 suspend fun FunPayRepository.getUserProfile(userId: String): FunPayUserProfile {
     return withContext(Dispatchers.IO) {
         val cookie = "golden_key=${getGoldenKey()}; PHPSESSID=${getPhpSessionId()}"
-        val client = OkHttpClient()
+        val client = ApiFactory.shared
         val request = Request.Builder()
             .url("https://funpay.com/users/$userId/")
             .header("Cookie", cookie)

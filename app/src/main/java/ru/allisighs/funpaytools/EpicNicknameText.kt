@@ -1,5 +1,9 @@
 package ru.allisighs.funpaytools
 
+import androidx.compose.ui.graphics.lerp
+
+import androidx.compose.ui.graphics.luminance
+
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
@@ -40,9 +44,11 @@ fun EpicNicknameText(
         return
     }
 
-    val c1 = parseHexColor(config.c1)
-    val c2 = parseHexColor(config.c2)
-    val c3 = config.c3?.let { parseHexColor(it) }
+    // На светлой теме белые/очень светлые цвета ника превращаем в серый/чёрный — иначе ник не видно
+    val lightBg = DesignTokens.light
+    val c1 = adaptNickColor(parseHexColor(config.c1), lightBg)
+    val c2 = adaptNickColor(parseHexColor(config.c2), lightBg)
+    val c3 = config.c3?.let { adaptNickColor(parseHexColor(it), lightBg) }
     val colors = listOfNotNull(c1, c2, c3 ?: c1)
 
     val isGlow = config.an.contains("glow")
@@ -178,9 +184,20 @@ fun EpicNicknameText(
 fun getParticleColor(customHex: String?, defaultColor: Color, alpha: Float): Color {
     val a = alpha.coerceIn(0f, 1f)
     if (!customHex.isNullOrBlank()) {
-        return parseHexColor(customHex).copy(alpha = a)
+        return adaptNickColor(parseHexColor(customHex), DesignTokens.light).copy(alpha = a)
     }
-    return defaultColor.copy(alpha = a)
+    return adaptNickColor(defaultColor, DesignTokens.light).copy(alpha = a)
+}
+
+/** Светлый цвет ника на светлом фоне → тёмно-серый; средне-светлый → затемняем. */
+fun adaptNickColor(c: Color, lightBackground: Boolean): Color {
+    if (!lightBackground) return c
+    val l = c.luminance()
+    return when {
+        l > 0.80f -> Color(0xFF2E3440)
+        l > 0.55f -> lerp(c, Color.Black, 0.45f)
+        else -> c
+    }
 }
 
 fun parseHexColor(hexString: String): Color {

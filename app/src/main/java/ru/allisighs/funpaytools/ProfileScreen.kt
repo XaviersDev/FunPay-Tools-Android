@@ -680,7 +680,7 @@ fun ProfileScreen(
                 DetailedBalanceCard(totalBalance = user.totalBalance, totalVal = totalBalanceVal, activeSum = activeSum, frozenSum = frozenSum, nextUnlock = nextUnlock, currentTime = currentTime, theme = theme)
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ActionGridItem(modifier = Modifier.weight(1f), title = "Тарифы", subtitle = "Доступ к PRO", icon = Icons.Default.Diamond, iconTint = Color(0xFFFFD700), bgGradient = listOf(Color(0xFF3E2723), Color(0xFF261A15)), theme = theme, onClick = onOpenTariffs)
+                    ActionGridItem(modifier = Modifier.weight(1f), title = "Тарифы", subtitle = "Доступ к PRO", icon = Icons.Default.Diamond, iconTint = Color(0xFFFFD700), bgGradient = listOf(ThemeManager.parseColor(theme.surfaceColor), androidx.compose.ui.graphics.lerp(ThemeManager.dialogSurface(theme), Color(0xFFFFC107), if (ThemeManager.isLight(theme)) 0.10f else 0.08f)), theme = theme, onClick = onOpenTariffs)
                     ActionGridItem(modifier = Modifier.weight(1f), title = "Мои лоты", subtitle = "Управление", icon = Icons.Default.Inventory, iconTint = ThemeManager.parseColor(theme.accentColor), bgGradient = listOf(ThemeManager.parseColor(theme.surfaceColor), ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.8f)), theme = theme, onClick = onOpenLots)
                 }
 
@@ -1589,7 +1589,7 @@ fun ActionGridItem(modifier: Modifier = Modifier, title: String, subtitle: Strin
         .border(1.dp, iconTint.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
         .clickable(onClick = onClick)
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = Color.White.copy(alpha = 0.05f), modifier = Modifier.size(76.dp).align(Alignment.BottomEnd).offset(x = 16.dp, y = 16.dp).rotate(-15f))
+        Icon(imageVector = icon, contentDescription = null, tint = iconTint.copy(alpha = 0.08f), modifier = Modifier.size(76.dp).align(Alignment.BottomEnd).offset(x = 16.dp, y = 16.dp).rotate(-15f))
         Column(modifier = Modifier.padding(14.dp)) {
             Box(modifier = Modifier.size(32.dp).clip(CircleShape).background(iconTint.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = iconTint, modifier = Modifier.size(16.dp)) }
             Spacer(Modifier.weight(1f))

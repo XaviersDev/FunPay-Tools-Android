@@ -82,7 +82,7 @@ import java.util.regex.Pattern
 import kotlin.apply
 import kotlin.compareTo
 
-const val APP_VERSION = "1.3"
+const val APP_VERSION = "1.4"
 
 data class AutoRefundSettings(
     val enabled: Boolean = false,
@@ -305,12 +305,22 @@ object LogManager {
 class FunPayRepository(private val context: Context, val targetAccountId: String? = null) {
     val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
     val banInfo = MutableStateFlow<BanInfo?>(null)
-    private val extraCookies = mutableMapOf<String, String>()
     private val recentCommandKeys = mutableMapOf<String, Long>()
     private var lastCommandKeyCleanup = 0L
     private val gson = Gson()
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
-    private var phpsessid: String = ""
+    /**
+     * PHPSESSID текущего аккаунта. Хранится в FpCookieStore отдельно для каждого
+     * golden_key (раньше был один глобальный ключ на все аккаунты → сессии
+     * перемешивались и FunPay отдавал гостевую страницу, "Unknown").
+     */
+    private var phpsessid: String
+        get() = FpCookieStore.get(getGoldenKey(), "PHPSESSID") ?: ""
+        set(value) {
+            val gk = getGoldenKey()
+            if (value.isBlank()) FpCookieStore.remove(gk, "PHPSESSID")
+            else FpCookieStore.put(gk, "PHPSESSID", value, 0L)
+        }
     private val nodeToGameMap = mutableMapOf<Int, Int>()
     private var lastCsrfFetchTime = 0L
     private var cachedCsrf: Pair<String, String>? = null
@@ -362,17 +372,22 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
     val api by lazy { ApiFactory.create(getActiveAccount()) }
 
     init {
+        FpCookieStore.init(context)
 
-        val savedSess = prefs.getString("phpsessid", "") ?: ""
-
-        if (savedSess.isNotEmpty()) {
-            phpsessid = savedSess
-        }
-
-        val activeAcc = getActiveAccount()
-        if (activeAcc != null && activeAcc.phpSessionId.isNotEmpty()) {
-            if (phpsessid.isEmpty()) phpsessid = activeAcc.phpSessionId
-        }
+        // Миграция: раньше PHPSESSID жил в общем ключе prefs "phpsessid" для ВСЕХ
+        // аккаунтов. Его больше не используем (он и был причиной перемешивания
+        // сессий). Засеваем стор только PHPSESSID самого аккаунта, если пусто.
+        try {
+            for (acc in getAllAccounts()) {
+                if (acc.goldenKey.isNotBlank() && acc.phpSessionId.isNotBlank() &&
+                    FpCookieStore.get(acc.goldenKey, "PHPSESSID") == null &&
+                    FpCookieStore.all(acc.goldenKey).isEmpty()
+                ) {
+                    FpCookieStore.put(acc.goldenKey, "PHPSESSID", acc.phpSessionId, 0L)
+                }
+            }
+            if (prefs.contains("phpsessid")) prefs.edit().remove("phpsessid").apply()
+        } catch (_: Exception) {}
 
         
         
@@ -534,8 +549,11 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
             "review_reply_settings_v3",
             "auto_refund_settings",
             "order_confirm_settings",
-            "template_settings"
+            "template_settings",
+            "fp_cookie_store_v1",
+            "fp_session_meta"
         )
+        FpCookieStore.wipeAll()
 
         prefsToClear.forEach { name ->
             try {
@@ -588,23 +606,61 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
         )
         cachedCsrf = null
         lastCsrfFetchTime = 0L
-        phpsessid = getActiveAccount()?.phpSessionId ?: ""
+        // Сессия теперь своя у каждого golden_key в FpCookieStore — ничего не перетираем.
+        val acc = getActiveAccount()
+        if (acc != null && acc.phpSessionId.isNotBlank() && FpCookieStore.get(acc.goldenKey, "PHPSESSID") == null) {
+            FpCookieStore.put(acc.goldenKey, "PHPSESSID", acc.phpSessionId, 0L)
+        }
     }
 
-    fun addAccountFromWebLogin(goldenKey: String, phpSessionId: String) {
+    fun addAccountFromWebLogin(goldenKey: String, phpSessionId: String, webCookies: String? = null) {
         val data = getAccountsData()
+        val cleanKey = goldenKey.trim()
 
+        // Свежие куки браузера (PHPSESSID, golden_seal и т.д.) — в стор этого аккаунта.
+        if (!webCookies.isNullOrBlank()) {
+            FpCookieStore.clear(cleanKey)
+            FpCookieStore.importFromCookieHeader(cleanKey, webCookies)
+        } else if (phpSessionId.isNotBlank()) {
+            FpCookieStore.remove(cleanKey, "PHPSESSID")
+            FpCookieStore.put(cleanKey, "PHPSESSID", phpSessionId, 0L)
+        }
+        FpSession.markRelogin(context, cleanKey)
+        cachedCsrf = null
+        lastCsrfFetchTime = 0L
 
-        val existingAccount = data.accounts.find { it.goldenKey == goldenKey }
+        // Пользователь нажал "Войти заново" для конкретного аккаунта — обновляем его,
+        // а не плодим дубликат (настройки/ID аккаунта сохраняются).
+        val reloginId = FpSession.takePendingRelogin(context)
+        val reloginAcc = reloginId?.let { id -> data.accounts.find { it.id == id } }
+        if (reloginAcc != null && data.accounts.none { it.goldenKey == cleanKey && it.id != reloginAcc.id }) {
+            val updated = data.accounts.map {
+                if (it.id == reloginAcc.id) it.copy(goldenKey = cleanKey, phpSessionId = phpSessionId) else it
+            }
+            saveAccountsData(data.copy(accounts = updated))
+            setActiveAccount(reloginAcc.id)
+            kotlinx.coroutines.GlobalScope.launch {
+                try { loadAccountProfile(reloginAcc.id) } catch (_: Exception) {}
+            }
+            return
+        }
+
+        val existingAccount = data.accounts.find { it.goldenKey == cleanKey }
         if (existingAccount != null) {
-
+            val updated = data.accounts.map {
+                if (it.id == existingAccount.id && phpSessionId.isNotBlank()) it.copy(phpSessionId = phpSessionId) else it
+            }
+            saveAccountsData(data.copy(accounts = updated))
             setActiveAccount(existingAccount.id)
+            kotlinx.coroutines.GlobalScope.launch {
+                try { loadAccountProfile(existingAccount.id) } catch (_: Exception) {}
+            }
             return
         }
 
 
         val newAccount = Account(
-            goldenKey = goldenKey,
+            goldenKey = cleanKey,
             phpSessionId = phpSessionId,
             isActive = data.accounts.isEmpty()
         )
@@ -628,65 +684,35 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
         }
     }
 
-    suspend fun toggleLotState(lotId: String, active: Boolean): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val appData = getCsrfAndId() ?: return@withContext false
-            val (csrf, _) = appData
-
-            val form = okhttp3.FormBody.Builder()
-                .add("offer_id", lotId)
-                .add("csrf_token", csrf)
-
-            if (active) {
-                form.add("active", "on")
-            } else {
-                form.add("deleted", "1")
-            }
-
-            val req = okhttp3.Request.Builder()
-                .url("https://funpay.com/lots/offerSave")
-                .post(form.build())
-                .header("Cookie", getCookieString())
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .build()
-
-            val resp = repoClient.newCall(req).execute()
-            updateSession(resp)
-
-            
-            val body = resp.body?.string() ?: ""
-            val json = try { org.json.JSONObject(body) } catch (e: Exception) { org.json.JSONObject() }
-
-            if (!json.optBoolean("error", false)) {
-                LogManager.addLog("✅ Лот $lotId успешно ${if (active) "активирован" else "деактивирован"}.")
-                return@withContext true
-            } else {
-                LogManager.addLog("❌ Ошибка изменения статуса лота $lotId: ${json.optString("msg", "Unknown error")}")
-                return@withContext false
-            }
-        } catch (e: Exception) {
-            LogManager.addLog("❌ Исключение при изменении статуса лота $lotId: ${e.message}")
-            return@withContext false
-        }
-    }
+    /**
+     * Включить/выключить лот. Раньше при active=false отправлялось deleted=1 —
+     * то есть лот УДАЛЯЛСЯ (так срабатывала автодеактивация в автовыдаче).
+     * Теперь — полноценное сохранение формы с выключенной галочкой "Активное".
+     */
+    suspend fun toggleLotState(lotId: String, active: Boolean): Boolean =
+        toggleLotStatus(lotId, forceState = active).first
 
     suspend fun loadAccountProfile(accountId: String) {
         val data = getAccountsData()
         val account = data.accounts.find { it.id == accountId } ?: return
 
         try {
-            val cookie = "golden_key=${account.goldenKey}; PHPSESSID=${account.phpSessionId}"
+            val cookie = FpCookieStore.buildCookieHeader(account.goldenKey)
 
 
-            val mainResponse = api.getMainPage(cookie, userAgent)
-            val html = mainResponse.body()?.string() ?: return
+            var mainResponse = api.getMainPage(cookie, userAgent)
+            var html = mainResponse.body()?.string() ?: return
+            if (!isAuthorizedHtml(html)) {
+                // Гостевая сессия — пробуем новую по golden_key (без PHPSESSID), как Cardinal
+                FpCookieStore.remove(account.goldenKey, "PHPSESSID")
+                mainResponse = api.getMainPage(FpCookieStore.buildCookieHeader(account.goldenKey, includeSession = false), userAgent)
+                html = mainResponse.body()?.string() ?: return
+            }
 
             val doc = Jsoup.parse(html)
             val appDataStr = doc.select("body").attr("data-app-data")
 
-            var userId = account.userId
-
+            var userId = ""
 
             if (appDataStr.isNotEmpty()) {
                 try {
@@ -697,26 +723,26 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
                 }
             }
 
-
-            if (userId.isEmpty() || userId == "0") {
-                val userIdMatch = Regex("data-href=\"https://funpay\\.com/users/(\\d+)/\"").find(html)
-                userId = userIdMatch?.groupValues?.get(1) ?: ""
+            if (userId.isEmpty() || userId == "0" || doc.selectFirst(".user-link-name") == null) {
+                // FunPay вернул гостевую страницу — НЕ затираем ник на "Unknown"
+                LogManager.addLog("⚠️ Профиль ${account.username.ifBlank { account.id.take(6) }}: FunPay не авторизовал сессию")
+                return
             }
+            FpSession.knownUserIds[FpCookieStore.keyFor(account.goldenKey)] = userId
 
-            if (userId.isEmpty()) return
 
-
-            val profileResponse = api.getUserProfile(userId, cookie, userAgent)
+            val profileResponse = api.getUserProfile(userId, FpCookieStore.buildCookieHeader(account.goldenKey), userAgent)
             val profileHtml = profileResponse.body()?.string() ?: ""
             val profileDoc = Jsoup.parse(profileHtml)
 
 
-            val username = profileDoc.select(".user-link-dropdown .user-link-name").first()?.text()?.trim()
+            val username = doc.selectFirst(".user-link-name")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: profileDoc.select(".user-link-dropdown .user-link-name").first()?.text()?.trim()
                 ?: profileDoc.select("div.media-user-name").first()?.text()
                     ?.replace("Online", "", ignoreCase = true)
                     ?.replace("Онлайн", "", ignoreCase = true)
                     ?.trim()
-                ?: "Unknown"
+                ?: account.username.ifBlank { "Unknown" }
 
 
             var avatarUrl = "https://funpay.com/img/layout/avatar.png"
@@ -831,7 +857,7 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
 
 
     fun getPhpSessionId(): String {
-        return getActiveAccount()?.phpSessionId ?: ""
+        return FpCookieStore.get(getGoldenKey(), "PHPSESSID") ?: getActiveAccount()?.phpSessionId ?: ""
     }
 
 
@@ -1094,7 +1120,9 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
 
     suspend fun checkReviewReplies(chats: List<ChatItem>) {
         val settings = getReviewReplySettings()
-        if (!settings.enabled) return
+        // Бонус за отзыв — самостоятельная фича: работает даже если автоответ на отзывы выключен.
+        val bonusEnabled = getFeedbackBonusSettings().enabled
+        if (!settings.enabled && !bonusEnabled) return
 
         val reviewPhrases = listOf(
             "написал отзыв к заказу", "has given feedback to the order", "написав відгук до замовлення",
@@ -1137,10 +1165,9 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
 
                 val doc = Jsoup.parse(html)
 
-                val reviewAuthorId = doc.select(".review-item-row[data-row='review']").attr("data-author")
-                val activeProfile = getActiveAccount()
-                if (activeProfile != null && reviewAuthorId == activeProfile.userId) {
-                    LogManager.addLogDebug("⏭️ Отзыв #$orderId — ты покупатель, пропускаем")
+                if (isMyPurchase(orderId, chat.lastMessage, doc)) {
+                    // Это МОЙ отзыв на чужой заказ: отвечать нельзя — FunPay перезапишет мой отзыв текстом автоответа
+                    LogManager.addLog("⏭️ Отзыв #$orderId оставили вы (вы покупатель) — автоответ и бонус пропущены")
                     markEventAsProcessed(chat.id, reviewEventKey, "review_reply")
                     continue
                 }
@@ -1157,6 +1184,16 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
 
                 if (stars == 0) {
                     LogManager.addLog("ℹ️ Отзыв без рейтинга, пропускаем")
+                    markEventAsProcessed(chat.id, reviewEventKey, "review_reply")
+                    continue
+                }
+
+                // Бонус шлём сразу в этот же чат — не зависит от того, получилось ли ответить на отзыв.
+                if (bonusEnabled) {
+                    sendFeedbackBonusIfNeeded(orderId, chat, stars, doc)
+                }
+
+                if (!settings.enabled) {
                     markEventAsProcessed(chat.id, reviewEventKey, "review_reply")
                     continue
                 }
@@ -1426,30 +1463,10 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         }
     }
 
-    fun getCookieString(): String {
-        val sb = StringBuilder()
+    fun getCookieString(): String = FpCookieStore.buildCookieHeader(getGoldenKey())
 
-
-        val gk = getGoldenKey() ?: ""
-        sb.append("golden_key=$gk")
-
-
-        if (phpsessid.isNotEmpty()) {
-            sb.append("; PHPSESSID=$phpsessid")
-        }
-
-
-        synchronized(extraCookies) {
-            for ((k, v) in extraCookies) {
-
-                if (k != "golden_key" && k != "PHPSESSID") {
-                    sb.append("; $k=$v")
-                }
-            }
-        }
-
-        return sb.toString()
-    }
+    /** Куки без PHPSESSID — FunPay заведёт новую сессию по golden_key. */
+    fun getCookieStringFreshSession(): String = FpCookieStore.buildCookieHeader(getGoldenKey(), includeSession = false)
 
     private fun readBodySilent(response: Response<ResponseBody>): String {
         return response.body()?.string() ?: response.errorBody()?.string() ?: ""
@@ -1458,61 +1475,13 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
     private fun isCloudflare(html: String): Boolean = html.contains("Just a moment") || html.contains("cloudflare") || html.contains("challenge-platform")
 
     fun updateSession(response: Response<*>) {
-        val headers = response.headers()
-        val cookies = headers.values("Set-Cookie")
-
-        for (cookie in cookies) {
-            try {
-
-                val parts = cookie.split(";")[0].split("=", limit = 2)
-                if (parts.size == 2) {
-                    val key = parts[0].trim()
-                    val value = parts[1].trim()
-
-                    if (key == "PHPSESSID") {
-                        if (value != phpsessid) {
-                            phpsessid = value
-                            prefs.edit().putString("phpsessid", phpsessid).apply()
-                            LogManager.addLogDebug("🍪 Сессия обновлена: $phpsessid")
-                        }
-                    } else if (key != "golden_key") {
-
-                        extraCookies[key] = value
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Основной сбор кук делает FpCookieCaptureInterceptor (видит и редиректы).
+        // Здесь — подстраховка для ответов, пришедших не через наш клиент.
+        try { FpCookieStore.handleSetCookie(getGoldenKey(), response.headers().values("Set-Cookie")) } catch (_: Exception) {}
     }
 
     fun updateSession(response: okhttp3.Response) {
-        val headers = response.headers
-        val cookies = headers.values("Set-Cookie")
-
-        for (cookie in cookies) {
-            try {
-
-                val parts = cookie.split(";")[0].split("=", limit = 2)
-                if (parts.size == 2) {
-                    val key = parts[0].trim()
-                    val value = parts[1].trim()
-
-                    if (key == "PHPSESSID") {
-                        if (value != phpsessid) {
-                            phpsessid = value
-                            prefs.edit().putString("phpsessid", phpsessid).apply()
-                            LogManager.addLogDebug("🍪 Сессия обновлена: $phpsessid")
-                        }
-                    } else if (key != "golden_key") {
-
-                        extraCookies[key] = value
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        try { FpCookieStore.handleSetCookie(getGoldenKey(), response.headers.values("Set-Cookie")) } catch (_: Exception) {}
     }
 
     private suspend fun updateGameData() {
@@ -1540,6 +1509,67 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
     }
 
 
+    /** Принудительная перепроверка сессии (кнопка "Проверить ещё раз"). */
+    suspend fun forceRecheckSession(): Boolean {
+        cachedCsrf = null
+        lastCsrfFetchTime = 0L
+        FpSession.lastFreshSessionAt.remove(FpCookieStore.keyFor(getGoldenKey()))
+        FpSession.dismiss()
+        return getCsrfAndId() != null
+    }
+
+    /** true — страница отдана авторизованному пользователю (а не гостю). */
+    fun isAuthorizedHtml(html: String): Boolean {
+        if (html.isBlank()) return false
+        val appData = Regex("""data-app-data="([^"]*)"""").find(html)?.groupValues?.get(1)
+            ?.replace("&quot;", "\"")
+        val uid = appData?.let { Regex(""""userId"\s*:\s*"?(\d+)""").find(it)?.groupValues?.get(1) }
+        return uid != null && uid != "0" && html.contains("user-link-name")
+    }
+
+    private suspend fun fetchMainPage(freshSession: Boolean): Pair<retrofit2.Response<ResponseBody>, String> {
+        val cookie = if (freshSession) getCookieStringFreshSession() else getCookieString()
+        val response = withContext(Dispatchers.IO) { api.getMainPage(cookie, userAgent) }
+        updateSession(response)
+        return response to readBodySilent(response)
+    }
+
+    /**
+     * golden_seal выдаётся FunPay на POST /runner/ с объектом chat_counter и живёт ~неделю.
+     * Без неё /lots/offerSave и /lots/raise отвечают 428. Обновляем заранее.
+     */
+    suspend fun ensureGoldenSeal(userId: String, force: Boolean = false) {
+        val gk = getGoldenKey() ?: return
+        val key = FpCookieStore.keyFor(gk)
+        val seal = FpCookieStore.getCookie(gk, "golden_seal")
+        val now = System.currentTimeMillis()
+        val expiringSoon = seal == null || (seal.expiresAt != 0L && seal.expiresAt - now < 24L * 3600 * 1000)
+        if (!force && !expiringSoon) return
+        val last = FpSession.lastSealRefreshAt[key] ?: 0L
+        if (!force && now - last < 10L * 60 * 1000) return
+        FpSession.lastSealRefreshAt[key] = now
+        try {
+            withContext(Dispatchers.IO) {
+                val tag = (1..8).map { "0123456789abcdef".random() }.joinToString("")
+                val objects = "[{\"type\":\"chat_counter\",\"id\":\"$userId\",\"tag\":\"$tag\",\"data\":false}]"
+                val resp = api.runnerGet(
+                    cookie = getCookieString(),
+                    userAgent = userAgent,
+                    objects = objects,
+                    request = "false",
+                    csrfToken = cachedCsrf?.first ?: ""
+                )
+                updateSession(resp)
+                resp.body()?.close()
+            }
+            if (FpCookieStore.get(gk, "golden_seal") != null) {
+                LogManager.addLogDebug("🔏 golden_seal обновлён")
+            }
+        } catch (e: Exception) {
+            LogManager.addLogDebug("⚠️ golden_seal: ${e.message}")
+        }
+    }
+
     suspend fun getCsrfAndId(): Pair<String, String>? {
         val currentTime = System.currentTimeMillis()
         if (cachedCsrf != null && currentTime - lastCsrfFetchTime < CSRF_CACHE_DURATION) {
@@ -1547,17 +1577,19 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         }
 
         val key = getGoldenKey() ?: return null
+        val keyHash = FpCookieStore.keyFor(key)
+
+        // Как Cardinal: раз в ~50 минут берём новую сессию по golden_key (без PHPSESSID),
+        // чтобы протухшая/гостевая сессия не "залипала".
+        val lastFresh = FpSession.lastFreshSessionAt[keyHash] ?: 0L
+        var useFreshSession = FpCookieStore.get(key, "PHPSESSID") == null ||
+                currentTime - lastFresh > FpSession.FRESH_SESSION_INTERVAL
 
         repeat(3) { attempt ->
             try {
-                val response = withContext(Dispatchers.IO) {
-                    api.getMainPage(getCookieString(), userAgent)
-                }
+                val (_, html) = fetchMainPage(useFreshSession)
+                if (useFreshSession) FpSession.lastFreshSessionAt[keyHash] = System.currentTimeMillis()
 
-                updateSession(response)
-                val html = readBodySilent(response)
-
-                
                 if (html.contains("account-blocked-box")) {
                     val doc = Jsoup.parse(html)
                     val reason = doc.select(".account-blocked-box p").joinToString("\n\n") { it.text() }
@@ -1567,8 +1599,6 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                 } else {
                     banInfo.value = null
                 }
-                
-
 
                 if (isCloudflare(html)) {
                     LogManager.addLogDebug("⛔ CF BLOCK (Auth) - попытка ${attempt + 1}")
@@ -1592,14 +1622,47 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                 }
 
                 val json = JSONObject(appDataStr)
-                val csrf = json.getString("csrf-token")
-                val userId = json.getString("userId")
+                val csrf = json.optString("csrf-token")
+                val userId = json.optString("userId")
+
+                // Гостевая страница: userId = 0 → раньше приложение шло дальше и показывало "Unknown".
+                if (userId.isEmpty() || userId == "0" || doc.selectFirst(".user-link-name") == null) {
+                    if (!useFreshSession) {
+                        LogManager.addLog("🔄 FunPay отдал гостевую страницу — создаю новую сессию по golden_key")
+                        FpCookieStore.remove(key, "PHPSESSID")
+                        useFreshSession = true
+                        return@repeat
+                    }
+                    if (attempt < 2) {
+                        delay(1500L * (attempt + 1))
+                        return@repeat
+                    }
+                    FpSession.markLost(context, key, getActiveAccount())
+                    return null
+                }
+
+                FpSession.markAuthorized(key)
+                FpSession.knownUserIds[keyHash] = userId
 
                 val result = Pair(csrf, userId)
                 cachedCsrf = result
-                lastCsrfFetchTime = currentTime
-                
+                lastCsrfFetchTime = System.currentTimeMillis()
+
                 prefs.edit().putString("cached_user_id", userId).apply()
+
+                // Подхватываем реальный ник, если в аккаунте "Unknown"/пусто
+                try {
+                    val nick = doc.selectFirst(".user-link-name")?.text()?.trim().orEmpty()
+                    val acc = getActiveAccount()
+                    if (acc != null && nick.isNotEmpty() && (acc.username != nick || acc.userId != userId)) {
+                        val data = getAccountsData()
+                        saveAccountsData(data.copy(accounts = data.accounts.map {
+                            if (it.id == acc.id) it.copy(username = nick, userId = userId) else it
+                        }))
+                    }
+                } catch (_: Exception) {}
+
+                ensureGoldenSeal(userId)
 
                 return result
 
@@ -1852,6 +1915,11 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                         continue
                     }
                 }
+                if (isMyPurchase(orderId, chat.lastMessage, null)) {
+                    LogManager.addLogDebug("⏭️ Подтверждение заказа #$orderId — ты покупатель, пропускаем")
+                    markEventAsProcessed(chat.id, orderId, "confirm")
+                    continue
+                }
 
                 LogManager.addLog("✅ Обнаружено подтверждение заказа #$orderId от ${chat.username}")
 
@@ -2101,28 +2169,40 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
     }
 
 
+    /** Состояние автоподнятия — отдельно для каждого аккаунта (раньше было общим). */
+    fun raisePrefs(): android.content.SharedPreferences {
+        val id = getActiveAccount()?.id ?: "default"
+        return context.getSharedPreferences("raise_state_$id", Context.MODE_PRIVATE)
+    }
+
+    private fun isWaitMessage(msg: String?): Boolean {
+        if (msg.isNullOrBlank()) return false
+        return listOf("Подождите", "Please wait", "Зачекайте", "Почекайте").any { msg.contains(it, ignoreCase = true) }
+    }
+
+    /**
+     * Автоподнятие. Логика как в FunPay Cardinal (Account.raise_lots):
+     * для каждой игры ОДИН запрос lots/raise с game_id, node_id и всеми node_ids[].
+     */
     suspend fun raiseAllLots() {
         if (!getSetting("raise_enabled")) return
 
+        val rp = raisePrefs()
         val smartMode = isSmartRaiseEnabled()
-        val lastRun = prefs.getLong("last_raise_time", 0)
+        val lastRun = rp.getLong("last_raise_time", 0)
         val multiplier = getDelayMultiplier()
         val baseInterval = getRaiseInterval()
         val fixedInterval = (baseInterval * multiplier).toLong() * 60 * 1000L
+        val now = System.currentTimeMillis()
 
-        
-        
-        
         if (!smartMode) {
-            if (System.currentTimeMillis() - lastRun < fixedInterval) return
+            if (now - lastRun < fixedInterval) return
         } else {
-            
-            
-            if (System.currentTimeMillis() - lastRun < 20_000L) return
-            
-            val minNextAt = SmartRaise.minNextAt(prefs)
-            if (minNextAt != null && System.currentTimeMillis() < minNextAt) return
+            if (now - lastRun < 20_000L) return
+            val minNextAt = SmartRaise.minNextAt(rp)
+            if (minNextAt != null && now < minNextAt) return
         }
+        rp.edit().putLong("last_raise_time", now).apply()
 
         try {
             if (nodeToGameMap.isEmpty()) updateGameData()
@@ -2139,111 +2219,99 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             }
 
             val doc = Jsoup.parse(html)
-            val gameDivs = doc.select("div.offer-list-title-container")
+            // gameId → (nodeIds, название игры)
+            val games = linkedMapOf<Int, Pair<MutableList<Int>, String>>()
+            for (div in doc.select("div.offer-list-title-container")) {
+                val link = div.select("h3 a").attr("href")
+                if (link.isBlank() || link.contains("/chips/")) continue
+                val nodeId = Regex("""/lots/(\d+)""").find(link)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+                var gameId = div.attr("data-game-id").toIntOrNull()
+                if (gameId == null) gameId = nodeToGameMap[nodeId]
+                if (gameId == null) {
+                    updateGameData()
+                    gameId = nodeToGameMap[nodeId]
+                }
+                if (gameId == null) {
+                    LogManager.addLogDebug("⚠️ Поднятие: не найдена игра для раздела $nodeId")
+                    continue
+                }
+                val title = div.select("h3 a").text().trim()
+                val entry = games.getOrPut(gameId) { mutableListOf<Int>() to title }
+                if (nodeId !in entry.first) entry.first.add(nodeId)
+            }
+
             var raisedCount = 0
             var skippedCooldown = 0
 
-            for (div in gameDivs) {
-                val subcategoryLink = div.select("h3 a").attr("href")
-                if (subcategoryLink.contains("chips")) continue
-
-                val nodeId = subcategoryLink.split("/").filter { it.isNotEmpty() }.lastOrNull()?.toIntOrNull()
-                var gameId = div.attr("data-game-id").toIntOrNull()
-                if (gameId == null && nodeId != null) gameId = nodeToGameMap[nodeId]
-
-                if (gameId != null && nodeId != null) {
-
-                    
-                    if (smartMode && SmartRaise.isCoolingDown(prefs, gameId)) {
-                        skippedCooldown++
-                        continue
-                    }
-
-                    val resp1 = api.raiseLotInitial(
-                        cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId
-                    )
-                    updateSession(resp1)
-                    val jsonStr1 = readBodySilent(resp1)
-                    val json1 = JSONObject(jsonStr1)
-
-                    if (json1.has("modal")) {
-                        val modalHtml = json1.getString("modal")
-                        val pattern = Pattern.compile("value=\"(.*?)\"")
-                        val matcher = pattern.matcher(modalHtml)
-                        val nodeIds = mutableListOf<Int>()
-                        while (matcher.find()) { matcher.group(1)?.toIntOrNull()?.let { nodeIds.add(it) } }
-
-                        if (nodeIds.isNotEmpty()) {
-                            val resp2 = api.raiseLotCommit(
-                                cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId, nodeIds = nodeIds
-                            )
-                            updateSession(resp2)
-
-                            
-                            delay(1000)
-
-                            val resp3 = api.raiseLotCommit(
-                                cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId, nodeIds = nodeIds
-                            )
-                            updateSession(resp3)
-
-                            val jsonStr2 = readBodySilent(resp2)
-                            val jsonStr3 = readBodySilent(resp3)
-                            val json2 = try { JSONObject(jsonStr2) } catch (_: Exception) { JSONObject() }
-                            val json3 = try { JSONObject(jsonStr3) } catch (_: Exception) { JSONObject() }
-
-                            
-                            val combinedMsg = listOf(json2.optString("msg"), json3.optString("msg"))
-                                .firstOrNull { it.isNotBlank() }
-                            if (smartMode && !combinedMsg.isNullOrBlank() &&
-                                (combinedMsg.contains("Подождите", true) ||
-                                        combinedMsg.contains("Please wait", true) ||
-                                        combinedMsg.contains("Зачекайте", true) ||
-                                        combinedMsg.contains("Почекайте", true))
-                            ) {
-                                val waitSec = SmartRaise.parseWaitSeconds(combinedMsg)
-                                SmartRaise.setCooldown(prefs, gameId, waitSec)
-                                LogManager.addLog("⏳ Smart raise: '$combinedMsg' → ждём ${waitSec}с для game $gameId")
-                            } else if (!json2.optBoolean("error")) {
-                                raisedCount++
-                                
-                                
-                                if (smartMode) SmartRaise.setCooldown(prefs, gameId, 4L * 3600L)
-                            }
-                        }
-                    } else {
-                        
-                        val msg1 = json1.optString("msg")
-                        if (smartMode && !msg1.isNullOrBlank() &&
-                            (msg1.contains("Подождите", true) ||
-                                    msg1.contains("Please wait", true) ||
-                                    msg1.contains("Зачекайте", true))
-                        ) {
-                            val waitSec = SmartRaise.parseWaitSeconds(msg1)
-                            SmartRaise.setCooldown(prefs, gameId, waitSec)
-                            LogManager.addLog("⏳ Smart raise: '$msg1' → ждём ${waitSec}с для game $gameId")
-                        } else {
-                            delay(1000)
-                            val respRetry = api.raiseLotInitial(
-                                cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeId
-                            )
-                            updateSession(respRetry)
-
-                            if (!json1.optBoolean("error")) {
-                                raisedCount++
-                                if (smartMode) SmartRaise.setCooldown(prefs, gameId, 4L * 3600L)
-                            }
-                        }
-                    }
-                    kotlinx.coroutines.delay(1000)
+            for ((gameId, entry) in games) {
+                val nodeIds = entry.first
+                val title = entry.second
+                if (nodeIds.isEmpty()) continue
+                if (smartMode && SmartRaise.isCoolingDown(rp, gameId)) {
+                    skippedCooldown++
+                    continue
                 }
-            }
-            if (raisedCount > 0) LogManager.addLog("🏁 Подняты все $raisedCount" +
-                    if (skippedCooldown > 0) " (пропущено по КД: $skippedCooldown)" else "")
-            prefs.edit().putLong("last_raise_time", System.currentTimeMillis()).apply()
 
+                var resp = api.raiseLotCommit(
+                    cookie = getCookieString(), userAgent = userAgent,
+                    gameId = gameId, nodeId = nodeIds.first(), nodeIds = nodeIds
+                )
+                var body = readBodySilent(resp)
+                if (resp.code() == 428) {
+                    LogManager.addLog("⛔ Поднятие ($title): FunPay требует golden_seal (HTTP 428). Перезайдите в аккаунт через сайт.")
+                    continue
+                }
+                var json = try { JSONObject(body) } catch (_: Exception) { null }
+                if (json == null) {
+                    LogManager.addLog("❌ Поднятие ($title): неожиданный ответ HTTP ${resp.code()}")
+                    continue
+                }
+
+                // FunPay просит выбрать разделы в модалке — берём ID оттуда и повторяем
+                if (json.has("modal") || (json.optString("url").isNotBlank() && !json.optBoolean("error"))) {
+                    val init = api.raiseLotInitial(cookie = getCookieString(), userAgent = userAgent, gameId = gameId, nodeId = nodeIds.first())
+                    val initJson = try { JSONObject(readBodySilent(init)) } catch (_: Exception) { JSONObject() }
+                    val modal = initJson.optString("modal")
+                    val ids = Regex("""value="(\d+)"""").findAll(modal).mapNotNull { it.groupValues[1].toIntOrNull() }.toList()
+                    if (ids.isNotEmpty()) {
+                        delay(800)
+                        resp = api.raiseLotCommit(
+                            cookie = getCookieString(), userAgent = userAgent,
+                            gameId = gameId, nodeId = ids.first(), nodeIds = ids
+                        )
+                        body = readBodySilent(resp)
+                        json = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+                    } else {
+                        json = initJson
+                    }
+                }
+
+                val j = json ?: JSONObject()
+                val msg = j.optString("msg")
+                val waitField = j.optLong("wait", 0L)
+                val isError = j.optBoolean("error", false) || j.optInt("error", 0) != 0
+                when {
+                    isWaitMessage(msg) -> {
+                        val waitSec = if (waitField > 0) waitField else SmartRaise.parseWaitSeconds(msg)
+                        SmartRaise.setCooldown(rp, gameId, waitSec)
+                        LogManager.addLogDebug("⏳ $title: $msg")
+                        skippedCooldown++
+                    }
+                    !isError -> {
+                        raisedCount++
+                        // Следующая попытка — когда FunPay разрешит (поле wait), иначе через час.
+                        SmartRaise.setCooldown(rp, gameId, if (waitField > 0) waitField else 3600L)
+                        LogManager.addLog("⬆️ Подняты лоты: $title")
+                    }
+                    else -> LogManager.addLog("❌ Поднятие ($title): ${msg.ifBlank { body.take(150) }}")
+                }
+                delay(1000)
+            }
+
+            if (raisedCount > 0) LogManager.addLog("🏁 Поднято категорий: $raisedCount" +
+                    if (skippedCooldown > 0) " (на КД: $skippedCooldown)" else "")
         } catch (e: Exception) {
-            LogManager.addLog("❌ ОШИБКА: ${e.message}")
+            LogManager.addLog("❌ Поднятие: ${e.message}")
         }
     }
 
@@ -3518,6 +3586,134 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         if (cacheChanged) saveGreetedCache(cache)
     }
 
+    /**
+     * Отправляет бонус за отзыв (если подходит правило и ещё не отправляли по этому заказу).
+     * Вызывается и из checkReviewReplies (основной путь, чат известен точно), и из handleReview.
+     */
+    suspend fun sendFeedbackBonusIfNeeded(orderId: String, chat: ChatItem, stars: Int, orderDoc: org.jsoup.nodes.Document?) {
+        try {
+            val bonusSettings = getFeedbackBonusSettings()
+            if (!bonusSettings.enabled) return
+            // Если отзыв оставил я сам (я — покупатель) — бонус не нужен
+            if (isMyPurchase(orderId, chat.lastMessage, orderDoc)) {
+                LogManager.addLogDebug("🎁 #$orderId — вы покупатель, бонус не отправляется")
+                return
+            }
+
+            val orderDetails = try { getOrderDetails(orderId) } catch (_: Exception) { null }
+            val lotNameFromDoc = orderDoc?.select(".param-item")?.firstOrNull { item ->
+                val h = item.select("h5").text().lowercase()
+                h.contains("краткое описание") || h.contains("short description")
+            }?.let { item -> item.text().removePrefix(item.select("h5").text()).trim().trimStart(':', '-').trim() }
+            val lotName = orderDetails?.shortDesc ?: lotNameFromDoc ?: "Товар"
+
+            val rule = pickFeedbackBonusRule(
+                stars = stars,
+                lotId = orderDetails?.lotId,
+                lotName = lotName,
+                lotDescription = orderDetails?.shortDesc ?: lotName
+            )
+            if (rule == null || (rule.text.isBlank() && rule.imageUri == null)) {
+                LogManager.addLogDebug("🎁 Ни одно правило бонуса не подошло (#$orderId, $stars*)")
+                return
+            }
+            if (rule.oncePerOrder && wasFeedbackBonusSent(orderId)) {
+                LogManager.addLogDebug("🎁 Бонус для #$orderId уже отправлялся — пропуск")
+                return
+            }
+            val bonusText = FpPlaceholders.applyCombined(
+                rule.text,
+                chat,
+                FpPlaceholders.OrderCtx(orderId = orderId, lotName = lotName, buyerUsername = chat.username)
+            )
+            LogManager.addLog("🎁 Бонус '${rule.name}' → ${chat.username} (#$orderId)")
+            kotlinx.coroutines.delay(1200)
+            var ok = sendWithOptionalImage(chat.id, bonusText, rule.imageUri, rule.imageFirst)
+            if (!ok) {
+                // FunPay иногда отвечает "слишком часто" — одна повторная попытка
+                kotlinx.coroutines.delay(4000)
+                ok = sendWithOptionalImage(chat.id, bonusText, rule.imageUri, rule.imageFirst)
+            }
+            if (ok) {
+                markFeedbackBonusSent(orderId)
+                LogManager.addLog("✅ Бонус за отзыв отправлен")
+                if (getReadMarkSettings().markAfterBonusMessage) markChatAsRead(chat.id)
+            } else {
+                LogManager.addLog("❌ Не удалось отправить бонус за отзыв (#$orderId)")
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("⚠️ Ошибка отправки бонуса: ${e.message}")
+        }
+    }
+
+    private val orderPartiesCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
+
+    /**
+     * Покупатель и продавец заказа (userId) — через JSON API FunPay, как FunPay Cardinal
+     * (POST /api/orders/get). null, если не удалось.
+     */
+    suspend fun getOrderParties(orderId: String): Pair<String, String>? = withContext(Dispatchers.IO) {
+        orderPartiesCache[orderId]?.let { return@withContext it }
+        try {
+            val payload = JSONObject()
+                .put("order_uids", JSONArray().put(orderId))
+                .put("include", JSONArray().put("users"))
+            val req = Request.Builder()
+                .url("https://funpay.com/api/orders/get")
+                .post(payload.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+                .header("Cookie", getCookieString())
+                .header("User-Agent", userAgent)
+                .header("Accept-Language", "ru")
+                .build()
+            repoClient.newCall(req).execute().use { r ->
+                val json = try { JSONObject(r.body?.string().orEmpty()) } catch (_: Exception) { return@withContext null }
+                val data = json.optJSONObject("data")?.optJSONObject(orderId) ?: return@withContext null
+                val buyer = data.optJSONObject("buyer")?.opt("user_id")?.toString().orEmpty()
+                val seller = data.optJSONObject("seller")?.opt("user_id")?.toString().orEmpty()
+                if (buyer.isEmpty() && seller.isEmpty()) return@withContext null
+                (buyer to seller).also { orderPartiesCache[orderId] = it }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Я покупатель в этом заказе? Тогда на отзыв НЕ отвечаем и бонус не шлём:
+     * ответ через orders/review от покупателя ПЕРЕЗАПИСЫВАЕТ его собственный отзыв
+     * (именно так у пользователей "менялся" отзыв на текст автоответа).
+     */
+    suspend fun isMyPurchase(orderId: String, systemText: String?, orderDoc: org.jsoup.nodes.Document?): Boolean {
+        val myId = getCsrfAndId()?.second.orEmpty()
+        val myName = getActiveAccount()?.username.orEmpty().trim()
+
+        // 1) Текст оповещения FunPay: "Покупатель <ник> написал отзыв…" (так делает Cardinal)
+        if (systemText != null && myName.isNotEmpty() && myName != "Unknown") {
+            val t = " " + systemText.lowercase() + " "
+            val n = myName.lowercase()
+            if (t.contains("покупатель $n ") || t.contains("buyer $n ") || t.contains("покупець $n ")) return true
+        }
+
+        // 2) JSON API заказа
+        if (myId.isNotEmpty()) {
+            getOrderParties(orderId)?.let { (buyer, seller) ->
+                if (buyer == myId) return true
+                if (seller == myId) return false
+            }
+        }
+
+        // 3) HTML заказа: автор отзыва = я
+        val authorId = orderDoc?.select(".review-item-row[data-row='review']")?.attr("data-author").orEmpty()
+        if (myId.isNotEmpty() && authorId == myId) return true
+
+        // 4) HTML заказа: у покупателя на странице указан "Продавец", у продавца — "Покупатель"
+        if (orderDoc != null) {
+            val headers = orderDoc.select(".param-item h5").map { it.text().trim().lowercase() }
+            val hasSeller = headers.any { it == "продавец" || it == "seller" || it == "продавець" }
+            val hasBuyer = headers.any { it == "покупатель" || it == "buyer" || it == "покупець" }
+            if (hasSeller && !hasBuyer) return true
+        }
+        return false
+    }
+
     private suspend fun handleReview(orderId: String, buyerName: String, csrf: String, userId: String) {
         try {
             val settings = getReviewReplySettings()
@@ -3530,10 +3726,8 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
             val doc = Jsoup.parse(html)
 
-            val reviewAuthorId = doc.select(".review-item-row[data-row='review']").attr("data-author")
-            val activeAccount = getActiveAccount()
-            if (activeAccount != null && reviewAuthorId == activeAccount.userId) {
-                LogManager.addLogDebug("⏭️ handleReview: ты покупатель, пропускаем")
+            if (isMyPurchase(orderId, null, doc)) {
+                LogManager.addLogDebug("⏭️ handleReview #$orderId: вы покупатель, пропускаем")
                 return
             }
 
@@ -3659,61 +3853,9 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                     LogManager.addLog("✅ Ответ отправлен")
 
                     
-                    try {
-                        
-                        
-                        
-                        val orderDetails = try { getOrderDetails(orderId) } catch (_: Exception) { null }
-                        val rule = pickFeedbackBonusRule(
-                            stars = stars,
-                            lotId = orderDetails?.lotId,
-                            lotName = orderDetails?.shortDesc ?: lotName,
-                            lotDescription = orderDetails?.shortDesc
-                        )
-
-                        if (rule != null && (rule.text.isNotBlank() || rule.imageUri != null)) {
-                            if (rule.oncePerOrder && wasFeedbackBonusSent(orderId)) {
-                                LogManager.addLogDebug("🎁 Бонус для #$orderId уже отправлялся — пропуск")
-                            } else {
-                                val chats = try { getChats() } catch (_: Exception) { emptyList() }
-                                val targetChat = chats.firstOrNull { c ->
-                                    c.username.equals(buyerName, ignoreCase = true)
-                                } ?: chats.firstOrNull { c ->
-                                    c.lastMessage.contains("#$orderId", ignoreCase = true)
-                                }
-                                if (targetChat != null) {
-                                    val bonusText = FpPlaceholders.applyCombined(
-                                        rule.text,
-                                        targetChat,
-                                        FpPlaceholders.OrderCtx(
-                                            orderId = orderId,
-                                            lotName = orderDetails?.shortDesc ?: lotName,
-                                            buyerUsername = buyerName
-                                        )
-                                    )
-                                    LogManager.addLog("🎁 Бонус '${rule.name}' → ${targetChat.username} (#$orderId)")
-                                    kotlinx.coroutines.delay(1200)
-                                    val ok = sendWithOptionalImage(
-                                        targetChat.id,
-                                        bonusText,
-                                        rule.imageUri,
-                                        rule.imageFirst
-                                    )
-                                    if (ok) {
-                                        markFeedbackBonusSent(orderId)
-                                        LogManager.addLog("✅ Бонус за отзыв отправлен")
-                                        if (getReadMarkSettings().markAfterBonusMessage) markChatAsRead(targetChat.id)
-                                    }
-                                } else {
-                                    LogManager.addLogDebug("🎁 Не нашли чат для бонуса (#$orderId)")
-                                }
-                            }
-                        } else {
-                            LogManager.addLogDebug("🎁 Ни одно правило бонуса не подошло (stars=$stars, lot='$lotName')")
-                        }
-                    } catch (e: Exception) {
-                        LogManager.addLog("⚠️ Ошибка отправки бонуса: ${e.message}")
-                    }
+                    val bonusChat = try { getChats() } catch (_: Exception) { emptyList() }
+                        .firstOrNull { it.username.equals(buyerName, ignoreCase = true) || it.lastMessage.contains("#$orderId") }
+                    if (bonusChat != null) sendFeedbackBonusIfNeeded(orderId, bonusChat, stars, doc)
                 } else {
                     val errorMsg = jsonResponse.optString("msg").ifEmpty {
                         jsonResponse.optString("message")
@@ -3831,17 +3973,17 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
     private val PRICE_CACHE_TTL      = 15 * 1000L
     private val LOT_FILTER_CACHE_TTL = 10 * 60 * 1000L
 
-    fun saveDumperSettings(settings: DumperSettings) =
-        prefs.edit().putString("dumper_settings", gson.toJson(settings)).apply()
+    // Единое хранилище настроек демпера — то же, что у экрана XD Dumper (dumper_settings_v2).
+    fun saveDumperSettings(settings: DumperSettings) = XDDumperEngine.saveSettings(context, settings)
 
-    fun getDumperSettings(): DumperSettings {
-        val json = prefs.getString("dumper_settings", null)
-        return if (json != null) {
-            try { gson.fromJson(json, DumperSettings::class.java) } catch (e: Exception) { DumperSettings() }
-        } else DumperSettings()
-    }
+    fun getDumperSettings(): DumperSettings = XDDumperEngine.getSettings(context)
 
     suspend fun runDumperCycle() {
+        XDDumperEngine.runCycle(this, context)
+    }
+
+    @Suppress("unused")
+    private suspend fun runLegacyDumperCycle() {
         val settings = getDumperSettings()
         if (!settings.enabled || settings.lots.isEmpty()) return
         if (!LicenseManager.isProActive()) return
@@ -4159,10 +4301,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         if (priceWithoutComm < 1.0) priceWithoutComm = 1.0
 
         val fieldsData = getLotFields(lotId)
-        val allFields = fieldsData.fields.mapValues { it.value.value }.toMutableMap()
-        allFields["price"] = String.format(Locale.US, "%.2f", priceWithoutComm)
-
-        saveLot(lotId, allFields, fieldsData.csrfToken, fieldsData.activeCookies)
+        saveLotFields(lotId, fieldsData, mapOf("price" to String.format(Locale.US, "%.2f", priceWithoutComm)))
     }
 
     fun getAutoTicketSettings(): AutoTicketSettings {

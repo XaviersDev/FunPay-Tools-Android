@@ -66,7 +66,68 @@ object ThemeManager {
     private const val KEY_AMOLED_MODE = "amoled_mode"
     private const val WALLPAPER_FILENAME = "theme_wallpaper.jpg"
 
+    private const val KEY_FUNPAY_MIGRATED = "funpay_theme_migrated_v1"
+
+    /** Новая тема по умолчанию — в фирменных цветах FunPay: белый, голубой, чёрный. */
+    val funPayLight = AppTheme(
+        name = "FunPay",
+        primaryColor = "#3A7FD5",
+        secondaryColor = "#1F5FB0",
+        backgroundColor = "#EEF2F7",
+        surfaceColor = "#FFFFFF",
+        textPrimaryColor = "#0E1116",
+        textSecondaryColor = "#6B7280",
+        accentColor = "#3A7FD5",
+        containerOpacity = 1f,
+        borderRadius = 16,
+        originalBackgroundColor = "#EEF2F7",
+        originalSurfaceColor = "#FFFFFF"
+    )
+
+    val funPayDark = AppTheme(
+        name = "FunPay Dark",
+        primaryColor = "#3A86E0",
+        secondaryColor = "#1F5FB0",
+        backgroundColor = "#0A0C0F",
+        surfaceColor = "#161A20",
+        textPrimaryColor = "#F2F4F7",
+        textSecondaryColor = "#9AA3AF",
+        accentColor = "#3A86E0",
+        containerOpacity = 1f,
+        borderRadius = 16,
+        originalBackgroundColor = "#0A0C0F",
+        originalSurfaceColor = "#161A20"
+    )
+
+    /** Старая тема по умолчанию (до FunPay) — вернуть можно в «Выбрать тему». */
+    val legacyDefault = AppTheme(
+        name = "Purple Dream",
+        primaryColor = "#651FFF",
+        secondaryColor = "#311B92",
+        backgroundColor = "#050505",
+        surfaceColor = "#1A1A1A",
+        textPrimaryColor = "#EEEEEE",
+        textSecondaryColor = "#B0B0B0",
+        accentColor = "#651FFF",
+        originalBackgroundColor = "#050505",
+        originalSurfaceColor = "#1A1A1A"
+    )
+
+    /** Светлая ли тема (по фону) — для светлой схемы Material и тёмных значков статус-бара. */
+    fun isLight(theme: AppTheme): Boolean {
+        val bgHex = if (theme.backgroundColor.equals("#00000000", true)) theme.originalBackgroundColor else theme.backgroundColor
+        return try {
+            val c = android.graphics.Color.parseColor(bgHex)
+            val r = android.graphics.Color.red(c) / 255.0
+            val g = android.graphics.Color.green(c) / 255.0
+            val b = android.graphics.Color.blue(c) / 255.0
+            (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.55
+        } catch (e: Exception) { false }
+    }
+
     val defaultThemes = listOf(
+        funPayLight,
+        funPayDark,
         AppTheme(
             name = "Purple Dream",
             primaryColor = "#651FFF",
@@ -209,15 +270,45 @@ object ThemeManager {
     fun loadTheme(context: Context): AppTheme {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val json = prefs.getString(KEY_CURRENT_THEME, null)
-        if (json.isNullOrBlank()) return defaultThemes[0]
+        val migrated = prefs.getBoolean(KEY_FUNPAY_MIGRATED, false)
+        if (json.isNullOrBlank()) {
+            if (!migrated) prefs.edit().putBoolean(KEY_FUNPAY_MIGRATED, true).apply()
+            return funPayLight
+        }
 
         return try {
-            val raw = Gson().fromJson(json, AppTheme::class.java) ?: return defaultThemes[0]
-            applyWallpaperBackgroundOverride(sanitizeTheme(raw))
+            val raw = Gson().fromJson(json, AppTheme::class.java) ?: return funPayLight
+            val theme = applyWallpaperBackgroundOverride(sanitizeTheme(raw))
+            if (!migrated) {
+                prefs.edit().putBoolean(KEY_FUNPAY_MIGRATED, true).apply()
+                // Переводим на новую тему ТОЛЬКО тех, кто сидел на нетронутой стандартной.
+                // Кастомные/настроенные темы (свои цвета, обои и т.д.) не трогаем.
+                if (isUntouchedLegacyDefault(theme)) {
+                    saveTheme(context, funPayLight)
+                    return funPayLight
+                }
+            }
+            theme
         } catch (e: Exception) {
             e.printStackTrace()
-            defaultThemes[0]
+            funPayLight
         }
+    }
+
+    private fun isUntouchedLegacyDefault(t: AppTheme): Boolean {
+        val d = legacyDefault
+        fun eq(a: String, b: String) = a.trim().equals(b.trim(), ignoreCase = true)
+        return t.name == d.name &&
+                eq(t.primaryColor, d.primaryColor) &&
+                eq(t.secondaryColor, d.secondaryColor) &&
+                eq(t.backgroundColor, d.backgroundColor) &&
+                (eq(t.surfaceColor, d.surfaceColor) || eq(t.surfaceColor, "#E61A1A1A")) &&
+                eq(t.textPrimaryColor, d.textPrimaryColor) &&
+                eq(t.textSecondaryColor, d.textSecondaryColor) &&
+                eq(t.accentColor, d.accentColor) &&
+                !t.useWallpaper &&
+                t.borderRadius == d.borderRadius &&
+                !t.isAmoled
     }
 
     /**
@@ -230,7 +321,9 @@ object ThemeManager {
      * для всего, что может быть null.
      */
     private fun sanitizeTheme(t: AppTheme): AppTheme {
-        val d = defaultThemes[0]
+        // Подстановка для отсутствующих полей старого JSON — из старой тёмной темы,
+        // чтобы у старых тем не появились светлые цвета.
+        val d = legacyDefault
         // Используем рефлексию через JsonElement, чтобы прочитать поля безопасно?
         // Слишком сложно. Применяем простой трюк: пересоздаём через копирование.
         // Если t.wallpaperEffect == null (Gson не нашёл поле), мы это поймаем

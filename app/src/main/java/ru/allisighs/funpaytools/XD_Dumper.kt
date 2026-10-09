@@ -158,9 +158,18 @@ object XDDumperEngine {
 
     fun getSettings(context: Context): DumperSettings {
         val prefs = context.getSharedPreferences("funpay_prefs", Context.MODE_PRIVATE)
-        val json = prefs.getString("dumper_settings_v2", null)
+        var json = prefs.getString("dumper_settings_v2", null)
+        if (json == null) {
+            // Миграция: раньше часть экранов писала в "dumper_settings", а экран XD Dumper —
+            // в "dumper_settings_v2". Сервис читал старый ключ → демпер почти не работал.
+            val legacy = prefs.getString("dumper_settings", null)
+            if (legacy != null) {
+                prefs.edit().putString("dumper_settings_v2", legacy).apply()
+                json = legacy
+            }
+        }
         return try {
-            if (json != null) gson.fromJson(json, DumperSettings::class.java) else DumperSettings()
+            if (json != null) gson.fromJson(json, DumperSettings::class.java) ?: DumperSettings() else DumperSettings()
         } catch (e: Exception) { DumperSettings() }
     }
 
@@ -192,20 +201,49 @@ object XDDumperEngine {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    suspend fun runCycle(repository: FunPayRepository, context: Context) {
-        val settings = getSettings(context)
-        if (!settings.enabled || settings.lots.isEmpty() || !LicenseManager.isProActive()) return
+    private val lastLotRun = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private var lastRateUpdate = 0L
+    private val cycleLock = kotlinx.coroutines.sync.Mutex()
 
-        updateExchangeRate(repository, context, settings)
+    /**
+     * Один проход демпера. Вызывается из фонового сервиса каждые несколько секунд;
+     * каждый лот обрабатывается не чаще, чем раз в его updateInterval (сек).
+     */
+    suspend fun runCycle(repository: FunPayRepository, context: Context, force: Boolean = false) {
+        if (!cycleLock.tryLock()) return
+        try {
+            val settings = getSettings(context)
+            if (!settings.enabled || settings.lots.isEmpty() || !LicenseManager.isProActive()) return
 
-        for (lotConfig in settings.lots.filter { it.enabled && it.lotId.isNotBlank() && it.categoryId.isNotBlank() }) {
-            try {
-                processLot(repository, context, settings, lotConfig)
-            } catch (e: Exception) {
-                LogManager.addLog("❌ XD Dumper Ошибка (Лот ${lotConfig.lotId}): ${e.message}")
-                LiveFeedManager.push(FeedEvent(lotConfig.lotId, lotConfig.displayName, MarketAction.ERROR, 0.0, 0.0, message = e.message ?: "Error"))
+            val now = System.currentTimeMillis()
+            if (force || now - lastRateUpdate > 10 * 60 * 1000L) {
+                updateExchangeRate(repository, context, settings)
+                lastRateUpdate = now
             }
+            val fresh = getSettings(context)
+
+            for (lotConfig in fresh.lots.filter { it.enabled && it.lotId.isNotBlank() && it.categoryId.isNotBlank() }) {
+                val last = lastLotRun[lotConfig.id] ?: 0L
+                if (!force && System.currentTimeMillis() - last < lotConfig.updateInterval.coerceAtLeast(1) * 1000L) continue
+                lastLotRun[lotConfig.id] = System.currentTimeMillis()
+                try {
+                    processLot(repository, context, fresh, lotConfig)
+                } catch (e: Exception) {
+                    LogManager.addLog("❌ XD Dumper Ошибка (Лот ${lotConfig.lotId}): ${e.message}")
+                    LiveFeedManager.push(FeedEvent(lotConfig.lotId, lotConfig.displayName, MarketAction.ERROR, 0.0, 0.0, message = e.message ?: "Error"))
+                }
+            }
+        } finally {
+            cycleLock.unlock()
         }
+    }
+
+    private fun fpGet(repo: FunPayRepository, url: String): String? {
+        val req = Request.Builder().url(url)
+            .header("Cookie", repo.getCookieString())
+            .header("User-Agent", FpSession.UA)
+            .build()
+        return repo.repoClient.newCall(req).execute().use { it.body?.string() }
     }
 
     private data class CompetitorData(
@@ -226,13 +264,29 @@ object XDDumperEngine {
         val maxAttempts = if (config.aggressiveMode) 3 else 1
         val reqUrl = if (config.isChip) "https://funpay.com/chips/${config.categoryId}/" else "https://funpay.com/lots/${config.categoryId}/"
 
+        val myUserId = activeAcc.userId.ifBlank { repo.getCsrfAndId()?.second.orEmpty() }
+        val displayName = config.displayName.ifEmpty { config.lotId }
+
         for (attempt in 1..maxAttempts) {
-            val req = Request.Builder().url(reqUrl).header("Cookie", repo.getCookieString()).header("User-Agent", "Mozilla/5.0").build()
-            val html = repo.repoClient.newCall(req).execute().body?.string() ?: return@withContext
+            val html = fpGet(repo, reqUrl) ?: return@withContext
             val doc = Jsoup.parse(html)
 
-            val myLotItem = doc.select("a.tc-item").firstOrNull { it.attr("href").contains("id=${config.lotId}") || it.attr("href").contains("offer=${config.lotId}") }
-            val currentPriceWithComm = myLotItem?.select(".tc-price")?.attr("data-s")?.toDoubleOrNull() ?: return@withContext
+            fun lotIdOf(el: org.jsoup.nodes.Element): String {
+                val href = el.attr("href")
+                return Regex("""[?&](?:id|offer)=([0-9A-Za-z\-]+)""").find(href)?.groupValues?.get(1).orEmpty()
+            }
+            fun sellerIdOf(el: org.jsoup.nodes.Element): String {
+                val dh = el.select("[data-href*=\"/users/\"]").attr("data-href")
+                return Regex("""/users/(\d+)/""").find(dh)?.groupValues?.get(1).orEmpty()
+            }
+
+            val myLotItem = doc.select("a.tc-item").firstOrNull { lotIdOf(it) == config.lotId }
+            val currentPriceWithComm = myLotItem?.select(".tc-price")?.attr("data-s")?.toDoubleOrNull()
+            if (currentPriceWithComm == null) {
+                LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.HOLD, 0.0, 0.0,
+                    message = "Ваш лот не найден в категории (выключен или другая категория)"))
+                return@withContext
+            }
 
             var position = 0
             val items = if (config.dumpMode == "pinned") doc.select("a.tc-item.offer-promo") else doc.select("a.tc-item")
@@ -245,7 +299,10 @@ object XDDumperEngine {
                 if (position > config.positionMax) break
 
                 val sellerName = item.select(".media-user-name").text().trim()
-                if (sellerName == activeAcc.username) continue
+                // Свои лоты пропускаем по ID лота/продавца (по нику ненадёжно: ник мог быть "Unknown")
+                if (lotIdOf(item) == config.lotId) continue
+                if (myUserId.isNotEmpty() && sellerIdOf(item) == myUserId) continue
+                if (activeAcc.username.isNotBlank() && sellerName == activeAcc.username) continue
 
 
                 if (config.ignoreFriends && global.friendsGlobal.contains(sellerName)) continue
@@ -277,7 +334,7 @@ object XDDumperEngine {
                 if (starsCount == 0 && config.ignoreZeroRating) continue
                 if (starsCount < config.ratingMin) continue
 
-                val compLotId = item.attr("href").substringAfter("id=").substringBefore("&")
+                val compLotId = lotIdOf(item)
                 val basePrice = item.select(".tc-price").attr("data-s").toDoubleOrNull() ?: 9999999.0
 
                 rawCompetitors.add(CompetitorData(item, sellerName, compLotId, basePrice, position))
@@ -463,8 +520,7 @@ object XDDumperEngine {
         filterCache[lotId]?.let { if (now - it.second < CACHE_TTL) return@withContext it.first }
         try {
             val reqUrl = if (isChip) "https://funpay.com/chips/$categoryId/" else "https://funpay.com/lots/$categoryId/"
-            val req = Request.Builder().url(reqUrl).header("Cookie", repo.getCookieString()).build()
-            val html = repo.repoClient.newCall(req).execute().body?.string() ?: return@withContext emptyMap()
+            val html = fpGet(repo, reqUrl) ?: return@withContext emptyMap()
             val doc = Jsoup.parse(html)
             val myItem = doc.select("a.tc-item").firstOrNull { it.attr("href").contains("id=$lotId") || it.attr("href").contains("offer=$lotId") }
                 ?: return@withContext emptyMap()
@@ -475,117 +531,85 @@ object XDDumperEngine {
         } catch (e: Exception) { emptyMap() }
     }
 
+    /**
+     * Меняет цену лота. Для обычных лотов — полная форма offerEdit (как Cardinal:
+     * все поля, описание, наличие, автовыдача сохраняются), меняется только price.
+     * Раньше отправлялись лишь hidden/select-поля → FunPay ругался на пустые
+     * обязательные поля, а демпер отключал лот.
+     */
     private suspend fun updateLotPrice(repo: FunPayRepository, context: Context, lotId: String, targetPrice: Double, commission: Double, isChip: Boolean): Boolean {
         var priceNoComm = targetPrice / commission
         if (priceNoComm < 1.0) priceNoComm = 1.0
+        val priceStr = String.format(Locale.US, "%.2f", priceNoComm)
 
-        val editUrl = if(isChip) "https://funpay.com/chips/offerEdit?offer=$lotId" else "https://funpay.com/lots/offerEdit?offer=$lotId"
-        val req = Request.Builder().url(editUrl).header("Cookie", repo.getCookieString()).build()
-        val html = repo.repoClient.newCall(req).execute().body?.string() ?: return false
-        val doc = Jsoup.parse(html)
+        if (isChip) return updateChipPrice(repo, lotId, priceStr)
 
-        val formBuilder = FormBody.Builder()
-        var csrf = ""
-
-        doc.select("input[type=hidden]").forEach { el ->
-            val name = el.attr("name")
-            val value = el.attr("value")
-            if (name.isNotEmpty()) {
-                formBuilder.add(name, value)
-                if (name == "csrf_token") csrf = value
-            }
-        }
-
-        
-        
-        val radioFieldNames = mutableSetOf<String>()
-        doc.select("input[type=radio][checked]").forEach { el ->
-            val name = el.attr("name")
-            val value = el.attr("value")
-            if (name.isNotEmpty() && value.isNotEmpty() && name !in radioFieldNames) {
-                formBuilder.add(name, value)
-                radioFieldNames.add(name)
-            }
-        }
-
-        doc.select("select").forEach { el ->
-            val name = el.attr("name")
-            var selOpt = el.select("option[selected]").first()
-            if (selOpt == null || selOpt.attr("value") == "0" || selOpt.attr("value") == "") {
-                selOpt = el.select("option:not([value='0']):not([value=''])").first()
-            }
-            if (name.isNotEmpty() && selOpt != null) formBuilder.add(name, selOpt.attr("value"))
-        }
-
-        
-        
-        
-        doc.select("div.lot-field[data-id]").forEach { div ->
-            val fid = div.attr("data-id")
-            if (fid.isEmpty()) return@forEach
-            val fieldName = "fields[$fid]"
-            
-            val activeBtn = div.select("button.btn.active[value]").first()
-                ?: div.select("button.active[value]").first()
-                ?: div.select("label.active input[value]").first()
-                ?: div.select("button[aria-pressed=true][value]").first()
-                ?: div.select("button.btn-primary[value]").first()
-                ?: div.select("button.active").first()
-                ?: div.select("button.btn-primary").first()
-                ?: div.select("button.btn").first()  
-            if (activeBtn != null) {
-                val v = activeBtn.attr("value").ifEmpty { activeBtn.text().trim() }
-                if (v.isNotEmpty()) formBuilder.add(fieldName, v)
-            }
-        }
-
-        formBuilder.add("price", String.format(Locale.US, "%.2f", priceNoComm))
-        formBuilder.add("offer_id", lotId)
-        formBuilder.add("active", "on")
-
-        if (csrf.isEmpty()) return false
-
-        val saveUrl = if(isChip) "https://funpay.com/chips/saveOffers" else "https://funpay.com/lots/offerSave"
-        val saveReq = Request.Builder().url(saveUrl)
-            .header("Cookie", repo.getCookieString())
-            .header("X-Requested-With", "XMLHttpRequest")
-            .post(formBuilder.build()).build()
-
-        val resp = repo.repoClient.newCall(saveReq).execute().body?.string() ?: return false
-        val json = try { JSONObject(resp) } catch (e:Exception) { JSONObject() }
-
-        if (json.optBoolean("error", false)) {
-            val errorMsg = json.optString("msg")
-            LogManager.addLog("❌ Ошибка сохранения лота $lotId: $errorMsg")
-
-            if (errorMsg.contains("Заполните", ignoreCase = true) || errorMsg.contains("required", ignoreCase = true)) {
-                
-                val errFields = mutableListOf<String>()
-                try {
-                    val errArr = json.optJSONArray("errors")
-                    if (errArr != null) {
-                        for (i in 0 until errArr.length()) {
-                            val pair = errArr.optJSONArray(i)
-                            if (pair != null && pair.length() > 0) {
-                                errFields.add(pair.optString(0))
-                            }
-                        }
-                    }
-                } catch (_: Exception) {}
-
-                val fieldsStr = if (errFields.isNotEmpty()) " (${errFields.joinToString(", ")})" else ""
-                LogManager.addLog("⛔ Лот $lotId деактивирован$fieldsStr. Автозаполнение не справилось — нужно вручную заполнить новые поля FunPay.")
-                sendAlertNotification(context, lotId, "XD Dumper: Ошибка Лота", "Лот $lotId отключен! FunPay требует заполнить новые обязательные поля$fieldsStr.")
-
-                val settings = getSettings(context)
-                val newLots = settings.lots.map { if (it.lotId == lotId) it.copy(enabled = false) else it }
-                saveSettings(context, settings.copy(lots = newLots))
-
-                LiveFeedManager.push(FeedEvent(lotId, "ID: $lotId", MarketAction.FIELD_ERROR, 0.0, 0.0, message = "Отключен: $errorMsg"))
-            }
+        val data = try {
+            repo.getLotFields(lotId)
+        } catch (e: Exception) {
+            LogManager.addLog("❌ XD Dumper: не удалось открыть лот $lotId: ${e.message}")
             return false
         }
-        return true
+        val (ok, err) = repo.saveLotFields(lotId, data, mapOf("price" to priceStr))
+        if (ok) return true
+
+        val errorMsg = err.orEmpty()
+        LogManager.addLog("❌ Ошибка сохранения лота $lotId: $errorMsg")
+        if (errorMsg.contains("Заполните", ignoreCase = true) || errorMsg.contains("required", ignoreCase = true) ||
+            errorMsg.contains("обязательн", ignoreCase = true)) {
+            LogManager.addLog("⛔ Лот $lotId: FunPay требует заполнить новые поля — откройте лот и сохраните его вручную. Демпер для лота выключен.")
+            sendAlertNotification(context, lotId, "XD Dumper: Ошибка Лота", "Лот $lotId: FunPay требует заполнить новые обязательные поля. $errorMsg")
+            val settings = getSettings(context)
+            saveSettings(context, settings.copy(lots = settings.lots.map { if (it.lotId == lotId) it.copy(enabled = false) else it }))
+            LiveFeedManager.push(FeedEvent(lotId, "ID: $lotId", MarketAction.FIELD_ERROR, 0.0, 0.0, message = "Отключен: $errorMsg"))
+        } else {
+            LiveFeedManager.push(FeedEvent(lotId, "ID: $lotId", MarketAction.ERROR, 0.0, 0.0, message = errorMsg.take(120)))
+        }
+        return false
+    }
+
+    /**
+     * Валюта (chips): цена меняется через chips/{subcat}/trade → chips/saveOffers,
+     * как ChipFields в Cardinal. ID лота: {аккаунт}-{игра}-{раздел}-{...}.
+     */
+    private suspend fun updateChipPrice(repo: FunPayRepository, lotId: String, priceStr: String): Boolean = withContext(Dispatchers.IO) {
+        val parts = lotId.split("-")
+        if (parts.size < 4) return@withContext false
+        val subcat = parts[2]
+        val html = fpGet(repo, "https://funpay.com/chips/$subcat/trade") ?: return@withContext false
+        val doc = Jsoup.parse(html)
+        val form = doc.selectFirst("form:has(input[name=csrf_token])") ?: doc
+        val tail = parts.drop(3).joinToString("") { "[$it]" }
+        val priceKey = "offers$tail[price]"
+
+        val body = FormBody.Builder()
+        var found = false
+        form.select("input[name]").forEach { el ->
+            val name = el.attr("name")
+            if (name.isEmpty() || name == "query") return@forEach
+            val type = el.attr("type").lowercase()
+            when {
+                type == "checkbox" -> if (el.hasAttr("checked")) body.add(name, "on")
+                name == priceKey -> { body.add(name, priceStr); found = true }
+                else -> body.add(name, el.attr("value"))
+            }
+        }
+        if (!found) {
+            LogManager.addLog("❌ XD Dumper: валютный лот $lotId не найден на странице торговли")
+            return@withContext false
+        }
+        val req = Request.Builder().url("https://funpay.com/chips/saveOffers")
+            .post(body.build())
+            .header("Cookie", repo.getCookieString())
+            .header("User-Agent", FpSession.UA)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("Referer", "https://funpay.com/chips/$subcat/trade")
+            .build()
+        val resp = repo.repoClient.newCall(req).execute().use { it.body?.string().orEmpty() }
+        val json = try { JSONObject(resp) } catch (_: Exception) { JSONObject() }
+        val isErr = json.optBoolean("error", false) || json.optInt("error", 0) != 0
+        if (isErr) LogManager.addLog("❌ XD Dumper (валюта $lotId): ${json.optString("msg")}")
+        !isErr
     }
 
     private suspend fun getCategoryCommission(repo: FunPayRepository, nodeId: String): Double {
@@ -593,8 +617,11 @@ object XDDumperEngine {
         commissionCache[nodeId]?.let { if (now - it.second < CACHE_TTL) return it.first }
         try {
             val form = FormBody.Builder().add("nodeId", nodeId).add("price", "1000").build()
-            val req = Request.Builder().url("https://funpay.com/lots/calc").post(form).header("Cookie", repo.getCookieString()).header("X-Requested-With", "XMLHttpRequest").build()
-            val raw = repo.repoClient.newCall(req).execute().body?.string() ?: return 1.0
+            val req = Request.Builder().url("https://funpay.com/lots/calc").post(form)
+                .header("Cookie", repo.getCookieString())
+                .header("User-Agent", FpSession.UA)
+                .header("X-Requested-With", "XMLHttpRequest").build()
+            val raw = withContext(Dispatchers.IO) { repo.repoClient.newCall(req).execute().use { it.body?.string() } } ?: return 1.0
             val json = JSONObject(raw)
             val methods = json.optJSONArray("methods") ?: return 1.0
             var minP = Double.MAX_VALUE
@@ -614,8 +641,7 @@ object XDDumperEngine {
         priceCache[lotId]?.let { if (now - it.second < CACHE_TTL) return it.first }
         try {
 
-            val req = Request.Builder().url("https://funpay.com/lots/offer?id=$lotId").header("Cookie", repo.getCookieString()).build()
-            val html = repo.repoClient.newCall(req).execute().body?.string() ?: return null
+            val html = withContext(Dispatchers.IO) { fpGet(repo, "https://funpay.com/lots/offer?id=$lotId") } ?: return null
             val doc = Jsoup.parse(html)
             val prices = mutableListOf<Double>()
             doc.select("select[name=method] option").forEach { opt ->
@@ -636,8 +662,7 @@ object XDDumperEngine {
 
     suspend fun fetchFunPayRateNow(repo: FunPayRepository): Double? = withContext(Dispatchers.IO) {
         try {
-            val req = Request.Builder().url("https://funpay.com/account/balance").header("Cookie", repo.getCookieString()).build()
-            val html = repo.repoClient.newCall(req).execute().body?.string() ?: return@withContext null
+            val html = fpGet(repo, "https://funpay.com/account/balance") ?: return@withContext null
             val doc = Jsoup.parse(html)
             val withdrawBox = doc.select("div.withdraw-box").first() ?: return@withContext null
             val dataJson = withdrawBox.attr("data-data")
@@ -684,9 +709,7 @@ object XDDumperEngine {
 
     suspend fun fetchCategoryInfoByLotId(repo: FunPayRepository, lotId: String): Pair<String, Boolean>? = withContext(Dispatchers.IO) {
         try {
-            val req = Request.Builder().url("https://funpay.com/lots/offer?id=$lotId").header("Cookie", repo.getCookieString()).build()
-            val resp = repo.repoClient.newCall(req).execute()
-            val html = resp.body?.string() ?: return@withContext null
+            val html = fpGet(repo, "https://funpay.com/lots/offer?id=$lotId") ?: return@withContext null
             val doc = Jsoup.parse(html)
             val backLink = doc.select("a.js-back-link").attr("href")
             val isChip = backLink.contains("/chips/")
@@ -701,8 +724,7 @@ object XDDumperEngine {
     suspend fun fetchCategoryFilters(repo: FunPayRepository, categoryId: String, isChip: Boolean): List<Map<String, Any>> = withContext(Dispatchers.IO) {
         try {
             val reqUrl = if (isChip) "https://funpay.com/chips/$categoryId/" else "https://funpay.com/lots/$categoryId/"
-            val req = Request.Builder().url(reqUrl).header("Cookie", repo.getCookieString()).build()
-            val html = repo.repoClient.newCall(req).execute().body?.string() ?: return@withContext emptyList()
+            val html = fpGet(repo, reqUrl) ?: return@withContext emptyList()
             val doc = Jsoup.parse(html)
 
             val fieldsDiv = doc.select("div.lot-fields[data-fields]").first() ?: return@withContext emptyList()

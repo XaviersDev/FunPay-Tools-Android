@@ -747,7 +747,7 @@ private suspend fun fetchFeedFirstPageReviews(repository: FunPayRepository, user
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                 .build()
 
-            val html = OkHttpClient().newCall(request).execute().body?.string() ?: return@withContext Pair(emptyList(), null)
+            val html = ApiFactory.shared.newCall(request).execute().body?.string() ?: return@withContext Pair(emptyList(), null)
             val doc = Jsoup.parse(html)
             val continueToken = doc.select("input[name=continue]").firstOrNull()?.attr("value")?.ifEmpty { null }
             Pair(feedParseReviewsFromHtml(html), continueToken)
@@ -770,7 +770,7 @@ private suspend fun fetchFeedNextPageReviews(repository: FunPayRepository, userI
                 .post(requestBody)
                 .build()
 
-            val html = OkHttpClient().newCall(request).execute().body?.string() ?: return@withContext Pair(emptyList(), null)
+            val html = ApiFactory.shared.newCall(request).execute().body?.string() ?: return@withContext Pair(emptyList(), null)
             val doc = Jsoup.parse(html)
             val nextToken = doc.select("input[name=continue]").firstOrNull()?.attr("value")?.ifEmpty { null }
             Pair(feedParseReviewsFromHtml(html), nextToken)

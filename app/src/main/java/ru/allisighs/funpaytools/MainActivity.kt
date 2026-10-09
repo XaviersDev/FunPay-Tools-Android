@@ -143,6 +143,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.core.view.ViewCompat
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeOut
+import androidx.compose.ui.platform.LocalHapticFeedback
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -180,8 +187,12 @@ data class ParsedMessage(
     val badge: String? = null,
     val links: List<MessageLink> = emptyList(),
     val authorUserId: String? = null,
-    val authorAvatarUrl: String? = null
+    val authorAvatarUrl: String? = null,
+    /** Текст цитаты, если это ответ в формате «╭─ ⤸ цитата\n╰ ответ» (как в расширении). */
+    val replyQuote: String? = null
 )
+
+private val REPLY_FORMAT = Regex("^╭─\\s*⤸\\s?([\\s\\S]*?)\\n╰\\s?([\\s\\S]*)$")
 
 data class MessageLink(
     val text: String,
@@ -232,9 +243,21 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        FirebaseDatabase.getInstance().setPersistenceEnabled(false)
+        // Вызывать можно только ДО первого использования FirebaseDatabase в процессе.
+        // После смахивания из недавних процесс живёт (фоновый сервис), Firebase уже
+        // инициализирован — повторный вызов кидал DatabaseException и приложение падало при входе.
+        if (!firebasePersistenceConfigured) {
+            try {
+                FirebaseDatabase.getInstance().setPersistenceEnabled(false)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            firebasePersistenceConfigured = true
+        }
+        
+        
         Stats.init(this)
-        Stats.setOnline()
+        
         Ads.init(this)
         LicenseManager.init(this)
         EpicNicksManager.init()
@@ -271,8 +294,19 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var currentTheme by remember { mutableStateOf(ThemeManager.loadTheme(this)) }
+            DesignTokens.theme = currentTheme
 
-            MaterialTheme(colorScheme = DarkColorScheme) {
+            // Значки статус-бара/навигации: тёмные на светлой теме FunPay, светлые на тёмных
+            val isLightTheme = ThemeManager.isLight(currentTheme)
+            SideEffect {
+                try {
+                    val controller = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                    controller.isAppearanceLightStatusBars = isLightTheme
+                    controller.isAppearanceLightNavigationBars = isLightTheme
+                } catch (_: Exception) {}
+            }
+
+            MaterialTheme(colorScheme = colorSchemeFor(currentTheme)) {
                 FunPayToolsApp(startDest, repository, currentTheme, pendingChatId) { newTheme ->
                     currentTheme = newTheme
                 }
@@ -282,11 +316,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        Stats.setOffline()
+        
     }
 }
 
 var SharedCatalogPack: CatalogPack? = null
+
+/** Флаг на весь процесс: setPersistenceEnabled уже вызывали. */
+@Volatile private var firebasePersistenceConfigured = false
 
 
 @Composable
@@ -300,7 +337,8 @@ fun FunPayToolsApp(
     val navController = rememberNavController()
 
     PremiumInterceptor(navController, currentTheme)
-    var showSplash by remember { mutableStateOf(true) }
+    // Анимация запуска убрана — приложение открывается сразу
+    var showSplash by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
 
@@ -534,6 +572,32 @@ fun FunPayToolsApp(
                     composable("catalog_export") {
                         CatalogExportScreen(navController = navController, repository = repository, theme = currentTheme)
                     }
+                }
+
+                // Сессия FunPay слетела → большой экран "Войти заново"
+                val lostInfo by FpSession.sessionLost.collectAsState()
+                val backEntry by navController.currentBackStackEntryAsState()
+                val route = backEntry?.destination?.route
+                val authRoutes = setOf("welcome", "auth_method", "manual_login", "web_login", "permissions", "accounts")
+                val activeKeyHash = FpCookieStore.keyFor(repository.getGoldenKey())
+                val info = lostInfo
+                if (info != null && route !in authRoutes && info.goldenKeyHash == activeKeyHash) {
+                    SessionLostOverlay(
+                        info = info,
+                        theme = currentTheme,
+                        onReloginWeb = {
+                            FpSession.setPendingRelogin(context, info.accountId)
+                            FpSession.dismiss()
+                            navController.navigate("web_login")
+                        },
+                        onReloginGoldenKey = {
+                            FpSession.setPendingRelogin(context, info.accountId)
+                            FpSession.dismiss()
+                            navController.navigate("manual_login")
+                        },
+                        onRetry = { repository.forceRecheckSession() },
+                        onDismiss = { FpSession.dismiss() }
+                    )
                 }
             }
         }
@@ -1131,15 +1195,34 @@ fun AuthCard(icon: ImageVector, title: String, desc: String, onClick: () -> Unit
 @Composable
 fun ManualLoginScreen(navController: NavController, repository: FunPayRepository) {
     var key by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val theme = remember { ThemeManager.loadTheme(context) }
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        OutlinedTextField(value = key, onValueChange = { key = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Golden Key") })
+        OutlinedTextField(
+            value = key,
+            onValueChange = { key = it.trim().removePrefix("golden_key=").trim() },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Golden Key") },
+            singleLine = true
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "Где взять: откройте funpay.com в браузере на ПК, где вы вошли в аккаунт → F12 → Application → Cookies → funpay.com → значение golden_key (32 символа).",
+            fontSize = 12.sp,
+            color = ThemeManager.parseColor(theme.textSecondaryColor),
+            lineHeight = 16.sp
+        )
         Spacer(modifier = Modifier.height(24.dp))
         Button(onClick = {
             if (key.isNotBlank()) {
                 repository.saveGoldenKey(key)
-                navController.navigate("dashboard") { popUpTo("welcome") { inclusive = true } }
+                if (repository.getAllAccounts().size > 1) {
+                    navController.navigate("dashboard") { popUpTo(0) { inclusive = true } }
+                } else {
+                    navController.navigate("dashboard") { popUpTo("welcome") { inclusive = true } }
+                }
             }
-        }, modifier = Modifier.fillMaxWidth().height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = PurpleAccent)) { Text("Войти") }
+        }, modifier = Modifier.fillMaxWidth().height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))) { Text("Войти") }
     }
 }
 
@@ -1306,8 +1389,12 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
                                 val sessionMatch = cookies.split(";").find { it.trim().startsWith("PHPSESSID=") }
                                 val phpSessionId = sessionMatch?.substringAfter("PHPSESSID=")?.trim() ?: ""
 
-
-                                repository.addAccountFromWebLogin(goldenKey, phpSessionId)
+                                // Забираем ВСЕ куки сайта (в т.ч. golden_seal), а не только golden_key/PHPSESSID
+                                val allWebCookies = listOfNotNull(
+                                    CookieManager.getInstance().getCookie("https://funpay.com"),
+                                    cookies
+                                ).joinToString("; ")
+                                repository.addAccountFromWebLogin(goldenKey, phpSessionId, allWebCookies)
 
 
                                 val allAccounts = repository.getAllAccounts()
@@ -1659,7 +1746,16 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
             containerColor = Color.Transparent,
             topBar = {
                 TopAppBar(
-                    title = { Text("FunPay Tools", color = ThemeManager.parseColor(currentTheme.textPrimaryColor), fontWeight = FontWeight.Bold) },
+                    title = {
+                        // Как в логотипе: "FunPay" — основным цветом, "Tools" — акцентным
+                        Text(
+                            buildAnnotatedString {
+                                withStyle(SpanStyle(color = ThemeManager.parseColor(currentTheme.textPrimaryColor))) { append("FunPay ") }
+                                withStyle(SpanStyle(color = ThemeManager.parseColor(currentTheme.accentColor))) { append("Tools") }
+                            },
+                            fontWeight = FontWeight.Black
+                        )
+                    },
                     actions = {
 
                         IconButton(onClick = {
@@ -1907,6 +2003,12 @@ fun ChatListView(
         )
     }
 
+    var showNewChat by remember { mutableStateOf(false) }
+    if (showNewChat) {
+        NewChatDialog(repository = repository, navController = navController, theme = theme, onDismiss = { showNewChat = false })
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize()) {
 
 
@@ -1920,6 +2022,10 @@ fun ChatListView(
             ChatListMode.GAMES -> {
 
                 GameChatsView(navController = navController, theme = theme)
+            }
+
+            ChatListMode.GLOBAL -> {
+                GlobalChatView(navController = navController, theme = theme, repository = repository)
             }
 
             ChatListMode.PERSONAL -> {
@@ -2042,6 +2148,20 @@ fun ChatListView(
                         }
                     }
                 }
+            }
+        }
+    }
+
+        // «+» — написать новому (или старому) собеседнику по нику/ссылке, как в расширении
+        if (mode == ChatListMode.PERSONAL) {
+            FloatingActionButton(
+                onClick = { showNewChat = true },
+                containerColor = ThemeManager.parseColor(theme.accentColor),
+                contentColor = Color.White,
+                shape = CircleShape,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Новый чат")
             }
         }
     }
@@ -2265,7 +2385,7 @@ fun ChatItemView(
                     )
                 }
                 Text(
-                    chat.lastMessage,
+                    chatPreviewText(chat.lastMessage),
                     color = ThemeManager.parseColor(theme.textSecondaryColor),
                     fontSize = 14.sp,
                     maxLines = 1,
@@ -2388,7 +2508,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         )
     }
 
-    
+
     val tabs = listOf(
         "Быстро"   to Icons.Default.FlashOn,
         "Чат"      to Icons.Default.ChatBubbleOutline,
@@ -2396,7 +2516,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         "Торговля" to Icons.Default.TrendingUp,
         "Прочее"   to Icons.Default.Build
     )
-    
+
     val tabActiveCounts = listOf(
         listOf(pushNotifications, autoStartOnBoot, alwaysOnline, busySettings.enabled, scheduleSettings.enabled).count { it },
         listOf(autoResponse, greetingSettings.enabled, reviewSettings.enabled, repository.getFeedbackBonusSettings().enabled).count { it },
@@ -2407,35 +2527,35 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
 
-    
-    
-    
+
+
+
     val functionsMap = remember {
         mapOf(
-            
+
             "push уведомления push-уведомления уведомления" to (0 to 0),
             "автозапуск после перезагрузки автозапуск перезагрузка boot" to (0 to 1),
             "всегда онлайн always online онлайн" to (0 to 2),
             "режим занятости занятость busy" to (0 to 3),
             "расписание занятости расписание schedule" to (0 to 4),
-            
+
             "автоответ auto reply" to (1 to 0),
             "приветствие greeting приветственное" to (1 to 1),
             "автоответ на отзывы отзыв review" to (1 to 2),
             "бонусы за отзыв бонус feedback" to (1 to 3),
             "нечиталка непрочитанные unread" to (1 to 4),
             "ии переменные ai-переменные ai variables" to (1 to 5),
-            
+
             "просьба отзыва отзыв" to (2 to 0),
             "напоминание заказы reminder" to (2 to 1),
             "авто обращение в тп auto ticket автоматическое обращение поддержка" to (2 to 2),
             "авто возврат refund возврат" to (2 to 3),
-            
+
             "автоподнятие поднятие лотов raise" to (3 to 0),
             "автовыдача auto delivery выдача товаров" to (3 to 1),
             "демпинг dumper xd dumper" to (3 to 2),
             "concurent конкурент" to (3 to 3),
-            
+
             "каталог готовых шаблонов каталог templates" to (4 to 0),
             "секретный чат secret chat" to (4 to 1),
             "шаблоны сообщений шаблоны messages templates" to (4 to 2),
@@ -2444,27 +2564,27 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
         )
     }
 
-    
+
     val currentMatch = remember(searchQuery) {
         val q = searchQuery.trim().lowercase()
         if (q.isBlank()) null
         else functionsMap.entries.firstOrNull { (k, _) -> k.contains(q) }?.value
     }
 
-    
+
     val highlightTabName = currentMatch?.let { (t, _) -> tabs.getOrNull(t)?.first }
 
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
-    
+
     LaunchedEffect(searchQuery, currentMatch) {
         val match = currentMatch ?: return@LaunchedEffect
         val (tabIdx, itemIdxInTab) = match
         if (tabIdx != selectedTab) selectedTab = tabIdx
-        
+
         kotlinx.coroutines.delay(100)
-        
-        
+
+
         val targetIndex = 3 + itemIdxInTab
         try { listState.animateScrollToItem(targetIndex) } catch (_: Exception) {}
     }
@@ -2530,7 +2650,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 )
             }
 
-            
+
             if (selectedTab == 0) {
                 item {
                     SettingCard("Push-уведомления", "Уведомления о новых сообщениях", pushNotifications, Icons.Default.Notifications, theme) {
@@ -2596,7 +2716,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                 Button(
                                     onClick = { showScheduleDialog = true },
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) { Text("Настроить слоты", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                             }
                         }
@@ -2604,7 +2724,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 }
             }
 
-            
+
             if (selectedTab == 1) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("autoResp")) 0.4f else 1f)) {
@@ -2615,7 +2735,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                             if (autoResponse) {
                                 Button(onClick = { if (isAllowed("autoResp")) showDialog = "commands" },
                                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) { Text("Настроить команды", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                             }
                         }
@@ -2630,7 +2750,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                             if (greetingSettings.enabled) {
                                 Button(onClick = { if (isAllowed("greeting")) showDialog = "greeting" },
                                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) { Text("Настроить приветствие", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                             }
                         }
@@ -2648,7 +2768,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                             if (reviewSettings.enabled) {
                                 Button(onClick = { if (!busySettings.enabled) showDialog = "review_settings" },
                                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(if (reviewSettings.useAi) Icons.Default.AutoAwesome else Icons.Default.List, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(16.dp))
@@ -2686,7 +2806,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                 Button(
                                     onClick = { if (!busySettings.enabled) showDialog = "feedback_bonus" },
                                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(
@@ -2725,7 +2845,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                 Spacer(Modifier.width(8.dp))
                                 Button(
                                     onClick = { showReadMarkDialog = true },
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) { Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                             }
                         }
@@ -2772,7 +2892,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                         if (aiVarIsPro) showAiVarDialog = true
                                         else showPremiumFor = PremiumFeature.AI_VARIABLES
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) {
                                     Text(
                                         if (aiVarIsPro) "Настроить" else "PRO",
@@ -2785,7 +2905,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 }
             }
 
-            
+
             if (selectedTab == 2) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth().alpha(if (busySettings.enabled) 0.4f else 1f)) {
@@ -2799,7 +2919,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                             if (confirmSettings.enabled) {
                                 Button(onClick = { if (!busySettings.enabled) showDialog = "confirm_settings" },
                                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) { Text("Настроить текст", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                             }
                         }
@@ -2857,7 +2977,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                             if (refundSettings.enabled) {
                                 Button(onClick = { if (!busySettings.enabled) showDialog = "refund_settings" },
                                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) { Text("Настроить условия", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                             }
                         }
@@ -2865,7 +2985,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 }
             }
 
-            
+
             if (selectedTab == 3) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth().alpha(if (!isAllowed("raise")) 0.4f else 1f)) {
@@ -2953,7 +3073,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                             if (dumperSettings.enabled && LicenseManager.isProActive()) {
                                 Button(onClick = { if (!busySettings.enabled) navController.navigate("xd_dumper") },
                                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                    colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                 ) { Text("Настроить лоты для демпинга", color = ThemeManager.parseColor(theme.textPrimaryColor)) }
                             }
                         }
@@ -3037,7 +3157,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                     else showPremiumFor = PremiumFeature.CONCURENT
                                 },
                                 modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                             ) {
                                 Icon(Icons.Default.Tune, null, modifier = Modifier.size(16.dp),
                                     tint = ThemeManager.parseColor(theme.textPrimaryColor))
@@ -3052,7 +3172,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 }
             }
 
-            
+
             if (selectedTab == 4) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth().clickable { navController.navigate("catalog") }.clip(RoundedCornerShape(theme.borderRadius.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = theme.containerOpacity)).border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.3f), RoundedCornerShape(theme.borderRadius.dp))) {
@@ -3167,7 +3287,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                                 Icon(Icons.Default.ShortText, null, tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(32.dp))
                                 Spacer(Modifier.width(16.dp))
                                 Text("Шаблоны сообщений", fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor), modifier = Modifier.weight(1f))
-                                Button(onClick = { showDialog = "templates" }, colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))) {
+                                Button(onClick = { showDialog = "templates" }, colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))) {
                                     Text("Настроить", color = ThemeManager.parseColor(theme.textPrimaryColor))
                                 }
                             }
@@ -3233,8 +3353,8 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
             item { Spacer(Modifier.height(80.dp)) }
         }
 
-        
-        
+
+
         val highlightAccent = remember(theme.accentColor) {
             val hsl = FloatArray(3)
             androidx.core.graphics.ColorUtils.colorToHSL(
@@ -3274,7 +3394,7 @@ fun ControlView(navController: NavController, repository: FunPayRepository, them
                 )
             }
         }
-    } 
+    }
 
     when (showDialog) {
         "commands" -> CommandsDialog(repository, theme) { showDialog = null }
@@ -3372,7 +3492,7 @@ fun ControlHeroCard(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            
+
             val infinite = rememberInfiniteTransition(label = "pulse")
             val pulse by infinite.animateFloat(
                 initialValue = 0.55f, targetValue = 1f,
@@ -3390,7 +3510,7 @@ fun ControlHeroCard(
             )
             Spacer(Modifier.width(10.dp))
 
-            
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(statusText, color = textPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 Text(
@@ -3400,7 +3520,7 @@ fun ControlHeroCard(
                 )
             }
 
-            
+
             if (appFullyDisabled) {
                 Button(
                     onClick = onToggleFullDisable,
@@ -3413,7 +3533,7 @@ fun ControlHeroCard(
                     Text("Включить", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             } else {
-                
+
                 IconButton(
                     onClick = onToggleFullDisable,
                     modifier = Modifier
@@ -3485,7 +3605,7 @@ fun ControlSearchBar(
                 )
             }
         }
-        
+
         if (query.isNotBlank()) {
             Row(
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
@@ -3537,16 +3657,16 @@ fun ControlTabBar(
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
     val textSecondary = ThemeManager.parseColor(theme.textSecondaryColor)
 
-    
-    
-    
+
+
+
     val brightAccent = remember(theme.accentColor) {
         val hsl = FloatArray(3)
         androidx.core.graphics.ColorUtils.colorToHSL(
             android.graphics.Color.parseColor(theme.accentColor), hsl
         )
-        hsl[1] = (hsl[1] * 1.15f).coerceAtMost(1f)        
-        hsl[2] = (hsl[2] + 0.18f).coerceIn(0.4f, 0.85f)   
+        hsl[1] = (hsl[1] * 1.15f).coerceAtMost(1f)
+        hsl[2] = (hsl[2] + 0.18f).coerceIn(0.4f, 0.85f)
         Color(androidx.core.graphics.ColorUtils.HSLToColor(hsl))
     }
 
@@ -3751,12 +3871,12 @@ fun RaiseSettingsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss
 
 
 
-    var nextAtMs by remember { mutableStateOf(repository.prefs.let { p ->
+    var nextAtMs by remember { mutableStateOf(repository.raisePrefs().let { p ->
         SmartRaise.minNextAt(p)
     }) }
     LaunchedEffect(smartMode) {
         while (true) {
-            nextAtMs = SmartRaise.minNextAt(repository.prefs)
+            nextAtMs = SmartRaise.minNextAt(repository.raisePrefs())
             delay(1000L)
         }
     }
@@ -4720,9 +4840,9 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
     var newImageUri by remember { mutableStateOf<Uri?>(null) }
     var newImageFirst by remember { mutableStateOf(true) }
     var editingCmd by remember { mutableStateOf<AutoResponseCommand?>(null) }
-    
-    
     var formExpanded by remember { mutableStateOf(false) }
+    var showVarsHelp by remember { mutableStateOf(false) }
+
     LaunchedEffect(editingCmd) { if (editingCmd != null) formExpanded = true }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -4753,287 +4873,292 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
 
                 Spacer(Modifier.height(12.dp))
 
-                
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            if (formExpanded) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
-                            else Color.Black.copy(alpha = 0.2f)
-                        )
-                        .clickable {
-                            if (formExpanded && editingCmd != null) {
-                                editingCmd = null
-                                newTrigger = ""; newResponse = ""
-                                exactMatch = false; caseSensitive = false; callMode = false
-                                newImageUri = null; newImageFirst = true
-                            }
-                            formExpanded = !formExpanded
-                        }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        if (formExpanded) Icons.Default.ExpandLess else Icons.Default.Add,
-                        null,
-                        tint = ThemeManager.parseColor(theme.accentColor),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (editingCmd != null) "Редактирование команды (нажмите чтобы свернуть)"
-                        else if (formExpanded) "Скрыть форму создания"
-                        else "Создать новую команду",
-                        color = ThemeManager.parseColor(theme.textPrimaryColor),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-
-                if (formExpanded) {
-                    Spacer(Modifier.height(8.dp))
-
-
-                    OutlinedTextField(
-                        value = newTrigger,
-                        onValueChange = { newTrigger = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Триггер (слово/фраза)") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                            cursorColor = ThemeManager.parseColor(theme.accentColor)
-                        ),
-                        singleLine = true
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = newResponse,
-                        onValueChange = { newResponse = it },
-                        modifier = Modifier.fillMaxWidth().height(90.dp),
-                        label = { Text("Ответ (необязательно, если есть картинка)") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                            focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
-                            cursorColor = ThemeManager.parseColor(theme.accentColor)
-                        ),
-                        maxLines = 4
-                    )
-                    Spacer(Modifier.height(6.dp))
-
-
-                    var showVarsHelp by remember { mutableStateOf(false) }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showVarsHelp = !showVarsHelp }
-                            .padding(vertical = 4.dp)
-                    ) {
-                        Icon(
-                            if (showVarsHelp) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            null,
-                            tint = ThemeManager.parseColor(theme.accentColor),
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            "Доступные переменные",
-                            color = ThemeManager.parseColor(theme.accentColor),
-                            fontSize = 11.sp, fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    if (showVarsHelp) {
-                        Box(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.25f))) {
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (formExpanded) ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
+                                    else Color.Black.copy(alpha = 0.2f)
+                                )
+                                .clickable {
+                                    if (formExpanded && editingCmd != null) {
+                                        editingCmd = null
+                                        newTrigger = ""; newResponse = ""
+                                        exactMatch = false; caseSensitive = false; callMode = false
+                                        newImageUri = null; newImageFirst = true
+                                    }
+                                    formExpanded = !formExpanded
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                if (formExpanded) Icons.Default.ExpandLess else Icons.Default.Add,
+                                null,
+                                tint = ThemeManager.parseColor(theme.accentColor),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
                             Text(
-                                FpPlaceholders.AVAILABLE_HELP_TEXT,
-                                color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                fontSize = 10.sp, lineHeight = 14.sp,
-                                modifier = Modifier.padding(10.dp)
+                                if (editingCmd != null) "Редактирование команды (нажмите чтобы свернуть)"
+                                else if (formExpanded) "Скрыть форму создания"
+                                else "Создать новую команду",
+                                color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Transparent).border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f), RoundedCornerShape(10.dp))) {
-                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                            Text(
-                                if (editingCmd != null) "Параметры этой команды" else "Параметры новой команды",
-                                color = ThemeManager.parseColor(theme.accentColor),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                letterSpacing = 0.5.sp
-                            )
-                            Text(
-                                "Действуют только для той команды, которую сейчас создаёшь или редактируешь.",
-                                color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                fontSize = 10.sp, lineHeight = 13.sp
-                            )
-                            Spacer(Modifier.height(6.dp))
 
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = exactMatch,
-                                    onCheckedChange = { exactMatch = it },
-                                    colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
-                                )
-                                Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = caseSensitive,
-                                    onCheckedChange = { caseSensitive = it },
-                                    colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
-                                )
-                                Column {
-                                    Text("Учитывать регистр букв", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
-                                    Text(
-                                        if (caseSensitive) "'Привет' ≠ 'привет'" else "'Привет' = 'ПРИВЕТ' = 'привет'",
-                                        color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp
-                                    )
-                                }
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = callMode,
-                                    onCheckedChange = { callMode = it },
-                                    colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
-                                )
-                                Column {
-                                    Text("Режим вызова (звонок продавца)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
-                                    Text(
-                                        "Срочное уведомление продавцу с кнопкой 'Ответить'. Удобно для !продавец, !позвать.",
-                                        color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp, lineHeight = 13.sp
-                                    )
-                                }
-                            }
-                            if (callMode) {
-                                Spacer(Modifier.height(6.dp))
-                                Text("Как показывать вызов:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                Spacer(Modifier.height(4.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    FilterChip(
-                                        selected = callStyle == "notification",
-                                        onClick = { callStyle = "notification" },
-                                        label = { Text("Уведомление", fontSize = 11.sp) },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
-                                            selectedLabelColor = Color.White
-                                        )
-                                    )
-                                    FilterChip(
-                                        selected = callStyle == "fullscreen",
-                                        onClick = { callStyle = "fullscreen" },
-                                        label = { Text("Имитация звонка", fontSize = 11.sp) },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
-                                            selectedLabelColor = Color.White
-                                        )
-                                    )
-                                }
-                                Text(
-                                    if (callStyle == "fullscreen")
-                                        "На весь экран появится экран входящего вызова в стиле iOS — с аватаркой, ником и кнопками 'Ответить/Сбросить'. Работает даже поверх блокировки."
-                                    else
-                                        "Обычное пуш-уведомление с рингтоном и кнопками 'Ответить/Отклонить'.",
-                                    color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                    fontSize = 10.sp, lineHeight = 13.sp
-                                )
-                                Spacer(Modifier.height(6.dp))
+                    if (formExpanded) {
+                        item {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(
-                                    value = callAutoReplyText,
-                                    onValueChange = { callAutoReplyText = it },
+                                    value = newTrigger,
+                                    onValueChange = { newTrigger = it },
                                     modifier = Modifier.fillMaxWidth(),
-                                    label = { Text("Автоответ покупателю во время вызова", fontSize = 11.sp) },
-                                    placeholder = { Text("Зову хозяина, он ответит в течение часа.", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
-                                    maxLines = 3,
+                                    label = { Text("Триггер (слово/фраза)") },
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
                                         unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
                                         focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
                                         cursorColor = ThemeManager.parseColor(theme.accentColor)
-                                    )
+                                    ),
+                                    singleLine = true
                                 )
+                                Spacer(Modifier.height(6.dp))
+                                OutlinedTextField(
+                                    value = newResponse,
+                                    onValueChange = { newResponse = it },
+                                    modifier = Modifier.fillMaxWidth().height(90.dp),
+                                    label = { Text("Ответ (необязательно, если есть картинка)") },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                        focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                        cursorColor = ThemeManager.parseColor(theme.accentColor)
+                                    ),
+                                    maxLines = 4
+                                )
+                                Spacer(Modifier.height(6.dp))
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { showVarsHelp = !showVarsHelp }
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        if (showVarsHelp) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        null,
+                                        tint = ThemeManager.parseColor(theme.accentColor),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        "Доступные переменные",
+                                        color = ThemeManager.parseColor(theme.accentColor),
+                                        fontSize = 11.sp, fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                if (showVarsHelp) {
+                                    Box(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.25f))) {
+                                        Text(
+                                            FpPlaceholders.AVAILABLE_HELP_TEXT,
+                                            color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                            fontSize = 10.sp, lineHeight = 14.sp,
+                                            modifier = Modifier.padding(10.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color.Transparent).border(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f), RoundedCornerShape(10.dp))) {
+                                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                                        Text(
+                                            if (editingCmd != null) "Параметры этой команды" else "Параметры новой команды",
+                                            color = ThemeManager.parseColor(theme.accentColor),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            letterSpacing = 0.5.sp
+                                        )
+                                        Text(
+                                            "Действуют только для той команды, которую сейчас создаёшь или редактируешь.",
+                                            color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                            fontSize = 10.sp, lineHeight = 13.sp
+                                        )
+                                        Spacer(Modifier.height(6.dp))
+
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = exactMatch,
+                                                onCheckedChange = { exactMatch = it },
+                                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                                            )
+                                            Text("Точное совпадение", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = caseSensitive,
+                                                onCheckedChange = { caseSensitive = it },
+                                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                                            )
+                                            Column {
+                                                Text("Учитывать регистр букв", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                                Text(
+                                                    if (caseSensitive) "'Привет' ≠ 'привет'" else "'Привет' = 'ПРИВЕТ' = 'привет'",
+                                                    color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp
+                                                )
+                                            }
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = callMode,
+                                                onCheckedChange = { callMode = it },
+                                                colors = CheckboxDefaults.colors(checkedColor = ThemeManager.parseColor(theme.accentColor))
+                                            )
+                                            Column {
+                                                Text("Режим вызова (звонок продавца)", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 13.sp)
+                                                Text(
+                                                    "Срочное уведомление продавцу с кнопкой 'Ответить'. Удобно для !продавец, !позвать.",
+                                                    color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 10.sp, lineHeight = 13.sp
+                                                )
+                                            }
+                                        }
+                                        if (callMode) {
+                                            Spacer(Modifier.height(6.dp))
+                                            Text("Как показывать вызов:", color = ThemeManager.parseColor(theme.textPrimaryColor), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                            Spacer(Modifier.height(4.dp))
+                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                FilterChip(
+                                                    selected = callStyle == "notification",
+                                                    onClick = { callStyle = "notification" },
+                                                    label = { Text("Уведомление", fontSize = 11.sp) },
+                                                    colors = FilterChipDefaults.filterChipColors(
+                                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                                        selectedLabelColor = Color.White
+                                                    )
+                                                )
+                                                FilterChip(
+                                                    selected = callStyle == "fullscreen",
+                                                    onClick = { callStyle = "fullscreen" },
+                                                    label = { Text("Имитация звонка", fontSize = 11.sp) },
+                                                    colors = FilterChipDefaults.filterChipColors(
+                                                        selectedContainerColor = ThemeManager.parseColor(theme.accentColor),
+                                                        selectedLabelColor = Color.White
+                                                    )
+                                                )
+                                            }
+                                            Text(
+                                                if (callStyle == "fullscreen")
+                                                    "На весь экран появится экран входящего вызова в стиле iOS — с аватаркой, ником и кнопками 'Ответить/Сбросить'. Работает даже поверх блокировки."
+                                                else
+                                                    "Обычное пуш-уведомление с рингтоном и кнопками 'Ответить/Отклонить'.",
+                                                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                                fontSize = 10.sp, lineHeight = 13.sp
+                                            )
+                                            Spacer(Modifier.height(6.dp))
+                                            OutlinedTextField(
+                                                value = callAutoReplyText,
+                                                onValueChange = { callAutoReplyText = it },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                label = { Text("Автоответ покупателю во время вызова", fontSize = 11.sp) },
+                                                placeholder = { Text("Зову хозяина, он ответит в течение часа.", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
+                                                maxLines = 3,
+                                                colors = OutlinedTextFieldDefaults.colors(
+                                                    focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                                    unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
+                                                    focusedBorderColor = ThemeManager.parseColor(theme.accentColor),
+                                                    cursorColor = ThemeManager.parseColor(theme.accentColor)
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                ImagePickerRow(
+                                    imageUri = newImageUri,
+                                    theme = theme,
+                                    onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                                    onClear = { newImageUri = null }
+                                )
+                                if (newImageUri != null && newResponse.isNotBlank()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    ImageOrderPicker(newImageFirst, theme) { newImageFirst = it }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (editingCmd != null) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                editingCmd = null
+                                                newTrigger = ""; newResponse = ""; exactMatch = false
+                                                caseSensitive = false; callMode = false
+                                                callStyle = "notification"
+                                                callAutoReplyText = "Зову хозяина, он ответит в течение часа."
+                                                newImageUri = null; newImageFirst = true
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) { Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val hasContent = newTrigger.isNotBlank() && (newResponse.isNotBlank() || newImageUri != null || callMode)
+                                            if (hasContent) {
+                                                val cmd = AutoResponseCommand(
+                                                    trigger = newTrigger.trim(),
+                                                    response = newResponse.trim(),
+                                                    exactMatch = exactMatch,
+                                                    imageUri = newImageUri?.toString(),
+                                                    imageFirst = newImageFirst,
+                                                    caseSensitive = caseSensitive,
+                                                    callMode = callMode,
+                                                    callStyle = callStyle,
+                                                    callAutoReplyTextRaw = callAutoReplyText.trim().ifEmpty { null }
+                                                )
+                                                commands = if (editingCmd != null) {
+                                                    commands.map { if (it == editingCmd) cmd else it }
+                                                } else {
+                                                    commands + cmd
+                                                }
+                                                repository.saveCommands(commands)
+                                                editingCmd = null
+                                                newTrigger = ""; newResponse = ""; exactMatch = false
+                                                caseSensitive = false; callMode = false
+                                                callStyle = "notification"
+                                                callAutoReplyText = "Зову хозяина, он ответит в течение часа."
+                                                newImageUri = null; newImageFirst = true
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
+                                    ) { Text(if (editingCmd != null) "Сохранить" else "Добавить") }
+                                }
+
+                                Spacer(Modifier.height(12.dp))
                             }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    ImagePickerRow(
-                        imageUri = newImageUri,
-                        theme = theme,
-                        onPick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        onClear = { newImageUri = null }
-                    )
-                    if (newImageUri != null && newResponse.isNotBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        ImageOrderPicker(newImageFirst, theme) { newImageFirst = it }
+
+                    item {
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                        Spacer(Modifier.height(8.dp))
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (editingCmd != null) {
-                            OutlinedButton(
-                                onClick = {
-                                    editingCmd = null
-                                    newTrigger = ""; newResponse = ""; exactMatch = false
-                                    caseSensitive = false; callMode = false
-                                    callStyle = "notification"
-                                    callAutoReplyText = "Зову хозяина, он ответит в течение часа."
-                                    newImageUri = null; newImageFirst = true
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Отмена", color = ThemeManager.parseColor(theme.textSecondaryColor)) }
+
+                    if (commands.isEmpty()) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                                Text("Нет команд", color = ThemeManager.parseColor(theme.textSecondaryColor))
+                            }
                         }
-                        Button(
-                            onClick = {
-                                val hasContent = newTrigger.isNotBlank() && (newResponse.isNotBlank() || newImageUri != null || callMode)
-                                if (hasContent) {
-                                    val cmd = AutoResponseCommand(
-                                        trigger = newTrigger.trim(),
-                                        response = newResponse.trim(),
-                                        exactMatch = exactMatch,
-                                        imageUri = newImageUri?.toString(),
-                                        imageFirst = newImageFirst,
-                                        caseSensitive = caseSensitive,
-                                        callMode = callMode,
-                                        callStyle = callStyle,
-                                        callAutoReplyTextRaw = callAutoReplyText.trim().ifEmpty { null }
-                                    )
-                                    commands = if (editingCmd != null) {
-                                        commands.map { if (it == editingCmd) cmd else it }
-                                    } else {
-                                        commands + cmd
-                                    }
-                                    repository.saveCommands(commands)
-                                    editingCmd = null
-                                    newTrigger = ""; newResponse = ""; exactMatch = false
-                                    caseSensitive = false; callMode = false
-                                    callStyle = "notification"
-                                    callAutoReplyText = "Зову хозяина, он ответит в течение часа."
-                                    newImageUri = null; newImageFirst = true
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-                        ) { Text(if (editingCmd != null) "Сохранить" else "Добавить") }
-                    }
-
-                    Spacer(Modifier.height(12.dp))
-                } 
-
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-                Spacer(Modifier.height(8.dp))
-
-                if (commands.isEmpty()) {
-                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                        Text("Нет команд", color = ThemeManager.parseColor(theme.textSecondaryColor))
-                    }
-                } else {
-                    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    } else {
                         items(commands) { cmd ->
-                            Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(if (editingCmd == cmd)
+                            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(10.dp)).background(if (editingCmd == cmd)
                                 ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f)
                             else ThemeManager.dialogSurface(theme).copy(alpha = 0.5f))) {
                                 Row(
@@ -5520,6 +5645,23 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         }
     }
 
+    // Строки списка: сообщения + плашки дат, с флагами групп (первое/последнее подряд)
+    val rows by remember { derivedStateOf { buildChatRows(allMessages) } }
+    val showPeerCard = !GameChatsRegistry.isSystemChatId(chatId) && chatInfo != null && !isLoadingInitial
+    fun headerCount(): Int = (if (showPeerCard) 1 else 0) + (if (!noMoreOlderMessages && !isLoadingInitial) 1 else 0)
+    fun lastRowIndex(): Int = (rows.size - 1 + headerCount()).coerceAtLeast(0)
+    fun rowIndexOfMessage(msgIdx: Int): Int {
+        val id = allMessages.getOrNull(msgIdx)?.id ?: return 0
+        val r = rows.indexOfFirst { it.msg?.id == id }
+        return (r + headerCount()).coerceAtLeast(0)
+    }
+    fun rowIndexOfMessageId(id: String): Int {
+        val r = rows.indexOfFirst { it.msg?.id == id }
+        return if (r < 0) -1 else r + headerCount()
+    }
+    var flashMessageId by remember { mutableStateOf<String?>(null) }
+    var selectTextDialogFor by remember { mutableStateOf<ParsedMessage?>(null) }
+
     var selectedMultipleUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var showMultiImageDialog by remember { mutableStateOf(false) }
 
@@ -5555,11 +5697,11 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     showMultiImageDialog = true
                 }
 
-                
-                
+
+
                 transferableContent.consume { it.uri != null }
             } else {
-                
+
                 transferableContent
             }
         }
@@ -5598,18 +5740,35 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                 isLoadingInitial = false
                 if (messages.size < 15) noMoreOlderMessages = true
                 if (allMessages.isNotEmpty()) {
-                    try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
+                    try { listState.scrollToItem(lastRowIndex()) } catch (e: Exception) { }
                 }
                 previousMessageCount = messages.size
             } else if (messages.size > previousMessageCount) {
-                if (allMessages.isNotEmpty()) {
-                    try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
+                // Как в Telegram: не дёргаем список, если пользователь читает историю выше
+                val info = listState.layoutInfo
+                val nearBottom = (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 4
+                if (allMessages.isNotEmpty() && nearBottom && !isSelectionMode) {
+                    try { listState.animateScrollToItem(lastRowIndex()) } catch (e: Exception) { }
                 }
                 previousMessageCount = messages.size
             }
 
             delay(3000)
         }
+    }
+
+    selectTextDialogFor?.let { m ->
+        SelectMessageTextDialog(
+            text = m.text,
+            theme = theme,
+            onCopyAll = {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("message", m.text))
+                Toast.makeText(context, "Текст скопирован", Toast.LENGTH_SHORT).show()
+                selectTextDialogFor = null
+            },
+            onDismiss = { selectTextDialogFor = null }
+        )
     }
 
     if (fullScreenImageUrl != null) {
@@ -5632,7 +5791,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         fontSize = 18.sp
                     )
                     Spacer(Modifier.height(12.dp))
-                    
+
                     val preview = selectedMultipleUris.take(4)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -5681,7 +5840,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                         if (fileId != null) {
                                             repository.sendMessage(chatId, "", fileId)
                                         }
-                                        
+
                                         if (index < urisToSend.lastIndex) {
                                             delay(800)
                                         }
@@ -5724,7 +5883,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         Button(
                             onClick = { showImageDialog = false },
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                            colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                         ) {
                             Text("Отмена", color = ThemeManager.parseColor(theme.textPrimaryColor))
                         }
@@ -5768,7 +5927,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    
+
                     if (down.position.x > backSwipeEdgePx) return@awaitEachGesture
                     var totalDx = 0f
                     var totalDy = 0f
@@ -5834,23 +5993,36 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 }
                             }
                         }
+                        if (selectedMessageIds.size == 1) {
+                            val single = allMessages.find { it.id in selectedMessageIds }
+                            if (single != null && single.text.isNotBlank()) {
+                                IconButton(onClick = {
+                                    selectTextDialogFor = single
+                                    isSelectionMode = false
+                                    selectedMessageIds = emptySet()
+                                }) {
+                                    Icon(Icons.Default.TextFields, "Выделить текст", tint = ThemeManager.parseColor(theme.accentColor))
+                                }
+                            }
+                        }
                         IconButton(onClick = {
-                            val text = allMessages
-                                .filter { it.id in selectedMessageIds }
+                            val selected = allMessages.filter { it.id in selectedMessageIds }
+                            // Одно сообщение — копируем только текст (как в Telegram), несколько — с автором и временем
+                            val text = if (selected.size == 1) selected.first().text else selected
                                 .joinToString("\n\n") { msg ->
-                                    val who = if (msg.isMe) "Я" else username
+                                    val who = if (msg.isMe) "Я" else msg.author.takeIf { it.isNotBlank() && it != "Unknown" } ?: username
                                     "[$who, ${msg.time}]: ${msg.text}"
                                 }
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             cm.setPrimaryClip(ClipData.newPlainText("messages", text))
-                            Toast.makeText(context, "Скопировано ${selectedMessageIds.size} сообщ.", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, if (selected.size == 1) "Текст скопирован" else "Скопировано ${selected.size} сообщ.", Toast.LENGTH_SHORT).show()
                             isSelectionMode = false
                             selectedMessageIds = emptySet()
                         }) {
                             Icon(Icons.Default.ContentCopy, null, tint = ThemeManager.parseColor(theme.accentColor))
                         }
                     } else {
-                        
+
                         IconButton(onClick = { navController.popBackStack() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
                         }
@@ -5883,16 +6055,19 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (chatInfo?.userStatus != null) {
+                            val subtitle = chatInfo?.userStatus?.takeIf { it.isNotBlank() }.orEmpty()
+                            if (subtitle.isNotEmpty()) {
                                 Text(
-                                    text = chatInfo!!.userStatus!!,
+                                    text = subtitle,
                                     fontSize = 12.sp,
-                                    color = ThemeManager.parseColor(theme.textSecondaryColor)
+                                    color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
 
-                        
+
                         var showTopMenu by remember { mutableStateOf(false) }
                         Box {
                             IconButton(onClick = { showTopMenu = true }) {
@@ -5967,7 +6142,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     }
                 }
 
-                
+
                 AnimatedVisibility(visible = showSearch && !isSelectionMode) {
                     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
                         OutlinedTextField(
@@ -6018,7 +6193,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                         if (searchResults.isNotEmpty()) {
                                             currentSearchIndex = (currentSearchIndex - 1 + searchResults.size) % searchResults.size
                                             scope.launch {
-                                                try { listState.scrollToItem(searchResults[currentSearchIndex]) } catch (_: Exception) {}
+                                                try { listState.scrollToItem(rowIndexOfMessage(searchResults[currentSearchIndex])) } catch (_: Exception) {}
                                             }
                                         }
                                     }, modifier = Modifier.size(36.dp)) {
@@ -6028,7 +6203,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                         if (searchResults.isNotEmpty()) {
                                             currentSearchIndex = (currentSearchIndex + 1) % searchResults.size
                                             scope.launch {
-                                                try { listState.scrollToItem(searchResults[currentSearchIndex]) } catch (_: Exception) {}
+                                                try { listState.scrollToItem(rowIndexOfMessage(searchResults[currentSearchIndex])) } catch (_: Exception) {}
                                             }
                                         }
                                     }, modifier = Modifier.size(36.dp)) {
@@ -6057,194 +6232,289 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             }
         }
 
-        if (chatInfo != null) {
-            val info = chatInfo!!
-            if (info.lookingAtName != null || info.registrationDate != null) {
-                Box(modifier = Modifier.fillMaxWidth().padding(8.dp).clip(RoundedCornerShape(8.dp)).background(ThemeManager.parseColor(theme.surfaceColor).copy(alpha = 0.8f))) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        if (info.lookingAtName != null) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    val link = info.lookingAtLink.orEmpty()
-                                    if (link.isNotEmpty()) {
-                                        try {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link)))
-                                        } catch (_: Exception) {}
-                                    }
-                                },
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.Visibility, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Смотрит: ${info.lookingAtName}",
-                                    color = ThemeManager.parseColor(theme.accentColor),
-                                    fontSize = 12.sp,
-                                    maxLines = 1,
-                                    modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState())
-                                )
-                                Icon(
-                                    Icons.Default.OpenInBrowser, null,
-                                    tint = ThemeManager.parseColor(theme.textSecondaryColor),
-                                    modifier = Modifier.size(14.dp).padding(start = 2.dp)
-                                )
-                            }
-                        }
-
-                        if (info.registrationDate != null) {
-                            if (info.lookingAtName != null) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "Регистрация: ${info.registrationDate}",
-                                    color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                    fontSize = 10.sp
-                                )
-                                Spacer(modifier = Modifier.weight(1f))
-                                if (info.language?.contains("English", true) == true || info.language?.contains("Английский", true) == true) {
-                                    Text("🇺🇸", fontSize = 14.sp)
-                                }
-                            }
+        // "Смотрит лот" — как закреплённое сообщение в Telegram
+        val lookingName = chatInfo?.lookingAtName
+        AnimatedVisibility(visible = lookingName != null) {
+            val info = chatInfo
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ThemeManager.dialogSurface(theme))
+                    .clickable {
+                        val link = info?.lookingAtLink.orEmpty()
+                        if (link.isNotEmpty()) {
+                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) } catch (_: Exception) {}
                         }
                     }
+                    .padding(horizontal = 14.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .width(2.5.dp)
+                        .height(32.dp)
+                        .background(ThemeManager.parseColor(theme.accentColor), RoundedCornerShape(2.dp))
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Смотрит лот", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ThemeManager.parseColor(theme.accentColor))
+                    Text(
+                        info?.lookingAtName.orEmpty(),
+                        fontSize = 13.sp,
+                        color = ThemeManager.parseColor(theme.textPrimaryColor),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
+                Icon(Icons.Default.OpenInBrowser, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(18.dp))
             }
         }
 
-        LazyColumn(
-            state = listState,
+        // ===== Список сообщений в стиле Telegram =====
+        val palette = rememberChatPalette(theme)
+        val haptic = LocalHapticFeedback.current
+        val isPublicChat = remember(chatId) { GameChatsRegistry.isSystemChatId(chatId) }
+
+        var pressedMessageId by remember { mutableStateOf<String?>(null) }
+        var pulseCounter by remember { mutableIntStateOf(0) }
+        var pulseMessageId by remember { mutableStateOf<String?>(null) }
+        var dragBaseSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+        var dragAnchorId by remember { mutableStateOf<String?>(null) }
+        var dragSelectMode by remember { mutableStateOf(true) }
+        val selectionModeState = rememberUpdatedState(isSelectionMode)
+
+        fun msgIndex(id: String) = allMessages.indexOfFirst { it.id == id }
+
+        // Плавающая дата сверху при прокрутке
+        var showFloatingDate by remember { mutableStateOf(false) }
+        LaunchedEffect(listState.isScrollInProgress) {
+            if (listState.isScrollInProgress) showFloatingDate = true
+            else { delay(1100); showFloatingDate = false }
+        }
+        val floatingDate by remember {
+            derivedStateOf {
+                val firstVisible = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
+                val offset = headerCount()
+                val row = rows.getOrNull((firstVisible - offset).coerceAtLeast(0))
+                row?.dayKey?.let { ChatDates.label(it) }
+            }
+        }
+
+        Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .fillMaxWidth()
         ) {
-            if (!noMoreOlderMessages && !isLoadingInitial) {
-                item(key = "load_older_btn") {
-                    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.Center) {
-                        if (isLoadingOlder) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                color = ThemeManager.parseColor(theme.accentColor),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            OutlinedButton(
-                                onClick = {
-                                    val oldestId = allMessages.firstOrNull()?.id ?: return@OutlinedButton
-                                    isLoadingOlder = true
-                                    val anchorIndex = listState.firstVisibleItemIndex
-                                    val anchorOffset = listState.firstVisibleItemScrollOffset
-                                    scope.launch {
-                                        try {
-                                            val otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
-                                            val fetched = repository.fetchOlderMessages(chatId, oldestId)
-                                            if (fetched.isEmpty()) {
-                                                noMoreOlderMessages = true
-                                            } else {
-                                                val parsed = parseMessagesFromRepository(fetched, repository, otherUid)
-                                                olderMessages = parsed + olderMessages
-                                                if (fetched.size < 15) noMoreOlderMessages = true
-                                                try {
-                                                    listState.scrollToItem(
-                                                        index = (anchorIndex + parsed.size).coerceAtLeast(0),
-                                                        scrollOffset = anchorOffset
-                                                    )
-                                                } catch (_: Exception) { }
-                                            }
-                                        } catch (_: Exception) {
-                                            noMoreOlderMessages = true
-                                        } finally {
-                                            isLoadingOlder = false
-                                        }
-                                    }
-                                },
-                                border = BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(0.5f)),
-                                shape = RoundedCornerShape(20.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.KeyboardArrowUp,
-                                    contentDescription = null,
-                                    tint = ThemeManager.parseColor(theme.accentColor),
-                                    modifier = Modifier.size(16.dp)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .telegramSelectionGestures(
+                        listState = listState,
+                        keyToMessageId = { key -> (key as? String)?.takeIf { it.startsWith("m_") }?.removePrefix("m_") },
+                        isSelectionMode = { selectionModeState.value },
+                        onPressStart = { id -> pressedMessageId = id },
+                        onLongPress = { id ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            pulseMessageId = id
+                            pulseCounter++
+                            focusManager.clearFocus()
+                            dragBaseSelection = selectedMessageIds
+                            dragAnchorId = id
+                            dragSelectMode = id !in selectedMessageIds
+                            isSelectionMode = true
+                            selectedMessageIds = if (dragSelectMode) selectedMessageIds + id else selectedMessageIds - id
+                            if (selectedMessageIds.isEmpty()) isSelectionMode = false
+                        },
+                        onDragOver = { id ->
+                            val a = dragAnchorId?.let { msgIndex(it) } ?: -1
+                            val b = msgIndex(id)
+                            if (a >= 0 && b >= 0) {
+                                val range = allMessages.subList(minOf(a, b), maxOf(a, b) + 1).map { it.id }.toSet()
+                                val newSel = if (dragSelectMode) dragBaseSelection + range else dragBaseSelection - range
+                                if (newSel != selectedMessageIds) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    selectedMessageIds = newSel
+                                    isSelectionMode = newSel.isNotEmpty()
+                                }
+                            }
+                        },
+                        onDragEnd = { dragAnchorId = null },
+                        onTapInSelection = { id ->
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            selectedMessageIds = if (id in selectedMessageIds) selectedMessageIds - id else selectedMessageIds + id
+                            if (selectedMessageIds.isEmpty()) isSelectionMode = false
+                        },
+                        scope = scope
+                    ),
+                contentPadding = PaddingValues(top = 8.dp, bottom = 10.dp)
+            ) {
+                if (showPeerCard) {
+                    item(key = "peer_info") {
+                        val info = chatInfo
+                        val isEnglishPeer = info?.language?.let { it.contains("English", true) || it.contains("Английский", true) || it.contains("Англ", true) } == true
+                        val isOfficialPeer = allMessages.any { m ->
+                            !m.isMe && m.badge?.let { b -> b.contains("поддержка", true) || b.contains("арбитраж", true) || b.contains("модератор", true) || b.contains("support", true) } == true
+                        }
+                        ChatPeerInfoCard(
+                            name = username,
+                            isEnglish = isEnglishPeer,
+                            registration = shortRegistration(info?.registrationDate),
+                            isOfficial = isOfficialPeer,
+                            palette = palette
+                        )
+                    }
+                }
+                if (!noMoreOlderMessages && !isLoadingInitial) {
+                    item(key = "load_older_btn") {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+                            if (isLoadingOlder) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    color = ThemeManager.parseColor(theme.accentColor),
+                                    strokeWidth = 2.dp
                                 )
-                                Spacer(Modifier.width(4.dp))
-                                Text("Загрузить ещё", color = ThemeManager.parseColor(theme.accentColor), fontSize = 13.sp)
+                            } else {
+                                Text(
+                                    "Загрузить ещё",
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(palette.chip)
+                                        .clickable {
+                                            val oldestId = allMessages.firstOrNull()?.id ?: return@clickable
+                                            isLoadingOlder = true
+                                            val anchorIndex = listState.firstVisibleItemIndex
+                                            val anchorOffset = listState.firstVisibleItemScrollOffset
+                                            scope.launch {
+                                                try {
+                                                    val otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
+                                                    val fetched = repository.fetchOlderMessages(chatId, oldestId)
+                                                    if (fetched.isEmpty()) {
+                                                        noMoreOlderMessages = true
+                                                    } else {
+                                                        val parsed = parseMessagesFromRepository(fetched, repository, otherUid)
+                                                        val before = rows.size
+                                                        olderMessages = parsed + olderMessages
+                                                        if (fetched.size < 15) noMoreOlderMessages = true
+                                                        delay(16)
+                                                        val added = (rows.size - before).coerceAtLeast(parsed.size)
+                                                        try {
+                                                            listState.scrollToItem(
+                                                                index = (anchorIndex + added).coerceAtLeast(0),
+                                                                scrollOffset = anchorOffset
+                                                            )
+                                                        } catch (_: Exception) { }
+                                                    }
+                                                } catch (_: Exception) {
+                                                    noMoreOlderMessages = true
+                                                } finally {
+                                                    isLoadingOlder = false
+                                                }
+                                            }
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                                    color = palette.chipText,
+                                    fontSize = 13.sp
+                                )
                             }
                         }
                     }
                 }
-            }
-            items(allMessages.distinctBy { it.id }, key = { it.id }) { msg ->
-                val isSelected = msg.id in selectedMessageIds
-                val isSearchHighlight = showSearch && searchQuery.isNotEmpty() &&
-                        msg.text.contains(searchQuery, ignoreCase = true)
-
-                OptimizedMessageBubble(
-                    message = msg,
-                    theme = theme,
-                    selectionKey = selectionKey,
-                    isSelected = isSelected,
-                    isSelectionMode = isSelectionMode,
-                    isSearchHighlight = isSearchHighlight,
-                    searchQuery = if (showSearch) searchQuery else "",
-                    translatedText = if (translateEnabled) translatedMessages[msg.id] else null,
-                    onLongPress = {
-                        isSelectionMode = true
-                        selectedMessageIds = setOf(msg.id)
-                    },
-                    onTap = {
-                        if (isSelectionMode) {
-                            selectedMessageIds = if (msg.id in selectedMessageIds)
-                                selectedMessageIds - msg.id
-                            else
-                                selectedMessageIds + msg.id
-                            if (selectedMessageIds.isEmpty()) isSelectionMode = false
-                        }
-                    },
-                    onReply = {
-                        replyToMessage = msg
-                    },
-                    onSwipeReply = {
-                        replyToMessage = msg
-                    },
-                    onLinkClick = { link ->
-                        when (link.type) {
-                            LinkType.ORDER -> {
-                                val orderId = link.url.substringAfter("orders/").substringBefore("/")
-                                if (orderId.isNotEmpty()) navController.navigate("order/$orderId")
-                            }
-                            LinkType.LOT -> {
-                                val lotId = Regex("[?&]id=([A-Za-z0-9\\-]+)")
-                                    .find(link.url)?.groupValues?.getOrNull(1)
-                                if (!lotId.isNullOrBlank()) {
-                                    navController.navigate("lot/$lotId")
-                                } else {
-                                    try {
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
-                                    } catch (_: Exception) {}
+                items(rows, key = { it.key }) { row ->
+                    if (row.msg == null) {
+                        ChatDateChip(row.dateLabel.orEmpty(), palette, Modifier.padding(vertical = 8.dp))
+                    } else {
+                        val msg = row.msg
+                        val isSelected = msg.id in selectedMessageIds
+                        val isSearchHighlight = showSearch && searchQuery.isNotEmpty() &&
+                                msg.text.contains(searchQuery, ignoreCase = true)
+                        TelegramMessageBubble(
+                            message = msg,
+                            palette = palette,
+                            theme = theme,
+                            isFirstInGroup = row.first,
+                            isLastInGroup = row.last,
+                            showAuthor = isPublicChat,
+                            isSelected = isSelected,
+                            isSelectionMode = isSelectionMode,
+                            isPressed = pressedMessageId == msg.id,
+                            pulseKey = if (pulseMessageId == msg.id) pulseCounter else 0,
+                            isSearchHighlight = isSearchHighlight,
+                            searchQuery = if (showSearch) searchQuery else "",
+                            translatedText = if (translateEnabled) translatedMessages[msg.id] else null,
+                            onSwipeReply = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                replyToMessage = msg
+                            },
+                            onLinkClick = { link ->
+                                when (link.type) {
+                                    LinkType.ORDER -> {
+                                        val orderId = link.url.substringAfter("orders/").substringBefore("/")
+                                        if (orderId.isNotEmpty()) navController.navigate("order/$orderId")
+                                    }
+                                    LinkType.LOT -> {
+                                        val lotId = Regex("[?&]id=([A-Za-z0-9\\-]+)")
+                                            .find(link.url)?.groupValues?.getOrNull(1)
+                                        if (!lotId.isNullOrBlank()) {
+                                            navController.navigate("lot/$lotId")
+                                        } else {
+                                            try {
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
+                                            } catch (_: Exception) {}
+                                        }
+                                    }
+                                    LinkType.USER, LinkType.EXTERNAL -> {
+                                        try {
+                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
+                                        } catch (_: Exception) {}
+                                    }
                                 }
-                            }
-                            LinkType.USER, LinkType.EXTERNAL -> {
-                                try {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link.url)))
-                                } catch (_: Exception) {}
-                            }
-                        }
-                    },
-                    onImageClick = { url -> fullScreenImageUrl = url },
-                    onProfileClick = { userId, userName ->
-                        val targetId = if (GameChatsRegistry.isSystemChatId(chatId)) userId else chatId
-                        val targetName = if (GameChatsRegistry.isSystemChatId(chatId)) userName.ifBlank { username } else username
-                        if (targetId.isNotBlank()) {
-                            navController.navigate("profile/$targetId/$targetName")
-                        }
-                    },
-                    otherUserId = chatId,
-                    otherUsername = username
-                )
+                            },
+                            onImageClick = { url -> fullScreenImageUrl = url },
+                            onProfileClick = { userId, userName ->
+                                val targetId = if (isPublicChat) userId else chatId
+                                val targetName = if (isPublicChat) userName.ifBlank { username } else username
+                                if (targetId.isNotBlank()) {
+                                    navController.navigate("profile/$targetId/$targetName")
+                                }
+                            },
+                            otherUserId = chatId,
+                            otherUsername = username,
+                            replyAuthor = row.replyAuthor,
+                            onReplyQuoteClick = row.replyTargetId?.let { targetId ->
+                                {
+                                    val idx = rowIndexOfMessageId(targetId)
+                                    if (idx >= 0) scope.launch {
+                                        try { listState.animateScrollToItem(idx, -200) } catch (_: Exception) {}
+                                        flashMessageId = targetId
+                                        delay(900)
+                                        if (flashMessageId == targetId) flashMessageId = null
+                                    }
+                                }
+                            },
+                            isFlashing = flashMessageId == msg.id
+                        )
+                    }
+                }
             }
+
+            val showScrollDown by remember {
+                derivedStateOf {
+                    val total = listState.layoutInfo.totalItemsCount
+                    val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                    total > 0 && lastVisible < total - 3
+                }
+            }
+            ChatFloatingOverlays(
+                showDate = showFloatingDate && floatingDate != null,
+                dateText = floatingDate.orEmpty(),
+                showScrollDown = showScrollDown && !isSelectionMode,
+                palette = palette,
+                theme = theme,
+                onScrollDown = {
+                    scope.launch { try { listState.animateScrollToItem(lastRowIndex()) } catch (_: Exception) {} }
+                }
+            )
         }
 
 
@@ -6260,263 +6530,242 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             }
         }
 
-        
-        AnimatedVisibility(visible = replyToMessage != null) {
+
+        AnimatedVisibility(
+            visible = replyToMessage != null,
+            enter = expandVertically(tween(180)) + fadeIn(tween(180)),
+            exit = shrinkVertically(tween(150)) + fadeOut(tween(120))
+        ) {
             replyToMessage?.let { reply ->
-                Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp).clip(RoundedCornerShape(12.dp)).background(ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.15f))) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .width(3.dp)
-                                .height(36.dp)
-                                .background(ThemeManager.parseColor(theme.accentColor), RoundedCornerShape(2.dp))
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                if (reply.isMe) "Вы" else username,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = ThemeManager.parseColor(theme.accentColor)
-                            )
-                            Text(
-                                reply.text.take(80) + if (reply.text.length > 80) "…" else "",
-                                fontSize = 12.sp,
-                                color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        IconButton(onClick = { replyToMessage = null }) {
-                            Icon(Icons.Default.Close, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
+                ReplyComposerBar(
+                    author = if (reply.isMe) "Вам" else reply.author.takeIf { it.isNotBlank() && it != "Unknown" && !reply.isSystem } ?: username,
+                    text = reply.text,
+                    palette = palette,
+                    onClose = { replyToMessage = null }
+                )
             }
         }
 
-        Box(modifier = Modifier
-            .fillMaxWidth()
-            .padding(8.dp).clip(RoundedCornerShape(24.dp)).background(ThemeManager.parseColor(theme.surfaceColor))) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-
-                if (validationError != null) {
-                    Text(
-                        text = validationError!!,
-                        color = Color.Red,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 24.dp, top = 8.dp)
-                    )
-                }
-
+        // ===== Поле ввода в стиле Telegram: "пилюля" + круглая кнопка отправки =====
+        val inputPill = if (palette.isLight) Color.White else ThemeManager.dialogSurface(theme)
+        val iconTint = palette.secondary
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 8.dp)
+        ) {
+            AnimatedVisibility(visible = validationError != null) {
+                Text(
+                    text = validationError.orEmpty(),
+                    color = Color(0xFFE53935),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 4.dp)
+                )
+            }
+            Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(inputPill),
                     verticalAlignment = Alignment.Bottom
                 ) {
-                    Row(modifier = Modifier.padding(bottom = 8.dp)) {
-                        IconButton(
-                            onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Attach", tint = ThemeManager.parseColor(theme.textPrimaryColor))
+                    // слева — шаблоны (как кнопка эмодзи в Telegram)
+                    Box {
+                        IconButton(onClick = { showTemplatesMenu = true }, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Default.ShortText, contentDescription = "Шаблоны", tint = iconTint)
                         }
+                        DropdownMenu(
+                                                    expanded = showTemplatesMenu,
+                                                    onDismissRequest = { showTemplatesMenu = false },
+                                                    modifier = Modifier.background(ThemeManager.dialogSurface(theme))
+                                                ) {
+                                                    val templates = repository.getMessageTemplates()
+                                                    val templateSettings = repository.getTemplateSettings()
+
+                                                    if (templates.isEmpty()) {
+                                                        DropdownMenuItem(
+                                                            text = { Text("Нет шаблонов", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
+                                                            onClick = { showTemplatesMenu = false }
+                                                        )
+                                                    } else {
+                                                        templates.forEach { template ->
+                                                            DropdownMenuItem(
+                                                                text = {
+                                                                    Column {
+                                                                        Text(
+                                                                            template.name,
+                                                                            color = ThemeManager.parseColor(theme.textPrimaryColor),
+                                                                            fontWeight = FontWeight.Bold,
+                                                                            fontSize = 13.sp
+                                                                        )
+                                                                        Text(
+                                                                            template.text,
+                                                                            color = ThemeManager.parseColor(theme.textSecondaryColor),
+                                                                            fontSize = 11.sp,
+                                                                            maxLines = 1,
+                                                                            overflow = TextOverflow.Ellipsis
+                                                                        )
+                                                                    }
+                                                                },
+                                                                onClick = {
+                                                                    val finalText = processTemplateVariables(template.text, username)
+
+                                                                    if (templateSettings.sendImmediately) {
+                                                                        if (finalText.isNotBlank()) {
+                                                                            val newMessage = MessageItem(
+                                                                                id = System.currentTimeMillis().toString(),
+                                                                                author = "Вы",
+                                                                                text = finalText,
+                                                                                isMe = true,
+                                                                                time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                                                                imageUrl = null
+                                                                            )
+                                                                            messages = messages + newMessage
+                                                                            val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
+                                                                            parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
+                                                                            previousMessageCount = messages.size
+                                                                            scope.launch {
+                                                                                if (allMessages.isNotEmpty()) {
+                                                                                    try { listState.scrollToItem(lastRowIndex()) } catch (e: Exception) { }
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
+                                                                        scope.launch {
+                                                                            repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
+                                                                            if (repository.getReadMarkSettings().markAfterManualReply) {
+                                                                                repository.markChatAsRead(chatId)
+                                                                            }
+                                                                        }
+                                                                    } else {
+                                                                        inputText = finalText
+                                                                    }
+                                                                    showTemplatesMenu = false
+                                                                }
+                                                            )
+                                                        }
+                                                    }
+                                                }
                     }
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    Box(modifier = Modifier.weight(1f)) {
-                        OutlinedTextField(
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (inputText.isEmpty()) {
+                            Text("Сообщение", color = iconTint, fontSize = 16.sp)
+                        }
+                        androidx.compose.foundation.text.BasicTextField(
                             value = inputText,
                             onValueChange = { inputText = it },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .contentReceiver(receiveContentListener),
-                            placeholder = { Text("Сообщение...", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                                unfocusedTextColor = ThemeManager.parseColor(theme.textPrimaryColor),
-                                focusedBorderColor = if (validationError != null) Color.Red else ThemeManager.parseColor(theme.accentColor),
-                                unfocusedBorderColor = Color.Transparent,
-                                focusedContainerColor = Color.Black.copy(alpha = 0.3f),
-                                unfocusedContainerColor = Color.Black.copy(alpha = 0.3f),
-                                cursorColor = ThemeManager.parseColor(theme.accentColor)
-                            ),
-                            shape = RoundedCornerShape(24.dp),
-                            maxLines = 6,
-                            trailingIcon = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(end = 4.dp)
-                                ) {
-                                    IconButton(onClick = { showTemplatesMenu = true }) {
-                                        Icon(
-                                            Icons.Default.ShortText,
-                                            contentDescription = "Templates",
-                                            tint = ThemeManager.parseColor(theme.accentColor)
-                                        )
-                                    }
-                                    IconButton(onClick = {
-                                        if (inputText.isNotBlank() && !isAiProcessing && validationError == null) {
-                                            val isPro = LicenseManager.isProActive()
-                                            if (!isPro && !LicenseManager.consumeAiClick()) {
-                                                showAiLimit = true
-                                                return@IconButton
-                                            }
-                                            isAiProcessing = true
-                                            scope.launch {
-                                                val contextHistory = messages.takeLast(10).joinToString("\n") {
-                                                    "${if(it.isMe) "Продавец" else "Покупатель"}: ${it.text}"
-                                                }
-                                                val aiChat = ChatItem(id = chatId, username = username, lastMessage = messages.lastOrNull { !it.isMe }?.text ?: "", isUnread = false, avatarUrl = "", date = "")
-                                                val rewrited = repository.rewriteMessage(inputText, contextHistory, chat = aiChat)
-                                                if (!rewrited.isNullOrEmpty()) {
-                                                    inputText = rewrited
-                                                }
-                                                isAiProcessing = false
-                                            }
-                                        }
-                                    }) {
-                                        if (isAiProcessing) {
-                                            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = ThemeManager.parseColor(theme.accentColor))
-                                        } else {
-                                            Icon(Icons.Default.AutoAwesome, contentDescription = "AI Rewrite", tint = ThemeManager.parseColor(theme.accentColor))
-                                        }
-                                    }
-                                }
-                            }
+                            textStyle = androidx.compose.ui.text.TextStyle(color = palette.text, fontSize = 16.sp, lineHeight = 21.sp),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(palette.accent),
+                            maxLines = 6
                         )
-
-                        DropdownMenu(
-                            expanded = showTemplatesMenu,
-                            onDismissRequest = { showTemplatesMenu = false },
-                            modifier = Modifier.background(ThemeManager.dialogSurface(theme))
-                        ) {
-                            val templates = repository.getMessageTemplates()
-                            val templateSettings = repository.getTemplateSettings()
-
-                            if (templates.isEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("Нет шаблонов", color = ThemeManager.parseColor(theme.textSecondaryColor)) },
-                                    onClick = { showTemplatesMenu = false }
-                                )
-                            } else {
-                                templates.forEach { template ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Column {
-                                                Text(
-                                                    template.name,
-                                                    color = ThemeManager.parseColor(theme.textPrimaryColor),
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 13.sp
-                                                )
-                                                Text(
-                                                    template.text,
-                                                    color = ThemeManager.parseColor(theme.textSecondaryColor),
-                                                    fontSize = 11.sp,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-                                        },
-                                        onClick = {
-                                            val finalText = processTemplateVariables(template.text, username)
-
-                                            if (templateSettings.sendImmediately) {
-                                                if (finalText.isNotBlank()) {
-                                                    val newMessage = MessageItem(
-                                                        id = System.currentTimeMillis().toString(),
-                                                        author = "Вы",
-                                                        text = finalText,
-                                                        isMe = true,
-                                                        time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                                        imageUrl = null
-                                                    )
-                                                    messages = messages + newMessage
-                                                    val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
-                                                    parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
-                                                    previousMessageCount = messages.size
-                                                    scope.launch {
-                                                        if (allMessages.isNotEmpty()) {
-                                                            try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
-                                                        }
-                                                    }
-                                                }
-
-                                                FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
-                                                scope.launch {
-                                                    repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
-                                                    if (repository.getReadMarkSettings().markAfterManualReply) {
-                                                        repository.markChatAsRead(chatId)
-                                                    }
-                                                }
-                                            } else {
-                                                inputText = finalText
-                                            }
-                                            showTemplatesMenu = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
                     }
-
-
+                    // AI-переписывание
                     IconButton(
                         onClick = {
-                            if (inputText.isNotBlank() && validationError == null) {
-                                val textToSend = if (replyToMessage != null) {
-                                    val who = if (replyToMessage!!.isMe) "Вы" else username
-                                    val preview = replyToMessage!!.text.lines().firstOrNull()?.take(60) ?: ""
-                                    "╭─ ⤸ $preview\n╰ ${inputText.trim()}"
-                                } else {
-                                    inputText
-                                }
-                                replyToMessage = null
-                                inputText = ""
-
-                                val newMessage = MessageItem(
-                                    id = System.currentTimeMillis().toString(),
-                                    author = "Вы",
-                                    text = textToSend,
-                                    isMe = true,
-                                    time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                    imageUrl = null
-                                )
-                                messages = messages + newMessage
-                                val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
-                                parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
-                                previousMessageCount = messages.size
-                                scope.launch {
-                                    if (allMessages.isNotEmpty()) {
-                                        try { listState.scrollToItem(allMessages.lastIndex) } catch (e: Exception) { }
-                                    }
-                                }
-                                scope.launch {
-                                    repository.sendMessage(chatId, textToSend)
-                                    if (repository.getReadMarkSettings().markAfterManualReply) {
-                                        repository.markChatAsRead(chatId)
-                                    }
-                                }
-                            }
-                        },
-                        enabled = inputText.isNotBlank() && validationError == null
+                                                            if (inputText.isNotBlank() && !isAiProcessing && validationError == null) {
+                                                                val isPro = LicenseManager.isProActive()
+                                                                if (!isPro && !LicenseManager.consumeAiClick()) {
+                                                                    showAiLimit = true
+                                                                    return@IconButton
+                                                                }
+                                                                isAiProcessing = true
+                                                                scope.launch {
+                                                                    val contextHistory = messages.takeLast(10).joinToString("\n") {
+                                                                        "${if(it.isMe) "Продавец" else "Покупатель"}: ${it.text}"
+                                                                    }
+                                                                    val aiChat = ChatItem(id = chatId, username = username, lastMessage = messages.lastOrNull { !it.isMe }?.text ?: "", isUnread = false, avatarUrl = "", date = "")
+                                                                    val rewrited = repository.rewriteMessage(inputText, contextHistory, chat = aiChat)
+                                                                    if (!rewrited.isNullOrEmpty()) {
+                                                                        inputText = rewrited
+                                                                    }
+                                                                    isAiProcessing = false
+                                                                }
+                                                            }
+                                                        },
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send",
-                            tint = if (inputText.isNotBlank() && validationError == null)
-                                ThemeManager.parseColor(theme.accentColor)
-                            else
-                                ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.5f)
-                        )
+                        if (isAiProcessing) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), color = palette.accent, strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = "AI", tint = palette.accent)
+                        }
                     }
+                    // скрепка — фото
+                    IconButton(
+                        onClick = { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Default.AttachFile, contentDescription = "Фото", tint = iconTint, modifier = Modifier.graphicsLayer { rotationZ = 45f })
+                    }
+                }
+
+                Spacer(Modifier.width(6.dp))
+
+                val canSend = inputText.isNotBlank() && validationError == null
+                val sendScale by animateFloatAsState(if (canSend) 1f else 0.9f, spring(dampingRatio = 0.55f), label = "sendScale")
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .graphicsLayer { scaleX = sendScale; scaleY = sendScale }
+                        .clip(CircleShape)
+                        .background(if (canSend) palette.accent else palette.accent.copy(alpha = 0.45f))
+                        .clickable(enabled = canSend, onClick = {
+                                                    if (inputText.isNotBlank() && validationError == null) {
+                                                        val textToSend = if (replyToMessage != null) {
+                                                            // Тот же формат, что у расширения FunPay Tools: цитата целиком в одну строку
+                                                            val src = replyToMessage!!
+                                                            val preview = src.text.replace(Regex("\\s+"), " ").trim()
+                                                                .ifEmpty { if (src.imageUrl != null) "Изображение" else "Сообщение" }
+                                                                .let { if (it.length > 300) it.take(300) + "…" else it }
+                                                            "╭─ ⤸ $preview\n╰ ${inputText.trim()}"
+                                                        } else {
+                                                            inputText
+                                                        }
+                                                        replyToMessage = null
+                                                        inputText = ""
+
+                                                        val newMessage = MessageItem(
+                                                            id = System.currentTimeMillis().toString(),
+                                                            author = "Вы",
+                                                            text = textToSend,
+                                                            isMe = true,
+                                                            time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                                            imageUrl = null
+                                                        )
+                                                        messages = messages + newMessage
+                                                        val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
+                                                        parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
+                                                        previousMessageCount = messages.size
+                                                        scope.launch {
+                                                            if (allMessages.isNotEmpty()) {
+                                                                try { listState.scrollToItem(lastRowIndex()) } catch (e: Exception) { }
+                                                            }
+                                                        }
+                                                        scope.launch {
+                                                            repository.sendMessage(chatId, textToSend)
+                                                            if (repository.getReadMarkSettings().markAfterManualReply) {
+                                                                repository.markChatAsRead(chatId)
+                                                            }
+                                                        }
+                                                    }
+                                                }),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить", tint = Color.White, modifier = Modifier.size(22.dp).offset(x = 2.dp))
                 }
             }
         }
@@ -6769,7 +7018,7 @@ fun OptimizedMessageBubble(
         else -> message.author
     }
 
-    
+
     val rowBg = when {
         isSelected -> accentColor.copy(alpha = 0.18f)
         isSearchHighlight -> Color(0xFFFFEB3B).copy(alpha = 0.12f)
@@ -6821,7 +7070,7 @@ fun OptimizedMessageBubble(
                         totalDy += dy
                         if (!locked) {
                             if (abs(totalDy) > 12f && abs(totalDy) > abs(totalDx)) {
-                                
+
                                 break
                             }
                             if (totalDx < -12f && abs(totalDx) > abs(totalDy) * 1.3f) {
@@ -6839,9 +7088,9 @@ fun OptimizedMessageBubble(
         horizontalArrangement = if (message.isMe) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom
     ) {
-        
-        if (isSelected || true) { 
-            
+
+        if (isSelected || true) {
+
         }
 
         Column(
@@ -6889,7 +7138,7 @@ fun OptimizedMessageBubble(
                         if (message.text.isNotEmpty()) Spacer(Modifier.height(8.dp))
                     }
                     if (message.text.isNotEmpty()) {
-                        
+
                         if (isSearchHighlight && searchQuery.isNotEmpty()) {
                             HighlightedText(
                                 text = message.text,
@@ -7007,7 +7256,12 @@ fun MessageTextWithLinks(
     selectionKey: Int,
     onLinkClick: (MessageLink) -> Unit,
     maxLines: Int = Int.MAX_VALUE,
-    selectionEnabled: Boolean = true
+    selectionEnabled: Boolean = true,
+    /** Невидимый хвост под время внутри пузыря (как в Telegram). */
+    trailingSpacer: String = "",
+    fontSize: Float = 14f,
+    centered: Boolean = false,
+    boldLinks: Boolean = false
 ) {
     val annotatedString = buildAnnotatedString {
         if (links.isEmpty()) {
@@ -7021,7 +7275,7 @@ fun MessageTextWithLinks(
                         append(text.substring(currentIndex, linkIndex))
                     }
                     pushStringAnnotation(tag = "LINK", annotation = link.url)
-                    withStyle(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                    withStyle(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline, fontWeight = if (boldLinks) FontWeight.SemiBold else null)) {
                         append(link.text)
                     }
                     pop()
@@ -7032,6 +7286,9 @@ fun MessageTextWithLinks(
                 append(text.substring(currentIndex))
             }
         }
+        if (trailingSpacer.isNotEmpty()) {
+            withStyle(SpanStyle(color = Color.Transparent, fontSize = 11.sp)) { append(trailingSpacer) }
+        }
     }
 
     val layoutResult = remember { mutableStateOf<TextLayoutResult?>(null) }
@@ -7040,9 +7297,10 @@ fun MessageTextWithLinks(
         Text(
             text = annotatedString,
             style = LocalTextStyle.current.copy(
-                fontSize = 14.sp,
+                fontSize = fontSize.sp,
                 color = textColor,
-                lineHeight = 20.sp
+                lineHeight = (fontSize + 6f).sp,
+                textAlign = if (centered) TextAlign.Center else TextAlign.Start
             ),
             maxLines = maxLines,
             overflow = if (maxLines < Int.MAX_VALUE) TextOverflow.Ellipsis else TextOverflow.Clip,
@@ -7071,7 +7329,9 @@ fun MessageTextWithLinks(
 }
 
 fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayRepository, otherUserId: String = ""): List<ParsedMessage> {
-    return messages.map { msg ->
+    return messages.map { raw ->
+        val replyMatch = REPLY_FORMAT.find(raw.text)
+        val msg = if (replyMatch != null) raw.copy(text = replyMatch.groupValues[2]) else raw
         val isSystemMsg = msg.badge != null || msg.author == "FunPay"
 
         val isAdminMsg = msg.badge == "поддержка" || msg.badge == "арбитраж"
@@ -7116,7 +7376,8 @@ fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayR
                 otherUserId.isNotEmpty() -> otherUserId
                 else -> null
             },
-            authorAvatarUrl = msg.authorAvatarUrl
+            authorAvatarUrl = msg.authorAvatarUrl,
+            replyQuote = replyMatch?.groupValues?.get(1)?.trim()
         )
     }
 }
@@ -7125,16 +7386,14 @@ fun parseMessagesFromRepository(messages: List<MessageItem>, repository: FunPayR
 fun ConsoleView(logs: List<Pair<String, Boolean>>, theme: AppTheme, navController: NavController) {
     val context = LocalContext.current
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    var onlineCount by remember { mutableStateOf(0) }
+    var onlineCount by remember { mutableStateOf(FakeOnlineCounter.getNow()) }
 
     LaunchedEffect(Unit) {
+        
+        
         while (true) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Stats.getOnlineCount { count -> onlineCount = count }
-            } else {
-                onlineCount = 0
-            }
-            delay(15000)
+            onlineCount = FakeOnlineCounter.tick()
+            delay(1000)
         }
     }
 
@@ -7217,16 +7476,20 @@ fun ConsoleView(logs: List<Pair<String, Boolean>>, theme: AppTheme, navControlle
                     } catch (e: Exception) { Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show() }
                 },
                 modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
-            ) { Text("КОПИРОВАТЬ", fontSize = 12.sp) }
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ThemeManager.dialogSurface(theme),
+                    contentColor = ThemeManager.parseColor(theme.accentColor)
+                ),
+                border = BorderStroke(1.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.35f))
+            ) { Text("КОПИРОВАТЬ", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
             Button(
                 onClick = {
                     val path = LogManager.saveLogsToFile(context)
                     Toast.makeText(context, path, Toast.LENGTH_LONG).show()
                 },
                 modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
-            ) { Text("В ФАЙЛ", fontSize = 12.sp) }
+                colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor), contentColor = Color.White)
+            ) { Text("В ФАЙЛ", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
         }
     }
 }
@@ -7626,7 +7889,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                                             showWriteReviewDialog = true
                                         },
                                         modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                     ) { Text("Редактировать") }
                                     Button(
                                         onClick = { showDeleteMyReviewDialog = true },
@@ -7672,7 +7935,7 @@ fun OrderScreen(orderId: String, repository: FunPayRepository, theme: AppTheme, 
                                     Button(
                                         onClick = { showReviewReplyDialog = true },
                                         modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor))
+                                        colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.surfaceColor), contentColor = ThemeManager.parseColor(theme.textPrimaryColor))
                                     ) {
                                         Text(if (order.sellerReply.isNotEmpty()) "Изменить" else "Ответить")
                                     }
@@ -7781,7 +8044,7 @@ fun TemplatesDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: ()
                             }
                         }
                     } else {
-                        
+
                         val uniqueTemplates = remember(templates) { templates.distinctBy { it.id } }
                         LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(uniqueTemplates.distinctBy { it.id }, key = { it.id }) { template ->
@@ -8246,13 +8509,13 @@ fun DonationScreen(theme: AppTheme) {
                             )
                             PremiumFeature.entries.forEach { feature ->
                                 val isPro    = LicenseManager.isProActive()
-                                val adHours  = LicenseManager.adUnlockHoursLeft(feature)
+                                val adLeft   = LicenseManager.adUnlockLeftLabel(feature)
                                 val adActive = LicenseManager.isAdUnlocked(feature)
 
                                 val (statusText, statusColor, bgColor) = when {
                                     isPro     -> Triple("∞ PRO", Color(0xFF4CAF50), Color(0xFF4CAF50).copy(alpha = 0.1f))
                                     feature == PremiumFeature.XD_DUMPER -> Triple("Только PRO", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f))
-                                    adActive  -> Triple("${adHours}ч осталось", Color(0xFF42A5F5), Color(0xFF1565C0).copy(alpha = 0.12f))
+                                    adActive  -> Triple("$adLeft осталось", Color(0xFF42A5F5), Color(0xFF1565C0).copy(alpha = 0.12f))
                                     else      -> Triple("Закрыто", Color(0xFFEF5350), Color.Red.copy(alpha = 0.07f))
                                 }
 

@@ -57,38 +57,4 @@ object Stats {
             id
         }
     }
-
-    fun setOnline() {
-        if (deviceId.isEmpty() || presenceListener != null) return
-
-        presenceListener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                if (snapshot.getValue(Boolean::class.java) != true) return
-                val ref = statsRef.child("online").child(deviceId)
-                
-                ref.onDisconnect().removeValue().addOnCompleteListener {
-                    ref.setValue(System.currentTimeMillis())
-                }
-            }
-            override fun onCancelled(error: DatabaseError) {}
-        }
-
-        db.getReference(".info/connected").addValueEventListener(presenceListener!!)
-    }
-
-    fun setOffline() {
-        presenceListener?.let {
-            db.getReference(".info/connected").removeEventListener(it)
-            presenceListener = null
-        }
-        if (deviceId.isNotEmpty()) {
-            statsRef.child("online").child(deviceId).removeValue()
-        }
-    }
-
-    fun getOnlineCount(callback: (Int) -> Unit) {
-        statsRef.child("online").get()
-            .addOnSuccessListener { callback(it.childrenCount.toInt()) }
-        
-    }
 }

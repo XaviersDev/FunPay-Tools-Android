@@ -122,15 +122,34 @@ private fun ThemeCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Color preview
+            // Превью: фон + карточка + акцент (видно, светлая тема или тёмная)
             Box(
                 modifier = Modifier
                     .size(56.dp)
-                    .background(
-                        ThemeManager.parseColor(theme.accentColor),
-                        RoundedCornerShape(8.dp)
+                    .background(ThemeManager.parseColorOpaque(theme.backgroundColor), RoundedCornerShape(10.dp))
+                    .padding(7.dp)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(ThemeManager.parseColorOpaque(theme.surfaceColor), RoundedCornerShape(6.dp))
+                        .padding(6.dp)
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(10.dp)
+                            .background(ThemeManager.parseColor(theme.accentColor), RoundedCornerShape(3.dp))
                     )
-            )
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth(0.7f)
+                            .height(5.dp)
+                            .background(ThemeManager.parseColor(theme.textPrimaryColor).copy(alpha = 0.7f), RoundedCornerShape(2.dp))
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.width(16.dp))
 
@@ -143,7 +162,12 @@ private fun ThemeCard(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "Акцент: ${theme.accentColor}",
+                    when (theme.name) {
+                        "FunPay" -> "Новая · белый и голубой, как FunPay"
+                        "FunPay Dark" -> "Чёрный и голубой"
+                        "Purple Dream" -> "Прежняя тема по умолчанию"
+                        else -> "Акцент: ${theme.accentColor}"
+                    },
                     fontSize = 12.sp,
                     color = ThemeManager.parseColor(currentTheme.textSecondaryColor)
                 )
