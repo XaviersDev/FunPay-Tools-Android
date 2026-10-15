@@ -14,6 +14,19 @@ package ru.allisighs.funpaytools
 
 import android.Manifest
 import android.app.Activity
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.material.icons.outlined.EmojiEmotions
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.content.ReceiveContentListener
 import androidx.compose.foundation.content.contentReceiver
@@ -536,6 +549,20 @@ fun FunPayToolsApp(
                             navController = navController,
                             repository = repository,
                             theme = currentTheme
+                        )
+                    }
+
+                    // Профиль по ID пользователя (общий и игровые чаты, витрина лотов): чат с ним не нужен
+                    composable("user/{userId}/{username}") { backStackEntry ->
+                        val userId = backStackEntry.arguments?.getString("userId") ?: ""
+                        val profileUsername = backStackEntry.arguments?.getString("username") ?: ""
+                        UserProfileScreen(
+                            nodeId = "",
+                            username = profileUsername,
+                            navController = navController,
+                            repository = repository,
+                            theme = currentTheme,
+                            knownUserId = userId
                         )
                     }
 
@@ -5648,6 +5675,13 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
     // Строки списка: сообщения + плашки дат, с флагами групп (первое/последнее подряд)
     val rows by remember { derivedStateOf { buildChatRows(allMessages) } }
     val showPeerCard = !GameChatsRegistry.isSystemChatId(chatId) && chatInfo != null && !isLoadingInitial
+
+    // Метка FunPay Tools: собеседник пишет из расширения или приложения
+    val fptUsers by FptMark.users.collectAsState()
+    val fptDismissed by FptMark.dismissed.collectAsState()
+    val peerUid: String? = chatInfo?.peerUserId
+        ?: allMessages.lastOrNull { !it.isMe && !it.isSystem && !it.authorUserId.isNullOrBlank() && it.authorUserId != "0" }?.authorUserId
+    val peerIsFpt = !GameChatsRegistry.isSystemChatId(chatId) && peerUid != null && peerUid in fptUsers
     fun headerCount(): Int = (if (showPeerCard) 1 else 0) + (if (!noMoreOlderMessages && !isLoadingInitial) 1 else 0)
     fun lastRowIndex(): Int = (rows.size - 1 + headerCount()).coerceAtLeast(0)
     fun rowIndexOfMessage(msgIdx: Int): Int {
@@ -5923,7 +5957,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             .fillMaxSize()
             .offset { IntOffset(animatedBackOffset.toInt(), 0) }
             .background(ThemeManager.parseColor(theme.backgroundColor))
-            .imePadding()
+            // Клавиатуру и панель стикеров учитывает нижняя область экрана (см. chatBottomArea)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -6078,6 +6112,10 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 onDismissRequest = { showTopMenu = false },
                                 modifier = Modifier.background(ThemeManager.dialogSurface(theme))
                             ) {
+                                if (peerIsFpt) {
+                                    FptMenuHint(theme)
+                                    HorizontalDivider(color = ThemeManager.parseColor(theme.textSecondaryColor).copy(alpha = 0.12f))
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Поиск", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
                                     onClick = { showSearch = !showSearch; searchQuery = ""; showTopMenu = false },
@@ -6112,7 +6150,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                     )
                                     val myId = repository.getMyUserId()
                                     val parts = chatId.removePrefix("users-").split("-")
-                                    val otherUid = parts.firstOrNull { it != myId && it.isNotEmpty() } ?: parts.lastOrNull() ?: ""
+                                    val otherUid = peerUid ?: parts.firstOrNull { it != myId && it.isNotEmpty() } ?: parts.lastOrNull() ?: ""
                                     DropdownMenuItem(
                                         text = { Text("История заказов", color = ThemeManager.parseColor(theme.textPrimaryColor)) },
                                         onClick = {
@@ -6270,6 +6308,15 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             }
         }
 
+        // «Собеседник тоже пользуется FunPay Tools»: тонкая плашка как плеер в Telegram, под «Смотрит лот»
+        AnimatedVisibility(
+            visible = peerIsFpt && peerUid !in fptDismissed,
+            enter = expandVertically(tween(260)) + fadeIn(tween(260)),
+            exit = shrinkVertically(tween(200)) + fadeOut(tween(160))
+        ) {
+            FptPeerBanner(rememberChatPalette(theme), theme) { peerUid?.let { FptMark.dismissBanner(it) } }
+        }
+
         // ===== Список сообщений в стиле Telegram =====
         val palette = rememberChatPalette(theme)
         val haptic = LocalHapticFeedback.current
@@ -6299,6 +6346,59 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                 row?.dayKey?.let { ChatDates.label(it) }
             }
         }
+
+        // ===== Нижняя область: клавиатура или панель стикеров (как в Telegram, без прыжков) =====
+        val chatDensity = LocalDensity.current
+        val imeInsets = WindowInsets.ime
+        val navInsets = WindowInsets.navigationBars
+        val keyboardController = LocalSoftwareKeyboardController.current
+        val inputFocus = remember { FocusRequester() }
+        var showStickers by remember { mutableStateOf(false) }
+        var pendingKeyboard by remember { mutableStateOf(false) }
+        var inputBarHeightPx by remember { mutableIntStateOf(0) }
+        val panelHeightPx = remember {
+            with(chatDensity) { (StickerStore.panelHeightDp(context).takeIf { it > 0 } ?: 290).dp.roundToPx() }
+        }
+        fun bottomAreaPx(): Int {
+            val ime = imeInsets.getBottom(chatDensity)
+            val nav = navInsets.getBottom(chatDensity)
+            return if (showStickers) maxOf(ime, panelHeightPx + nav) else maxOf(ime, nav)
+        }
+        // Запоминаем высоту клавиатуры: панель стикеров будет такой же
+        LaunchedEffect(Unit) {
+            StickerStore.loadCached(context)
+            snapshotFlow { imeInsets.getBottom(chatDensity) - navInsets.getBottom(chatDensity) }
+                .collect { px ->
+                    val dp = with(chatDensity) { px.toDp().value.toInt() }
+                    if (dp > 180) { delay(400); StickerStore.savePanelHeightDp(context, dp) }
+                }
+        }
+        // Панель → клавиатура: прячем панель, только когда клавиатура уже выехала
+        LaunchedEffect(pendingKeyboard) {
+            if (pendingKeyboard) {
+                withTimeoutOrNull(450) {
+                    snapshotFlow { imeInsets.getBottom(chatDensity) }
+                        .first { it >= panelHeightPx + navInsets.getBottom(chatDensity) - 4 }
+                }
+                showStickers = false
+                pendingKeyboard = false
+            }
+        }
+        BackHandler(enabled = showStickers) { showStickers = false }
+        // Если читали низ переписки, низ остаётся на месте, пока выезжает клавиатура
+        LaunchedEffect(listState) {
+            var prev = -1
+            snapshotFlow { bottomAreaPx() + inputBarHeightPx }.collect { v ->
+                val d = v - prev
+                if (prev >= 0 && d > 0) {
+                    val info = listState.layoutInfo
+                    val nearBottom = (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 2
+                    if (nearBottom) try { listState.scrollBy(d.toFloat()) } catch (_: Exception) {}
+                }
+                prev = v
+            }
+        }
+        val inputBarDp = with(chatDensity) { inputBarHeightPx.toDp() }
 
         Box(
             modifier = Modifier
@@ -6347,7 +6447,8 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         },
                         scope = scope
                     ),
-                contentPadding = PaddingValues(top = 8.dp, bottom = 10.dp)
+                // Поле ввода «плавает» над списком: сообщения уходят под него, как в Telegram
+                contentPadding = PaddingValues(top = 8.dp, bottom = 10.dp + inputBarDp)
             ) {
                 if (showPeerCard) {
                     item(key = "peer_info") {
@@ -6472,10 +6573,13 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             },
                             onImageClick = { url -> fullScreenImageUrl = url },
                             onProfileClick = { userId, userName ->
-                                val targetId = if (isPublicChat) userId else chatId
-                                val targetName = if (isPublicChat) userName.ifBlank { username } else username
-                                if (targetId.isNotBlank()) {
-                                    navController.navigate("profile/$targetId/$targetName")
+                                if (isPublicChat) {
+                                    // В игровом чате у автора есть только ID пользователя, а не чат с ним
+                                    if (userId.isNotBlank() && userId != "0") {
+                                        navController.navigate("user/$userId/${Uri.encode(userName.ifBlank { "Профиль" })}")
+                                    }
+                                } else if (chatId.isNotBlank()) {
+                                    navController.navigate("profile/$chatId/${Uri.encode(username)}")
                                 }
                             },
                             otherUserId = chatId,
@@ -6505,18 +6609,18 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     total > 0 && lastVisible < total - 3
                 }
             }
-            ChatFloatingOverlays(
-                showDate = showFloatingDate && floatingDate != null,
-                dateText = floatingDate.orEmpty(),
-                showScrollDown = showScrollDown && !isSelectionMode,
-                palette = palette,
-                theme = theme,
-                onScrollDown = {
-                    scope.launch { try { listState.animateScrollToItem(lastRowIndex()) } catch (_: Exception) {} }
-                }
-            )
-        }
-
+            Box(Modifier.fillMaxSize().padding(bottom = inputBarDp)) {
+                ChatFloatingOverlays(
+                    showDate = showFloatingDate && floatingDate != null,
+                    dateText = floatingDate.orEmpty(),
+                    showScrollDown = showScrollDown && !isSelectionMode,
+                    palette = palette,
+                    theme = theme,
+                    onScrollDown = {
+                        scope.launch { try { listState.animateScrollToItem(lastRowIndex()) } catch (_: Exception) {} }
+                    }
+                )
+            }
 
         var validationError by remember { mutableStateOf<String?>(null) }
         LaunchedEffect(inputText) {
@@ -6531,6 +6635,13 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         }
 
 
+        // ===== Плавающая нижняя панель: ответ + поле ввода, без своей подложки =====
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .onSizeChanged { inputBarHeightPx = it.height }
+        ) {
         AnimatedVisibility(
             visible = replyToMessage != null,
             enter = expandVertically(tween(180)) + fadeIn(tween(180)),
@@ -6552,7 +6663,6 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 8.dp)
         ) {
             AnimatedVisibility(visible = validationError != null) {
@@ -6569,7 +6679,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(24.dp))
+                        .shadow(1.5.dp, RoundedCornerShape(24.dp), clip = true)
                         .background(inputPill),
                     verticalAlignment = Alignment.Bottom
                 ) {
@@ -6637,7 +6747,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
 
                                                                         FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
                                                                         scope.launch {
-                                                                            repository.sendWithOptionalImage(chatId, finalText, template.imageUri, template.imageFirst)
+                                                                            repository.sendWithOptionalImage(chatId, FptMark.sign(finalText), template.imageUri, template.imageFirst)
                                                                             if (repository.getReadMarkSettings().markAfterManualReply) {
                                                                                 repository.markChatAsRead(chatId)
                                                                             }
@@ -6667,6 +6777,8 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             onValueChange = { inputText = it },
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .focusRequester(inputFocus)
+                                .onFocusChanged { if (it.isFocused && showStickers) pendingKeyboard = true }
                                 .contentReceiver(receiveContentListener),
                             textStyle = androidx.compose.ui.text.TextStyle(color = palette.text, fontSize = 16.sp, lineHeight = 21.sp),
                             cursorBrush = androidx.compose.ui.graphics.SolidColor(palette.accent),
@@ -6702,6 +6814,29 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), color = palette.accent, strokeWidth = 2.dp)
                         } else {
                             Icon(Icons.Default.AutoAwesome, contentDescription = "AI", tint = palette.accent)
+                        }
+                    }
+                    // стикеры ↔ клавиатура, как кнопка эмодзи в Telegram
+                    IconButton(
+                        onClick = {
+                            if (showStickers) {
+                                pendingKeyboard = true
+                                try { inputFocus.requestFocus() } catch (_: Exception) {}
+                                keyboardController?.show()
+                            } else {
+                                showStickers = true
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }
+                        },
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Crossfade(targetState = showStickers, animationSpec = tween(160), label = "stkBtn") { open ->
+                            Icon(
+                                if (open) Icons.Default.Keyboard else Icons.Outlined.EmojiEmotions,
+                                contentDescription = if (open) "Клавиатура" else "Стикеры",
+                                tint = if (open) palette.accent else iconTint
+                            )
                         }
                     }
                     // скрепка — фото
@@ -6756,7 +6891,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                                             }
                                                         }
                                                         scope.launch {
-                                                            repository.sendMessage(chatId, textToSend)
+                                                            repository.sendMessage(chatId, FptMark.sign(textToSend))
                                                             if (repository.getReadMarkSettings().markAfterManualReply) {
                                                                 repository.markChatAsRead(chatId)
                                                             }
@@ -6766,6 +6901,67 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить", tint = Color.White, modifier = Modifier.size(22.dp).offset(x = 2.dp))
+                }
+            }
+        }
+        } // плавающая нижняя панель
+        } // список + поле ввода
+
+        // Стикер уходит в FunPay обычной картинкой PNG; в чате появляется сразу
+        fun sendSticker(pack: StickerPack, item: StickerItem) {
+            StickerStore.addRecent(context, pack, item)
+            val optimistic = MessageItem(
+                id = System.currentTimeMillis().toString(),
+                author = "Вы",
+                text = "",
+                isMe = true,
+                time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                imageUrl = StickerStore.fullUrl(pack, item)
+            )
+            messages = messages + optimistic
+            val otherUidLocal = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
+            parsedMessages = parseMessagesFromRepository(messages, repository, otherUidLocal)
+            previousMessageCount = messages.size
+            scope.launch {
+                delay(16)
+                try { listState.animateScrollToItem(lastRowIndex()) } catch (_: Exception) {}
+            }
+            scope.launch {
+                FunPayRepository.lastOutgoingMessages[chatId] = "__image__"
+                val png = StickerStore.preparePng(context, pack, item)
+                val fileId = png?.let { repository.uploadImageFile(it, "image/png") }
+                if (fileId == null || !repository.sendMessage(chatId, "", fileId)) {
+                    Toast.makeText(context, "Не удалось отправить стикер", Toast.LENGTH_SHORT).show()
+                } else if (repository.getReadMarkSettings().markAfterManualReply) {
+                    repository.markChatAsRead(chatId)
+                }
+            }
+        }
+
+        // Место под клавиатуру или панель стикеров. Высота общая, поэтому переключение без прыжка.
+        val bottomAreaDp = with(chatDensity) { bottomAreaPx().toDp() }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(bottomAreaDp)
+        ) {
+            val panelAlpha by animateFloatAsState(if (showStickers) 1f else 0f, tween(180), label = "stkPanel")
+            if (showStickers || panelAlpha > 0.01f) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            alpha = panelAlpha
+                            translationY = (1f - panelAlpha) * 48.dp.toPx()
+                        }
+                ) {
+                    StickerPanel(
+                        height = with(chatDensity) { panelHeightPx.toDp() },
+                        palette = palette,
+                        theme = theme,
+                        onSend = { pack, item -> sendSticker(pack, item) }
+                    )
+                    Spacer(Modifier.fillMaxWidth().height(with(chatDensity) { navInsets.getBottom(chatDensity).toDp() }))
                 }
             }
         }
@@ -10509,7 +10705,7 @@ fun LotScreen(
                                     Text(
                                         l.sellerName.ifEmpty { "Продавец" },
                                         fontSize = 13.sp, fontWeight = FontWeight.Bold, color = ThemeManager.parseColor(theme.textPrimaryColor),
-                                        modifier = Modifier.weight(1f).clickable { if (l.sellerId.isNotEmpty()) navController.navigate("profile/${l.sellerId}/${l.sellerName}") }
+                                        modifier = Modifier.weight(1f).clickable { if (l.sellerId.isNotEmpty()) navController.navigate("user/${l.sellerId}/${Uri.encode(l.sellerName.ifBlank { "Продавец" })}") }
                                     )
                                     if (l.priceText.isNotBlank()) {
                                         Text(l.priceText, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = ThemeManager.parseColor(theme.accentColor))

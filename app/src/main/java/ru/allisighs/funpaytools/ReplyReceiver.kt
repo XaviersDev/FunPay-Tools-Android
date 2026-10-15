@@ -31,7 +31,7 @@ class ReplyReceiver : BroadcastReceiver() {
             val manager = context.getSystemService(NotificationManager::class.java)
 
             CoroutineScope(Dispatchers.IO).launch {
-                val success = repository.sendMessage(chatId, replyText)
+                val success = repository.sendMessage(chatId, FptMark.sign(replyText))
                 if (success) {
                     manager.cancel(notificationId)
                 }

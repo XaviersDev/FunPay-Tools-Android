@@ -28,6 +28,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -363,7 +370,36 @@ fun GlobalChatView(navController: NavController, theme: AppTheme, repository: Fu
     }
     val rows = remember(parsed) { buildChatRows(parsed) }
 
-    Column(Modifier.fillMaxSize().background(ThemeManager.parseColor(theme.backgroundColor))) {
+    // Клавиатура: общий чат живёт внутри экрана с нижней навигацией, поэтому поднимаем поле
+    // ровно на ту часть клавиатуры, что выше нижнего края этого экрана.
+    val density = LocalDensity.current
+    val imeInsets = WindowInsets.ime
+    var gapBelowPx by remember { mutableIntStateOf(0) }
+    var inputBarHeightPx by remember { mutableIntStateOf(0) }
+    val keyboardLiftPx = (imeInsets.getBottom(density) - gapBelowPx).coerceAtLeast(0)
+    LaunchedEffect(listState) {
+        var prev = -1
+        snapshotFlow { (imeInsets.getBottom(density) - gapBelowPx).coerceAtLeast(0) + inputBarHeightPx }.collect { v ->
+            val d = v - prev
+            if (prev >= 0 && d > 0) {
+                val info = listState.layoutInfo
+                val nearBottom = (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 2
+                if (nearBottom) try { listState.scrollBy(d.toFloat()) } catch (_: Exception) {}
+            }
+            prev = v
+        }
+    }
+    val inputBarDp = with(density) { inputBarHeightPx.toDp() }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(ThemeManager.parseColor(theme.backgroundColor))
+            .onGloballyPositioned { c ->
+                val rootH = c.findRootCoordinates().size.height
+                gapBelowPx = (rootH - c.boundsInRoot().bottom).toInt().coerceAtLeast(0)
+            }
+    ) {
         if (!config.active) {
             Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(config.disabledMessage, color = palette.secondary, textAlign = TextAlign.Center, fontSize = 15.sp)
@@ -443,7 +479,8 @@ fun GlobalChatView(navController: NavController, theme: AppTheme, repository: Fu
                         },
                         scope = scope
                     ),
-                contentPadding = PaddingValues(top = 6.dp, bottom = 8.dp)
+                // Поле ввода «плавает» над списком, как в Telegram
+                contentPadding = PaddingValues(top = 6.dp, bottom = 8.dp + inputBarDp)
             ) {
                 items(rows, key = { it.key }) { row ->
                     val msg = row.msg
@@ -474,7 +511,7 @@ fun GlobalChatView(navController: NavController, theme: AppTheme, repository: Fu
                             },
                             onImageClick = {},
                             onProfileClick = { uid, name ->
-                                if (uid.isNotBlank()) navController.navigate("profile/$uid/${Uri.encode(name)}")
+                                if (uid.isNotBlank()) navController.navigate("user/$uid/${Uri.encode(name.ifBlank { "Профиль" })}")
                             },
                             otherUserId = "",
                             otherUsername = msg.author,
@@ -495,12 +532,13 @@ fun GlobalChatView(navController: NavController, theme: AppTheme, repository: Fu
                     }
                 }
             }
-        }
 
-        // Нижняя панель: вход через бота или поле ввода
+        // Нижняя панель: вход через бота или поле ввода. Своей подложки нет — сообщения видны за ней.
         Column(
             Modifier
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .onSizeChanged { inputBarHeightPx = it.height }
                 .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 8.dp)
         ) {
             status?.let {
@@ -527,7 +565,7 @@ fun GlobalChatView(navController: NavController, theme: AppTheme, repository: Fu
                         Modifier
                             .weight(1f)
                             .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(24.dp))
+                            .shadow(1.5.dp, RoundedCornerShape(24.dp), clip = true)
                             .background(if (palette.isLight) Color.White else palette.inBubble)
                             .padding(horizontal = 16.dp, vertical = 13.dp),
                         contentAlignment = Alignment.CenterStart
@@ -566,6 +604,10 @@ fun GlobalChatView(navController: NavController, theme: AppTheme, repository: Fu
                 }
             }
         }
+        } // список + поле ввода
+
+        // Место под клавиатуру
+        Spacer(Modifier.fillMaxWidth().height(with(density) { keyboardLiftPx.toDp() }))
     }
 }
 

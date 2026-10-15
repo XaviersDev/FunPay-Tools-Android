@@ -307,7 +307,9 @@ fun UserProfileScreen(
     username: String,
     navController: NavController,
     repository: FunPayRepository,
-    theme: AppTheme
+    theme: AppTheme,
+    /** ID пользователя FunPay, если он уже известен (общий и игровые чаты, витрина). Тогда чат не нужен. */
+    knownUserId: String? = null
 ) {
     val context = LocalContext.current
     var uiState by remember { mutableStateOf<ProfileUiState>(ProfileUiState.Loading) }
@@ -321,10 +323,14 @@ fun UserProfileScreen(
         allLabels.filter { it.id in labelIds }
     }
 
-    LaunchedEffect(nodeId) {
+    suspend fun resolveUserId(): String =
+        knownUserId?.trim()?.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }
+            ?: repository.resolveUserIdFromNode(nodeId)
+
+    LaunchedEffect(nodeId, knownUserId) {
         uiState = ProfileUiState.Loading
         try {
-            val userId = repository.resolveUserIdFromNode(nodeId)
+            val userId = resolveUserId()
             if (userId.isEmpty()) throw Exception("Не удалось определить ID пользователя")
             resolvedUserId = userId
             val profile = repository.getUserProfile(userId)
@@ -381,7 +387,7 @@ fun UserProfileScreen(
                                 uiState = ProfileUiState.Loading
                                 scope.launch {
                                     try {
-                                        val userId = repository.resolveUserIdFromNode(nodeId)
+                                        val userId = resolveUserId()
                                         if (userId.isEmpty()) throw Exception("Не удалось определить ID пользователя")
                                         resolvedUserId = userId
                                         uiState = ProfileUiState.Success(repository.getUserProfile(userId))

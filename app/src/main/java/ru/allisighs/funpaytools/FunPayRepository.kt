@@ -232,7 +232,8 @@ data class ChatInfo(
     val registrationDate: String?,
     val language: String?,
     val avatarUrl: String? = null,
-    val userStatus: String? = null
+    val userStatus: String? = null,
+    val peerUserId: String? = null
 )
 
 data class BanInfo(val reason: String)
@@ -373,6 +374,7 @@ class FunPayRepository(private val context: Context, val targetAccountId: String
 
     init {
         FpCookieStore.init(context)
+        FptMark.init(context)
 
         // Миграция: раньше PHPSESSID жил в общем ключе prefs "phpsessid" для ВСЕХ
         // аккаунтов. Его больше не используем (он и был причиной перемешивания
@@ -1801,6 +1803,39 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         }
     }
 
+    /** Загрузка готового файла (стикеры): своё имя и MIME, чтобы PNG с прозрачностью не уходил как «jpg». */
+    suspend fun uploadImageFile(file: File, mimeType: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val requestFile = file.asRequestBody(mimeType.toMediaTypeOrNull())
+            val body = MultipartBody.Part.createFormData("file", file.name, requestFile)
+            val fileIdBody = "0".toRequestBody("text/plain".toMediaTypeOrNull())
+            val response = api.uploadChatImage(
+                cookie = getCookieString(),
+                userAgent = userAgent,
+                file = body,
+                fileId = fileIdBody
+            )
+            updateSession(response)
+            val jsonStr = readBodySilent(response)
+            if (jsonStr.isEmpty()) {
+                LogManager.addLog("❌ Сервер не ответил на загрузку стикера (пустой ответ)")
+                return@withContext null
+            }
+            val json = JSONObject(jsonStr)
+            when {
+                json.has("fileId") -> json.getString("fileId")
+                json.has("url") -> json.getString("url")
+                else -> {
+                    LogManager.addLog("❌ FunPay отклонил стикер: ${json.optString("msg", jsonStr)}")
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Ошибка загрузки стикера: ${e.javaClass.simpleName} — ${e.message}")
+            null
+        }
+    }
+
     suspend fun downloadAndSaveImage(imageUrl: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val client = OkHttpClient()
@@ -2082,7 +2117,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
             val success = !json.optBoolean("error", false)
             if (success && text.isNotEmpty()) {
-                lastOutgoingMessages[nodeId] = text.trim()
+                lastOutgoingMessages[nodeId] = FptMark.strip(text).trim()
                 persistOutgoing(context)
             }
             success
@@ -2392,7 +2427,8 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                                 }
 
                                 val chatId = item.attr("data-id")
-                                val lastMsgText = item.select("div.contact-item-message").text()
+                                // Метку FunPay Tools в превью не показываем и не сравниваем
+                                val lastMsgText = FptMark.strip(item.select("div.contact-item-message").text())
                                 var isUnread = item.hasClass("unread")
 
 
@@ -2515,12 +2551,14 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                 val badge = itemDiv.selectFirst(".chat-msg-author-label")?.text()
 
                 val isMe = (currentAuthorId == myUserId)
+                // Метка FunPay Tools: запоминаем собеседника и убираем невидимые символы из текста
+                if (!isMe && FptMark.has(text)) FptMark.markUser(currentAuthorId)
 
                 if (text.isNotEmpty() || imageUrl != null) {
                     resultList.add(MessageItem(
                         id = idStr,
                         author = currentAuthor,
-                        text = text,
+                        text = FptMark.strip(text),
                         isMe = isMe,
                         time = currentTime,
                         imageUrl = imageUrl,
@@ -2638,12 +2676,14 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                 val badge = itemDiv.selectFirst(".chat-msg-author-label")?.text()
 
                 val isMe = (currentAuthorId == myUserId)
+                // Метка FunPay Tools: запоминаем собеседника и убираем невидимые символы из текста
+                if (!isMe && FptMark.has(text)) FptMark.markUser(currentAuthorId)
 
                 if (text.isNotEmpty() || imageUrl != null) {
                     resultList.add(MessageItem(
                         id = idStr,
                         author = currentAuthor,
-                        text = text,
+                        text = FptMark.strip(text),
                         isMe = isMe,
                         time = currentTime,
                         imageUrl = imageUrl,
@@ -2708,7 +2748,11 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
 
                 val userStatus = doc.select(".chat-header .media-user-status").text().trim().ifEmpty { null }
 
-                ChatInfo(lookingAtLink, lookingAtName, registrationDate, language, avatarUrl, userStatus)
+                // ID собеседника из шапки чата (нужен для метки FunPay Tools и профиля)
+                val peerUserId = doc.select(".chat-header .media-user-name a").firstOrNull()?.attr("href")
+                    ?.let { Regex("/users/(\\d+)").find(it)?.groupValues?.get(1) }
+
+                ChatInfo(lookingAtLink, lookingAtName, registrationDate, language, avatarUrl, userStatus, peerUserId)
             } catch (e: Exception) {
                 null
             }

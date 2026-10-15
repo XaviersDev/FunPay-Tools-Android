@@ -205,6 +205,13 @@ fun SettingsScreen(
                                     navController.navigate("widgets_settings")
                                 }
                             )
+
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = ThemeManager.parseColor(currentTheme.textSecondaryColor)
+                                    .copy(alpha = 0.1f)
+                            )
+                            FptMarkToggleItem(theme = currentTheme)
                         }
                     )
                 }
@@ -661,4 +668,60 @@ private fun DeleteConfirmDialog(
         },
         containerColor = ThemeManager.dialogSurface(currentTheme)
     )
+}
+
+/** Переключатель невидимой метки FunPay Tools в сообщениях (как в расширении). */
+@Composable
+private fun FptMarkToggleItem(theme: AppTheme) {
+    val context = LocalContext.current
+    var enabled by remember { mutableStateOf(FptMark.isEnabled(context)) }
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val iconColor = ThemeManager.parseColor("#1B75BB")
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                enabled = !enabled
+                FptMark.setEnabled(context, enabled)
+            }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(listOf(iconColor.copy(alpha = 0.25f), iconColor.copy(alpha = 0.1f)))
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Handshake, contentDescription = null, tint = iconColor, modifier = Modifier.size(24.dp))
+        }
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "Узнавать своих",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
+                color = ThemeManager.parseColor(theme.textPrimaryColor)
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Невидимая метка в ваших сообщениях. Собеседник с FunPay Tools увидит, что вы тоже с ним, а вы увидите его",
+                fontSize = 13.sp,
+                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                lineHeight = 18.sp
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Switch(
+            checked = enabled,
+            onCheckedChange = {
+                enabled = it
+                FptMark.setEnabled(context, it)
+            },
+            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
+        )
+    }
 }

@@ -1212,6 +1212,16 @@ fun FilterMenu(current: Boolean?, theme: AppTheme, onChange: (Boolean?) -> Unit,
     }
 }
 
+/** Публичная ссылка на лот, которую можно вставить покупателю. */
+fun lotPublicUrl(lotId: String) = "https://funpay.com/lots/offer?id=$lotId"
+
+fun copyLotLink(context: Context, lotId: String) {
+    if (lotId.isBlank()) return
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("lot", lotPublicUrl(lotId)))
+    Toast.makeText(context, "Ссылка на лот скопирована", Toast.LENGTH_SHORT).show()
+}
+
 @Composable
 fun LotCard(
     lot: Lot,
@@ -1311,7 +1321,17 @@ fun LotCard(
                     }
 
                     if (!selectionMode) {
+                        val ctx = androidx.compose.ui.platform.LocalContext.current
                         Row {
+                            // Ссылка на лот, чтобы сразу вставить покупателю
+                            IconButton(onClick = { copyLotLink(ctx, lot.id) }, modifier = Modifier.size(36.dp)) {
+                                Icon(
+                                    imageVector = Icons.Default.Link,
+                                    contentDescription = "Скопировать ссылку",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = ThemeManager.parseColor(theme.accentColor)
+                                )
+                            }
                             IconButton(onCopy, Modifier.size(36.dp)) {
                                 Icon(
                                     imageVector = Icons.Default.ContentCopy,
@@ -1609,6 +1629,9 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                     IconButton({ navController.popBackStack() }) { Icon(Icons.Default.ArrowBack, null) }
                 },
                 actions = {
+                    IconButton({ copyLotLink(context, lotId) }) {
+                        Icon(Icons.Default.Link, contentDescription = "Скопировать ссылку")
+                    }
                     if (uiState is LotEditUiState.Success) {
                         IconButton({
                             errorMessage = null
