@@ -18,7 +18,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -27,6 +26,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.withLock
+import java.io.File
+import java.io.FileOutputStream
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.content.ReceiveContentListener
 import androidx.compose.foundation.content.contentReceiver
@@ -202,7 +204,11 @@ data class ParsedMessage(
     val authorUserId: String? = null,
     val authorAvatarUrl: String? = null,
     /** Текст цитаты, если это ответ в формате «╭─ ⤸ цитата\n╰ ответ» (как в расширении). */
-    val replyQuote: String? = null
+    val replyQuote: String? = null,
+    /** Отправка картинки/стикера: 0 — обычное сообщение, 1 — отправляется (часики), 2 — не отправилось. */
+    val sendState: Int = 0,
+    /** Локальная картинка, которую показывали до ответа FunPay (чтобы не мигало при замене). */
+    val localPreview: String? = null
 )
 
 private val REPLY_FORMAT = Regex("^╭─\\s*⤸\\s?([\\s\\S]*?)\\n╰\\s?([\\s\\S]*)$")
@@ -408,6 +414,17 @@ fun FunPayToolsApp(
                             navController = navController,
                             repository = repository,
                             theme = currentTheme
+                        )
+                    }
+
+                    // Встроенный браузер сразу на нужной странице (лот, профиль и т.п.)
+                    composable("funpay_browser_url/{url}") { backStackEntry ->
+                        val startUrl = Uri.decode(backStackEntry.arguments?.getString("url").orEmpty())
+                        FunPayBrowserScreen(
+                            navController = navController,
+                            repository = repository,
+                            theme = currentTheme,
+                            startUrl = startUrl.takeIf { it.startsWith("https://funpay.com") }
                         )
                     }
 
@@ -1276,6 +1293,41 @@ suspend fun googleTranslate(text: String, targetLang: String = "ru"): String? = 
 }
 
 @SuppressLint("SetJavaScriptEnabled")
+/**
+ * Ссылки не на http(s) внутри встроенного браузера: vk://, vkauthorize://, intent://...
+ * WebView их открыть не может и показывает «net::ERR_UNKNOWN_URL_SCHEME».
+ * - intent:// с запасной ссылкой (browser_fallback_url) или https-адресом — открываем её тут же;
+ * - tel:, mailto: — во внешнем приложении;
+ * - приложения VK и прочие — не открываем: вход должен закончиться в этом окне, иначе
+ *   golden_key останется в другом браузере. Страница VK сама предложит вход по паролю или QR.
+ */
+fun handleNonWebScheme(view: WebView?, url: String?, context: Context): Boolean {
+    val u = url ?: return false
+    val scheme = Uri.parse(u).scheme?.lowercase() ?: return false
+    if (scheme in setOf("http", "https", "about", "data", "blob", "javascript", "file")) return false
+    if (scheme == "intent") {
+        val intent = try { Intent.parseUri(u, Intent.URI_INTENT_SCHEME) } catch (_: Exception) { null }
+        val fallback = intent?.getStringExtra("browser_fallback_url")
+            ?: intent?.dataString?.takeIf { it.startsWith("http") }
+        if (!fallback.isNullOrBlank()) {
+            view?.loadUrl(fallback)
+            return true
+        }
+    }
+    if (scheme == "tel" || scheme == "mailto") {
+        try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
+        return true
+    }
+    val now = System.currentTimeMillis()
+    if (now - lastSchemeToastAt > 4000) {
+        lastSchemeToastAt = now
+        Toast.makeText(context, "Войдите прямо на этой странице: по паролю или QR-коду. Приложение VK тут не подойдёт", Toast.LENGTH_LONG).show()
+    }
+    return true
+}
+
+private var lastSchemeToastAt = 0L
+
 @Composable
 fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
     val context = LocalContext.current
@@ -1343,6 +1395,11 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
 
 
                     webViewClient = object : WebViewClient() {
+                        // Вход через VK/Google пытается открыть приложение (vk://, intent://) → err_unknown_url_scheme.
+                        // Оставляем вход в этом окне, иначе куки FunPay сюда не попадут.
+                        override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean =
+                            handleNonWebScheme(view, request?.url?.toString(), context)
+
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
                             currentUrl = url ?: ""
@@ -1480,7 +1537,7 @@ fun WebLoginScreen(navController: NavController, repository: FunPayRepository) {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun FunPayBrowserScreen(navController: NavController, repository: FunPayRepository, theme: AppTheme, pickForConcurent: Boolean = false) {
+fun FunPayBrowserScreen(navController: NavController, repository: FunPayRepository, theme: AppTheme, pickForConcurent: Boolean = false, startUrl: String? = null) {
     val context = LocalContext.current
     var webView by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember { mutableStateOf("https://funpay.com") }
@@ -1490,6 +1547,10 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
     var isLoading by remember { mutableStateOf(true) }
 
     val account = remember { repository.getActiveAccount() }
+
+    // Свайп «назад» (жест системы или кнопка) листает историю сайта, а не выкидывает в приложение.
+    // Из браузера выходим крестиком или «назад» на первой странице.
+    BackHandler(enabled = canGoBack) { webView?.goBack() }
 
     Column(modifier = Modifier.fillMaxSize().background(ThemeManager.parseColor(theme.backgroundColor))) {
         Surface(color = ThemeManager.parseColor(theme.surfaceColor)) {
@@ -1501,7 +1562,7 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = { navController.popBackStack() }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, null,
+                    Icon(Icons.Default.Close, "Закрыть браузер",
                         tint = ThemeManager.parseColor(theme.textPrimaryColor))
                 }
                 Text(
@@ -1520,6 +1581,12 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                     Icon(Icons.AutoMirrored.Filled.ArrowForward, null,
                         tint = if (canGoForward) ThemeManager.parseColor(theme.accentColor)
                         else ThemeManager.parseColor(theme.textSecondaryColor))
+                }
+                // Обновить страницу; пока грузится, кнопка останавливает загрузку
+                IconButton(onClick = { if (isLoading) webView?.stopLoading() else webView?.reload() }) {
+                    Icon(if (isLoading) Icons.Default.Close else Icons.Default.Refresh,
+                        if (isLoading) "Остановить" else "Обновить",
+                        tint = ThemeManager.parseColor(theme.textPrimaryColor))
                 }
                 IconButton(onClick = {
                     try {
@@ -1577,6 +1644,14 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                     }
 
                     webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(view: WebView?, request: android.webkit.WebResourceRequest?): Boolean =
+                            handleNonWebScheme(view, request?.url?.toString(), context)
+                        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                            super.doUpdateVisitedHistory(view, url, isReload)
+                            canGoBack = view?.canGoBack() == true
+                            canGoForward = view?.canGoForward() == true
+                            if (url != null) currentUrl = url
+                        }
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
                             isLoading = true
@@ -1615,7 +1690,7 @@ fun FunPayBrowserScreen(navController: NavController, repository: FunPayReposito
                         false
                     }
 
-                    loadUrl("https://funpay.com")
+                    loadUrl(startUrl ?: "https://funpay.com")
                 }.also { webView = it }
             }
         )
@@ -3828,7 +3903,7 @@ fun AutoTicketDialog(settings: AutoTicketSettings, theme: AppTheme, onSave: (Aut
                 }
                 Column {
                     Text("Заказов в одном тикете: $maxPerTicket", fontSize = 13.sp, color = textPrimary)
-                    Slider(value = maxPerTicket.toFloat(), onValueChange = { maxPerTicket = it.toInt() }, valueRange = 1f..20f, colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent))
+                    Slider(value = maxPerTicket.toFloat(), onValueChange = { maxPerTicket = it.toInt() }, valueRange = 1f..120f, colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent))
                 }
                 Column {
                     Text("Дневной лимит тикетов: $dailyLimit", fontSize = 13.sp, color = textPrimary)
@@ -4235,10 +4310,13 @@ private fun FeedbackBonusRuleCard(
     var imageUri by remember(rule.id) {
         mutableStateOf<Uri?>(rule.imageUri?.let { Uri.parse(it) })
     }
+    val bonusCtx = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
-            imageUri = uri
-            onUpdate(rule.copy(imageUri = uri.toString()))
+            // Копия в память приложения: ссылка галереи после перезапуска уже не открывается
+            val local = FunPayRepository(bonusCtx).copyPickedImageToStorage(uri)?.let { Uri.parse(it) } ?: uri
+            imageUri = local
+            onUpdate(rule.copy(imageUri = local.toString()))
         }
     }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -4873,7 +4951,9 @@ fun CommandsDialog(repository: FunPayRepository, theme: AppTheme, onDismiss: () 
     LaunchedEffect(editingCmd) { if (editingCmd != null) formExpanded = true }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        newImageUri = uri
+        // Ссылка из галереи временная: после перезапуска FunPay Tools её уже не открыть, и команда
+        // уходила без картинки. Копируем файл к себе, как в приветствии и автовозврате.
+        newImageUri = uri?.let { repository.copyPickedImageToStorage(it)?.let { p -> Uri.parse(p) } ?: it }
     }
 
     Dialog(
@@ -5631,6 +5711,32 @@ fun ReviewSettingsDialog(
     }
 }
 
+/** Картинка или стикер, которые уже показаны в чате, но ещё не вернулись от FunPay. */
+private data class PendingMedia(
+    val id: String,
+    /** Что показываем: ссылка на стикер или content:// фото из галереи */
+    val model: String,
+    val time: String,
+    /** Самый новый ID с сервера на момент отправки: наше сообщение будет новее */
+    val baseline: Long,
+    /** 1 — отправляется, 2 — ошибка, 3 — FunPay принял, ждём его в истории */
+    val state: Int,
+    val sticker: Pair<StickerPack, StickerItem>? = null,
+    val uri: Uri? = null
+) {
+    fun toParsed() = ParsedMessage(
+        id = id,
+        author = "Вы",
+        text = "",
+        isMe = true,
+        time = time,
+        imageUrl = model,
+        sendState = if (state == 3) 0 else state,
+        // У стикера маленькое превью уже в кеше, оно видно сразу, пока грузится оригинал
+        localPreview = sticker?.let { StickerStore.thumbUrl(it.first, it.second) }
+    )
+}
+
 @Composable
 fun ChatDetailScreen(chatId: String, username: String, repository: FunPayRepository, theme: AppTheme, navController: NavController) {
     val scope = rememberCoroutineScope()
@@ -5664,10 +5770,19 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
     var currentSearchIndex by remember { mutableStateOf(0) }
     val focusManager = LocalFocusManager.current
 
+    // Картинки и стикеры: показываются сразу, с часиками, пока FunPay их не принял (как в Telegram)
+    var pendingMedia by remember { mutableStateOf<List<PendingMedia>>(emptyList()) }
+    /** Почему FunPay не принял сообщение («Вы пока что не можете писать в этот чат» и т.п.) */
+    var sendError by remember { mutableStateOf<String?>(null) }
+    val confirmedPreviews = remember { mutableStateMapOf<String, String>() }
+    val sendMediaMutex = remember { kotlinx.coroutines.sync.Mutex() }
+
     val allMessages by remember {
         derivedStateOf {
-            (olderMessages + parsedMessages)
+            val server = (olderMessages + parsedMessages)
                 .distinctBy { it.id }
+                .map { m -> confirmedPreviews[m.id]?.let { m.copy(localPreview = it) } ?: m }
+            (server + pendingMedia.map { it.toParsed() })
                 .sortedBy { it.id.toLongOrNull() ?: 0L }
         }
     }
@@ -5695,6 +5810,82 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
     }
     var flashMessageId by remember { mutableStateOf<String?>(null) }
     var selectTextDialogFor by remember { mutableStateOf<ParsedMessage?>(null) }
+
+    /** Самый новый ID сообщения с сервера (временные ID из миллисекунд не считаем). */
+    fun maxServerId(): Long = (olderMessages + parsedMessages)
+        .maxOfOrNull { m -> m.id.toLongOrNull()?.takeIf { it < 100_000_000_000L } ?: 0L } ?: 0L
+
+    fun runPendingSend(p: PendingMedia) {
+        scope.launch {
+            var failReason: String? = null
+            val ok = sendMediaMutex.withLock {
+                FunPayRepository.lastOutgoingMessages[chatId] = "__image__"
+                val fileId = try {
+                    when {
+                        p.sticker != null -> StickerStore.preparePng(context, p.sticker.first, p.sticker.second)
+                            ?.let { repository.uploadImageFile(it, "image/png") }
+                        p.uri != null -> repository.uploadImage(p.uri)
+                        else -> null
+                    }
+                } catch (_: Exception) { null }
+                if (fileId == null) {
+                    failReason = "Не удалось загрузить картинку на FunPay"
+                    return@withLock false
+                }
+                val sent = repository.sendMessage(chatId, "", fileId)
+                if (!sent) failReason = repository.lastSendError ?: "Картинка не отправлена"
+                if (sent) delay(400) // FunPay не любит пачку картинок подряд
+                sent
+            }
+            pendingMedia = pendingMedia.map { if (it.id == p.id) it.copy(state = if (ok) 3 else 2) else it }
+            if (!ok) sendError = failReason
+            if (ok && repository.getReadMarkSettings().markAfterManualReply) repository.markChatAsRead(chatId)
+        }
+    }
+
+    /** Сразу показывает картинки/стикеры в чате и отправляет их по очереди. */
+    fun enqueueMedia(items: List<Triple<String, Pair<StickerPack, StickerItem>?, Uri?>>) {
+        if (items.isEmpty()) return
+        val base = maxServerId()
+        val now = System.currentTimeMillis()
+        val hhmm = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+        val added = items.mapIndexed { i, (model, st, uri) ->
+            PendingMedia((now + i).toString(), model, hhmm, base, 1, st, uri)
+        }
+        pendingMedia = pendingMedia + added
+        scope.launch {
+            delay(16)
+            try { listState.animateScrollToItem(lastRowIndex()) } catch (_: Exception) {}
+        }
+        added.forEach { runPendingSend(it) }
+    }
+
+    fun retryPending(id: String) {
+        val p = pendingMedia.firstOrNull { it.id == id } ?: return
+        val again = p.copy(state = 1)
+        pendingMedia = pendingMedia.map { if (it.id == id) again else it }
+        runPendingSend(again)
+    }
+
+    /** Когда FunPay вернул нашу картинку, временное сообщение заменяется настоящим без мигания. */
+    fun reconcilePending() {
+        if (pendingMedia.none { it.state == 1 || it.state == 3 }) return
+        val serverMine = parsedMessages
+            .filter { it.isMe && it.imageUrl != null && it.id !in confirmedPreviews }
+            .mapNotNull { m -> m.id.toLongOrNull()?.takeIf { it < 100_000_000_000L }?.let { it to m } }
+            .sortedBy { it.first }
+        val used = HashSet<Long>()
+        val keep = ArrayList<PendingMedia>()
+        for (p in pendingMedia) {
+            if (p.state == 2) { keep += p; continue }
+            val match = serverMine.firstOrNull { it.first > p.baseline && it.first !in used }
+            if (match != null) {
+                used += match.first
+                confirmedPreviews[match.second.id] = p.model
+            } else keep += p
+        }
+        if (keep.size != pendingMedia.size) pendingMedia = keep
+    }
 
     var selectedMultipleUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var showMultiImageDialog by remember { mutableStateOf(false) }
@@ -5741,6 +5932,44 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         }
     }
 
+    // ===== Вставка картинки из буфера обмена (скопировал в галерее/браузере → «Вставить» над полем) =====
+    val clipboard = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
+    var clipImageStamp by remember { mutableStateOf<Long?>(null) }
+    var usedClipStamp by remember { mutableStateOf<Long?>(null) }
+    var inputFocused by remember { mutableStateOf(false) }
+    fun checkClipboardImage() {
+        val d = try { clipboard.primaryClipDescription } catch (_: Exception) { null }
+        val hasImage = d != null && (0 until d.mimeTypeCount).any { d.getMimeType(it).startsWith("image/") }
+        clipImageStamp = if (hasImage) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) d!!.timestamp else 1L
+        } else null
+    }
+    fun pasteClipboardImage() {
+        val clip = try { clipboard.primaryClip } catch (_: Exception) { null }
+        usedClipStamp = clipImageStamp
+        val uris = clip?.let { c -> (0 until c.itemCount).mapNotNull { c.getItemAt(it).uri } }.orEmpty()
+        if (uris.isEmpty()) {
+            Toast.makeText(context, "В буфере нет картинки", Toast.LENGTH_SHORT).show()
+            return
+        }
+        selectedMultipleUris = uris.take(10)
+        showMultiImageDialog = true
+    }
+    DisposableEffect(Unit) {
+        checkClipboardImage()
+        val listener = ClipboardManager.OnPrimaryClipChangedListener { checkClipboardImage() }
+        clipboard.addPrimaryClipChangedListener(listener)
+        onDispose { clipboard.removePrimaryClipChangedListener(listener) }
+    }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) checkClipboardImage()
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+
     if (showAiLimit) {
         AiLimitDialog(theme = theme, onDismiss = { showAiLimit = false }) {
             showAiLimit = false
@@ -5755,6 +5984,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
             messages = repository.getChatHistory(chatId)
             val _otherUid = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
             parsedMessages = parseMessagesFromRepository(messages, repository, _otherUid)
+            reconcilePending()
 
             if (translateEnabled) {
                 val incoming = parsedMessages.filter { !it.isMe && !it.isSystem && it.text.isNotBlank() }
@@ -5867,22 +6097,8 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                 showMultiImageDialog = false
                                 val urisToSend = selectedMultipleUris.toList()
                                 selectedMultipleUris = emptyList()
-                                scope.launch {
-                                    urisToSend.forEachIndexed { index, uri ->
-                                        FunPayRepository.lastOutgoingMessages[chatId] = "__image__"
-                                        val fileId = repository.uploadImage(uri)
-                                        if (fileId != null) {
-                                            repository.sendMessage(chatId, "", fileId)
-                                        }
-
-                                        if (index < urisToSend.lastIndex) {
-                                            delay(800)
-                                        }
-                                    }
-                                    if (repository.getReadMarkSettings().markAfterManualReply) {
-                                        repository.markChatAsRead(chatId)
-                                    }
-                                }
+                                // Фото сразу появляются в чате с часиками и уходят по очереди
+                                enqueueMedia(urisToSend.map { Triple(it.toString(), null, it) })
                             },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(
@@ -5924,16 +6140,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         Button(
                             onClick = {
                                 showImageDialog = false
-                                FunPayRepository.lastOutgoingMessages[chatId] = "__image__"
-                                scope.launch {
-                                    val fileId = repository.uploadImage(selectedImageUri!!)
-                                    if (fileId != null) {
-                                        repository.sendMessage(chatId, "", fileId)
-                                        if (repository.getReadMarkSettings().markAfterManualReply) {
-                                            repository.markChatAsRead(chatId)
-                                        }
-                                    }
-                                }
+                                selectedImageUri?.let { u -> enqueueMedia(listOf(Triple(u.toString(), null, u))) }
                             },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(containerColor = ThemeManager.parseColor(theme.accentColor))
@@ -6279,9 +6486,14 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     .fillMaxWidth()
                     .background(ThemeManager.dialogSurface(theme))
                     .clickable {
+                        // Свой лот → редактор лота в FunPay Tools (оттуда можно открыть во встроенном браузере).
+                        // Если ID не нашёлся, открываем страницу во встроенном браузере, а не в системном.
                         val link = info?.lookingAtLink.orEmpty()
-                        if (link.isNotEmpty()) {
-                            try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) } catch (_: Exception) {}
+                        val lotId = Regex("[?&](?:id|offer)=(\\d+)").find(link)?.groupValues?.get(1)
+                        when {
+                            lotId != null -> navController.navigate("lot_edit/$lotId")
+                            link.startsWith("https://funpay.com") -> navController.navigate("funpay_browser_url/${Uri.encode(link)}")
+                            link.isNotEmpty() -> try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) } catch (_: Exception) {}
                         }
                     }
                     .padding(horizontal = 14.dp, vertical = 7.dp),
@@ -6304,7 +6516,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Icon(Icons.Default.OpenInBrowser, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Edit, null, tint = ThemeManager.parseColor(theme.textSecondaryColor), modifier = Modifier.size(18.dp))
             }
         }
 
@@ -6596,7 +6808,8 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                     }
                                 }
                             },
-                            isFlashing = flashMessageId == msg.id
+                            isFlashing = flashMessageId == msg.id,
+                            onRetrySend = if (msg.sendState == 2) ({ retryPending(msg.id) }) else null
                         )
                     }
                 }
@@ -6642,6 +6855,39 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                 .fillMaxWidth()
                 .onSizeChanged { inputBarHeightPx = it.height }
         ) {
+        // Ошибка отправки от FunPay. «Не можете писать в этот чат» висит, пока не закроют, остальное само уходит.
+        LaunchedEffect(sendError) {
+            val e = sendError ?: return@LaunchedEffect
+            if (!e.contains("не можете писать", ignoreCase = true)) {
+                delay(7000)
+                if (sendError == e) sendError = null
+            }
+        }
+        AnimatedVisibility(
+            visible = sendError != null,
+            enter = expandVertically(tween(180)) + fadeIn(tween(180)),
+            exit = shrinkVertically(tween(150)) + fadeOut(tween(120))
+        ) {
+            SendErrorBar(
+                text = sendError.orEmpty(),
+                hint = if (sendError?.contains("не можете писать", true) == true && GameChatsRegistry.isSystemChatId(chatId))
+                    "Это ограничение FunPay для вашего аккаунта, на сайте будет так же" else null,
+                palette = palette,
+                onClose = { sendError = null }
+            )
+        }
+        // «Вставить картинку из буфера»: когда пользователь в поле ввода и в буфере есть изображение
+        AnimatedVisibility(
+            visible = inputFocused && clipImageStamp != null && clipImageStamp != usedClipStamp && !showStickers,
+            enter = expandVertically(tween(180)) + fadeIn(tween(180)),
+            exit = shrinkVertically(tween(150)) + fadeOut(tween(120))
+        ) {
+            ClipboardPasteChip(
+                palette = palette,
+                onPaste = { pasteClipboardImage() },
+                onClose = { usedClipStamp = clipImageStamp }
+            )
+        }
         AnimatedVisibility(
             visible = replyToMessage != null,
             enter = expandVertically(tween(180)) + fadeIn(tween(180)),
@@ -6747,8 +6993,10 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
 
                                                                         FunPayRepository.lastOutgoingMessages[chatId] = if (finalText.isNotBlank()) finalText.trim() else "__image__"
                                                                         scope.launch {
-                                                                            repository.sendWithOptionalImage(chatId, FptMark.sign(finalText), template.imageUri, template.imageFirst)
-                                                                            if (repository.getReadMarkSettings().markAfterManualReply) {
+                                                                            val ok = repository.sendWithOptionalImage(chatId, FptMark.sign(finalText), template.imageUri, template.imageFirst)
+                                                                            if (!ok) {
+                                                                                sendError = repository.lastSendError ?: "Шаблон не отправлен"
+                                                                            } else if (repository.getReadMarkSettings().markAfterManualReply) {
                                                                                 repository.markChatAsRead(chatId)
                                                                             }
                                                                         }
@@ -6778,7 +7026,13 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .focusRequester(inputFocus)
-                                .onFocusChanged { if (it.isFocused && showStickers) pendingKeyboard = true }
+                                .onFocusChanged {
+                                    inputFocused = it.isFocused
+                                    if (it.isFocused) {
+                                        checkClipboardImage()
+                                        if (showStickers) pendingKeyboard = true
+                                    }
+                                }
                                 .contentReceiver(receiveContentListener),
                             textStyle = androidx.compose.ui.text.TextStyle(color = palette.text, fontSize = 16.sp, lineHeight = 21.sp),
                             cursorBrush = androidx.compose.ui.graphics.SolidColor(palette.accent),
@@ -6833,7 +7087,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                     ) {
                         Crossfade(targetState = showStickers, animationSpec = tween(160), label = "stkBtn") { open ->
                             Icon(
-                                if (open) Icons.Default.Keyboard else Icons.Outlined.EmojiEmotions,
+                                if (open) Icons.Default.Keyboard else StickerIcon,
                                 contentDescription = if (open) "Клавиатура" else "Стикеры",
                                 tint = if (open) palette.accent else iconTint
                             )
@@ -6860,6 +7114,9 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                         .background(if (canSend) palette.accent else palette.accent.copy(alpha = 0.45f))
                         .clickable(enabled = canSend, onClick = {
                                                     if (inputText.isNotBlank() && validationError == null) {
+                                                        // Если FunPay откажет, вернём текст и ответ в поле ввода
+                                                        val typedBefore = inputText
+                                                        val replyBefore = replyToMessage
                                                         val textToSend = if (replyToMessage != null) {
                                                             // Тот же формат, что у расширения FunPay Tools: цитата целиком в одну строку
                                                             val src = replyToMessage!!
@@ -6891,9 +7148,23 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                                             }
                                                         }
                                                         scope.launch {
-                                                            repository.sendMessage(chatId, FptMark.sign(textToSend))
-                                                            if (repository.getReadMarkSettings().markAfterManualReply) {
-                                                                repository.markChatAsRead(chatId)
+                                                            val sentOk = repository.sendMessage(chatId, FptMark.sign(textToSend))
+                                                            if (!sentOk) {
+                                                                // Убираем «отправленное» сообщение и показываем, почему FunPay не принял
+                                                                messages = messages.filter { it.id != newMessage.id }
+                                                                val uidLocal = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
+                                                                parsedMessages = parseMessagesFromRepository(messages, repository, uidLocal)
+                                                                previousMessageCount = messages.size
+                                                                if (inputText.isEmpty()) {
+                                                                    inputText = typedBefore
+                                                                    replyToMessage = replyBefore
+                                                                }
+                                                                sendError = repository.lastSendError ?: "Сообщение не отправлено"
+                                                            } else {
+                                                                sendError = null
+                                                                if (repository.getReadMarkSettings().markAfterManualReply) {
+                                                                    repository.markChatAsRead(chatId)
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -6910,32 +7181,8 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
         // Стикер уходит в FunPay обычной картинкой PNG; в чате появляется сразу
         fun sendSticker(pack: StickerPack, item: StickerItem) {
             StickerStore.addRecent(context, pack, item)
-            val optimistic = MessageItem(
-                id = System.currentTimeMillis().toString(),
-                author = "Вы",
-                text = "",
-                isMe = true,
-                time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                imageUrl = StickerStore.fullUrl(pack, item)
-            )
-            messages = messages + optimistic
-            val otherUidLocal = chatId.removePrefix("users-").split("-").firstOrNull() ?: ""
-            parsedMessages = parseMessagesFromRepository(messages, repository, otherUidLocal)
-            previousMessageCount = messages.size
-            scope.launch {
-                delay(16)
-                try { listState.animateScrollToItem(lastRowIndex()) } catch (_: Exception) {}
-            }
-            scope.launch {
-                FunPayRepository.lastOutgoingMessages[chatId] = "__image__"
-                val png = StickerStore.preparePng(context, pack, item)
-                val fileId = png?.let { repository.uploadImageFile(it, "image/png") }
-                if (fileId == null || !repository.sendMessage(chatId, "", fileId)) {
-                    Toast.makeText(context, "Не удалось отправить стикер", Toast.LENGTH_SHORT).show()
-                } else if (repository.getReadMarkSettings().markAfterManualReply) {
-                    repository.markChatAsRead(chatId)
-                }
-            }
+            // Превью уже в кеше, поэтому стикер появляется мгновенно
+            enqueueMedia(listOf(Triple(StickerStore.fullUrl(pack, item), pack to item, null)))
         }
 
         // Место под клавиатуру или панель стикеров. Высота общая, поэтому переключение без прыжка.
@@ -7073,33 +7320,25 @@ fun FullScreenImageDialog(imageUrl: String, repository: FunPayRepository, theme:
                                             val drawable = result.drawable
 
                                             if (drawable != null) {
-                                                val bitmap = (drawable as BitmapDrawable).bitmap
-
-
-                                                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                                    val contentValues = ContentValues().apply {
-                                                        put(MediaStore.Images.Media.DISPLAY_NAME, "temp_copy_${System.currentTimeMillis()}.jpg")
-                                                        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                                                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
-                                                    }
-                                                    context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-                                                } else {
-                                                    val path = MediaStore.Images.Media.insertImage(context.contentResolver, bitmap, "Temp Copy", null)
-                                                    Uri.parse(path)
-                                                }
-
-                                                if (uri != null) {
-
-                                                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                                                        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
+                                                val bitmap = (drawable as? BitmapDrawable)?.bitmap
+                                                    ?: androidx.core.graphics.drawable.DrawableCompat.wrap(drawable).let { d ->
+                                                        val b = Bitmap.createBitmap(d.intrinsicWidth.coerceAtLeast(1), d.intrinsicHeight.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                                                        val c = android.graphics.Canvas(b); d.setBounds(0, 0, c.width, c.height); d.draw(c); b
                                                     }
 
-                                                    val clip = ClipData.newUri(context.contentResolver, "Image", uri)
-                                                    clipboardManager.setPrimaryClip(clip)
-                                                    Toast.makeText(context, "Изображение скопировано", Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    Toast.makeText(context, "Ошибка создания URI", Toast.LENGTH_SHORT).show()
+                                                // Раньше картинка для буфера писалась в галерею (Pictures) и там оставалась.
+                                                // Теперь временный файл в кеше приложения + FileProvider: в галерее ничего не появляется.
+                                                val uri = withContext(Dispatchers.IO) {
+                                                    val dir = File(context.cacheDir, "clipboard").apply { mkdirs() }
+                                                    dir.listFiles()?.forEach { it.delete() }
+                                                    val file = File(dir, "image_${System.currentTimeMillis()}.png")
+                                                    FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+                                                    androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                                                 }
+
+                                                val clip = ClipData.newUri(context.contentResolver, "Image", uri)
+                                                clipboardManager.setPrimaryClip(clip)
+                                                Toast.makeText(context, "Изображение скопировано", Toast.LENGTH_SHORT).show()
                                             }
                                         } catch (e: Exception) {
                                             Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_SHORT).show()

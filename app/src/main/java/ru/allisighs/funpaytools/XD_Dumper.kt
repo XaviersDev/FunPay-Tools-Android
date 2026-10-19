@@ -114,7 +114,9 @@ data class FeedEvent(
     val fromPrice: Double,
     val toPrice: Double,
     val timestamp: Long = System.currentTimeMillis(),
-    val message: String = ""
+    val message: String = "",
+    /** Валюта витрины, в которой посчитаны цены (₽, $, €) */
+    val unit: String = "₽"
 ) {
     val timeFormatted: String
         get() = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
@@ -151,7 +153,7 @@ object LiveFeedManager {
 
 object XDDumperEngine {
     private val gson = Gson()
-    private val commissionCache = mutableMapOf<String, Pair<Double, Long>>()
+    private val commissionCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Map<String, Double>, Long>>()
     private val priceCache = mutableMapOf<String, Pair<Double, Long>>()
     private val filterCache = mutableMapOf<String, Pair<Map<String, String>, Long>>()
     private const val CACHE_TTL = 5 * 60 * 1000L
@@ -255,7 +257,7 @@ object XDDumperEngine {
     )
 
     private suspend fun processLot(repo: FunPayRepository, context: Context, global: DumperSettings, config: DumperLotConfig) = withContext(Dispatchers.IO) {
-        val commission = getCategoryCommission(repo, config.categoryId)
+        val commissions = getCommissions(repo, config.categoryId)
         val activeAcc = repo.getActiveAccount() ?: return@withContext
         val keywords = config.keywords.split("|").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
 
@@ -288,14 +290,30 @@ object XDDumperEngine {
                 return@withContext
             }
 
+            // Валюта витрины: FunPay показывает цены в валюте аккаунта (₽/$/€), а без входа в ₽.
+            // Свой лот и конкуренты на одной странице, поэтому сравниваем в ней, а при сохранении
+            // переводим через коэффициент именно этой валюты.
+            val unit = normalizeUnit(
+                myLotItem.selectFirst(".tc-price .unit")?.text()
+                    ?: doc.selectFirst(".tc-price .unit")?.text()
+            )
+            val coefShow = commissions[unit]
+            val coefRub = commissions["₽"] ?: coefShow
+            if (coefShow == null || coefRub == null) {
+                LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm,
+                    message = "Нет комиссии для валюты $unit, цену не трогаю", unit = unit))
+                LogManager.addLog("⚠️ XD Dumper: лот ${config.lotId}, витрина в «$unit», а комиссия для неё не получена. Пропускаю, чтобы не сломать цену")
+                return@withContext
+            }
+            // Настройки (мин/макс/шаг/округление) вводятся в рублях → в валюту витрины
+            val toShow = coefShow / coefRub
+
             var position = 0
             val items = if (config.dumpMode == "pinned") doc.select("a.tc-item.offer-promo") else doc.select("a.tc-item")
             val rawCompetitors = mutableListOf<CompetitorData>()
 
             for (item in items) {
                 position++
-                
-                
                 if (position > config.positionMax) break
 
                 val sellerName = item.select(".media-user-name").text().trim()
@@ -304,31 +322,22 @@ object XDDumperEngine {
                 if (myUserId.isNotEmpty() && sellerIdOf(item) == myUserId) continue
                 if (activeAcc.username.isNotBlank() && sellerName == activeAcc.username) continue
 
-
                 if (config.ignoreFriends && global.friendsGlobal.contains(sellerName)) continue
                 if (config.onlyCompetitors && (!global.competitorsGlobal.contains(sellerName) || global.competitorsDisabled.contains(sellerName))) continue
                 val isOnline = item.attr("data-online") == "1"
                 if (config.onlineOnly && !isOnline) continue
 
-
                 if (!isMatchingManualFilters(item, config.categoryFilters)) continue
-
-
                 if (config.matchAllMethods && !isMatchingAutoFilters(item, autoLotFilterFields)) continue
 
                 val desc = item.select(".tc-desc-text").text().trim().lowercase()
-
-
                 if (config.subscriptionType != "any" || config.subscriptionPeriod != "any") {
                     if (!checkSubscriptionFilters(desc, config)) continue
                 }
-
-
                 if (keywords.isNotEmpty()) {
                     val descForKeyword = if (config.matchAllMethods && desc.contains(",")) desc.substringBeforeLast(",").trim() else desc
                     if (keywords.none { descForKeyword.contains(it) }) continue
                 }
-
 
                 val starsCount = item.select(".rating-stars i.fas").size
                 if (starsCount == 0 && config.ignoreZeroRating) continue
@@ -336,116 +345,103 @@ object XDDumperEngine {
 
                 val compLotId = lotIdOf(item)
                 val basePrice = item.select(".tc-price").attr("data-s").toDoubleOrNull() ?: 9999999.0
-
                 rawCompetitors.add(CompetitorData(item, sellerName, compLotId, basePrice, position))
             }
 
             if (rawCompetitors.isEmpty()) {
-                LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Нет конкурентов"))
+                LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Нет конкурентов", unit = unit))
                 return@withContext
             }
 
-
             val competitorsPrices = mutableListOf<Double>()
             val rate = if (config.priceInForeign) global.exchangeRate else 1.0
-            val effMin = if (config.useNetPrice) config.priceMin * rate * commission else config.priceMin * rate
-            val effMax = if (config.useNetPrice) config.priceMax * rate * commission else config.priceMax * rate
+            // useNetPrice: лимиты это цена продавца (₽) → цена покупателя в валюте витрины
+            val effMin = if (config.useNetPrice) config.priceMin * rate * coefShow else config.priceMin * rate * toShow
+            val effMax = if (config.useNetPrice) config.priceMax * rate * coefShow else config.priceMax * rate * toShow
+            val step = config.priceStep * toShow
+            val divider = config.priceDivider * toShow
+            val bigJump = 100.0 * toShow
 
             val sortedRaw = rawCompetitors.sortedBy { it.basePrice }
             for ((index, comp) in sortedRaw.withIndex()) {
                 val finalPrice = if (config.fastPriceCheck && index < config.fastPriceCheckTop) {
-                    fetchRealLotPrice(repo, comp.lotId) ?: comp.basePrice
+                    fetchRealLotPrice(repo, comp.lotId, unit) ?: comp.basePrice
                 } else {
                     comp.basePrice
                 }
-
-                if (finalPrice in effMin..(effMax + config.priceStep)) {
+                if (finalPrice in effMin..(effMax + step)) {
                     competitorsPrices.add(finalPrice)
                 }
             }
 
             if (competitorsPrices.isEmpty()) {
-                LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Все конкуренты вне лимитов"))
+                LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Все конкуренты вне лимитов", unit = unit))
                 return@withContext
             }
 
             val minCompPrice = competitorsPrices.minOrNull() ?: return@withContext
+            val cent = 0.01
 
-            
-            
-            var rawTarget = minCompPrice * (1.0 + config.priceMarkupPct / 100.0) - config.priceStep
+            var rawTarget = minCompPrice * (1.0 + config.priceMarkupPct / 100.0) - step
 
-            
-            
-            
             if (config.dumpMode == "pinned") {
                 val sortedPrices = competitorsPrices.sorted()
                 if (sortedPrices.size >= config.pinnedPosition) {
-                    
-                    rawTarget = sortedPrices[config.pinnedPosition - 1] * (1.0 + config.priceMarkupPct / 100.0) - 0.01
+                    rawTarget = sortedPrices[config.pinnedPosition - 1] * (1.0 + config.priceMarkupPct / 100.0) - cent
                 } else if (sortedPrices.isNotEmpty()) {
-                    
-                    rawTarget = sortedPrices.last() * (1.0 + config.priceMarkupPct / 100.0) - 0.01
+                    rawTarget = sortedPrices.last() * (1.0 + config.priceMarkupPct / 100.0) - cent
                 }
             }
 
-            if (config.priceDivider > 1.0) rawTarget -= (rawTarget % config.priceDivider)
+            if (config.priceDivider > 1.0 && divider > 0) rawTarget -= (rawTarget % divider)
             var targetPrice = rawTarget.coerceIn(effMin, effMax)
 
             if (config.enforceMinProfit) {
-                if (targetPrice / commission < 1.0) targetPrice = commission * 1.01
+                if (targetPrice / coefShow < 1.0) targetPrice = coefShow * 1.01
             }
-            if (targetPrice < 1.0) targetPrice = 1.0
+            if (targetPrice < cent) targetPrice = cent
 
-            
-            
-            
             when {
-                targetPrice < currentPriceWithComm - 0.01 -> {
-                    if (updateLotPrice(repo, context, config.lotId, targetPrice, commission, config.isChip)) {
-                        LogManager.addLog("📉 XD Dumper: Лот ${config.lotId} снижен → ${"%.2f".format(targetPrice)}₽")
-                        LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.LOWER, currentPriceWithComm, targetPrice, message = "Цена снижена"))
+                targetPrice < currentPriceWithComm - cent -> {
+                    if (updateLotPrice(repo, context, config.lotId, targetPrice, coefShow, config.isChip, direction = -1, unit = unit)) {
+                        LogManager.addLog("📉 XD Dumper: Лот ${config.lotId} снижен → ${"%.2f".format(targetPrice)} $unit")
+                        LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.LOWER, currentPriceWithComm, targetPrice, message = "Цена снижена", unit = unit))
                     }
                     if (config.aggressiveMode && attempt < maxAttempts) { delay(2000); continue }
                 }
-                targetPrice > currentPriceWithComm + 0.01 -> {
+                targetPrice > currentPriceWithComm + cent -> {
                     if (!config.autoRaise) {
-                        LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Авто-повышение выключено"))
+                        LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Авто-повышение выключено", unit = unit))
                     } else {
                         val priceDiff = targetPrice - currentPriceWithComm
                         val priceDiffPct = if (currentPriceWithComm > 0) (priceDiff / currentPriceWithComm) * 100 else 100.0
-
-                        
-                        val forcedRaiseDueToBelowMin = currentPriceWithComm < effMin - 0.01
+                        val forcedRaiseDueToBelowMin = currentPriceWithComm < effMin - cent
 
                         if (forcedRaiseDueToBelowMin) {
-                            
-                            if (updateLotPrice(repo, context, config.lotId, targetPrice, commission, config.isChip)) {
-                                LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} ПРИНУДИТЕЛЬНО поднят (был ниже мин) → ${"%.2f".format(targetPrice)}₽")
-                                LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.RAISE, currentPriceWithComm, targetPrice, message = "Поднят с ниже-минимальной"))
+                            if (updateLotPrice(repo, context, config.lotId, targetPrice, coefShow, config.isChip, direction = 1, unit = unit)) {
+                                LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} ПРИНУДИТЕЛЬНО поднят (был ниже мин) → ${"%.2f".format(targetPrice)} $unit")
+                                LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.RAISE, currentPriceWithComm, targetPrice, message = "Поднят с ниже-минимальной", unit = unit))
                             }
                         } else {
-                            
-                            
+                            // Плавное повышение: не больше +10% (или +100 ₽) за раз
                             var finalTarget = targetPrice
-                            if (priceDiff > 100.0 && priceDiffPct > 10.0) {
-                                val maxAllowedJump = maxOf(100.0, currentPriceWithComm * 0.10)
+                            if (priceDiff > bigJump && priceDiffPct > 10.0) {
+                                val maxAllowedJump = maxOf(bigJump, currentPriceWithComm * 0.10)
                                 var steppedTarget = currentPriceWithComm + maxAllowedJump
-                                if (config.priceDivider > 1.0) {
-                                    steppedTarget -= (steppedTarget % config.priceDivider)
+                                if (config.priceDivider > 1.0 && divider > 0) {
+                                    steppedTarget -= (steppedTarget % divider)
                                 }
-                                
                                 finalTarget = maxOf(effMin, minOf(targetPrice, steppedTarget))
                             }
-                            if (updateLotPrice(repo, context, config.lotId, finalTarget, commission, config.isChip)) {
-                                LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} поднят → ${"%.2f".format(finalTarget)}₽")
-                                LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.RAISE, currentPriceWithComm, finalTarget, message = "Цена повышена"))
+                            if (updateLotPrice(repo, context, config.lotId, finalTarget, coefShow, config.isChip, direction = 1, unit = unit)) {
+                                LogManager.addLog("📈 XD Dumper: Лот ${config.lotId} поднят → ${"%.2f".format(finalTarget)} $unit")
+                                LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.RAISE, currentPriceWithComm, finalTarget, message = "Цена повышена", unit = unit))
                             }
                         }
                     }
                 }
                 else -> {
-                    LiveFeedManager.push(FeedEvent(config.lotId, config.displayName.ifEmpty { config.lotId }, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Цена актуальна"))
+                    LiveFeedManager.push(FeedEvent(config.lotId, displayName, MarketAction.HOLD, currentPriceWithComm, currentPriceWithComm, message = "Цена актуальна", unit = unit))
                 }
             }
             break
@@ -537,7 +533,12 @@ object XDDumperEngine {
      * Раньше отправлялись лишь hidden/select-поля → FunPay ругался на пустые
      * обязательные поля, а демпер отключал лот.
      */
-    private suspend fun updateLotPrice(repo: FunPayRepository, context: Context, lotId: String, targetPrice: Double, commission: Double, isChip: Boolean): Boolean {
+    private suspend fun updateLotPrice(
+        repo: FunPayRepository, context: Context, lotId: String, targetPrice: Double, commission: Double, isChip: Boolean,
+        /** -1 снижаем, +1 повышаем: новая цена продавца обязана сдвинуться в эту сторону */
+        direction: Int = 0,
+        unit: String = "₽"
+    ): Boolean {
         var priceNoComm = targetPrice / commission
         if (priceNoComm < 1.0) priceNoComm = 1.0
         val priceStr = String.format(Locale.US, "%.2f", priceNoComm)
@@ -549,6 +550,20 @@ object XDDumperEngine {
         } catch (e: Exception) {
             LogManager.addLog("❌ XD Dumper: не удалось открыть лот $lotId: ${e.message}")
             return false
+        }
+        // Предохранитель: сравниваем с текущей ценой продавца из формы лота.
+        // Хотели снизить, а цена растёт (или повышение больше чем в 3 раза) → что-то не так с валютой/комиссией.
+        val oldSeller = data.fields["price"]?.value?.replace(Regex("[\\s\u00A0]"), "")?.replace(",", ".")?.toDoubleOrNull()
+        if (oldSeller != null && oldSeller > 0) {
+            val suspicious = (direction < 0 && priceNoComm > oldSeller + 0.01) ||
+                (direction > 0 && priceNoComm > oldSeller * 3.0) ||
+                (direction > 0 && priceNoComm < oldSeller - 0.01)
+            if (suspicious) {
+                LogManager.addLog("⛔ XD Dumper: лот $lotId, подозрительная новая цена ${priceStr} (сейчас ${"%.2f".format(oldSeller)}), витрина в «$unit». Не сохраняю")
+                LiveFeedManager.push(FeedEvent(lotId, "ID: $lotId", MarketAction.ERROR, oldSeller, priceNoComm,
+                    message = "Защита: странная цена ${priceStr}, не сохранено"))
+                return false
+            }
         }
         val (ok, err) = repo.saveLotFields(lotId, data, mapOf("price" to priceStr))
         if (ok) return true
@@ -612,40 +627,72 @@ object XDDumperEngine {
         !isErr
     }
 
-    private suspend fun getCategoryCommission(repo: FunPayRepository, nodeId: String): Double {
+    /**
+     * Коэффициенты «цена продавца → цена покупателя» по валютам: {"₽": 1.2, "$": 0.0139, "€": 0.0124}.
+     *
+     * БАГ «цена до 30к»: раньше брался минимум по ВСЕМ способам оплаты сразу, а они в разных
+     * валютах. 1000 ₽ продавца = 1202 ₽ / 13.9 $ / 12.4 €, минимум 12.4 → коэффициент 0.0124
+     * вместо 1.2, и цена при сохранении умножалась почти в 100 раз.
+     */
+    private suspend fun getCommissions(repo: FunPayRepository, nodeId: String): Map<String, Double> {
         val now = System.currentTimeMillis()
         commissionCache[nodeId]?.let { if (now - it.second < CACHE_TTL) return it.first }
-        try {
-            val form = FormBody.Builder().add("nodeId", nodeId).add("price", "1000").build()
+        return try {
+            val form = FormBody.Builder().add("nodeId", nodeId).add("price", "100000").build()
             val req = Request.Builder().url("https://funpay.com/lots/calc").post(form)
                 .header("Cookie", repo.getCookieString())
                 .header("User-Agent", FpSession.UA)
                 .header("X-Requested-With", "XMLHttpRequest").build()
-            val raw = withContext(Dispatchers.IO) { repo.repoClient.newCall(req).execute().use { it.body?.string() } } ?: return 1.0
-            val json = JSONObject(raw)
-            val methods = json.optJSONArray("methods") ?: return 1.0
-            var minP = Double.MAX_VALUE
-            for (i in 0 until methods.length()) {
-                val m = methods.getJSONObject(i)
-                val p = m.optString("price").replace(" ", "").replace(",", ".").toDoubleOrNull()
-                if (p != null && p > 0 && p < minP) minP = p
-            }
-            val coef = if (minP != Double.MAX_VALUE) minP / 1000.0 else 1.0
-            commissionCache[nodeId] = Pair(coef, now)
-            return coef
-        } catch (e: Exception) { return 1.0 }
+            val raw = withContext(Dispatchers.IO) { repo.repoClient.newCall(req).execute().use { it.body?.string() } }
+                ?: return commissionCache[nodeId]?.first ?: emptyMap()
+            val coefs = parseCalcCommissions(raw)
+            if (coefs.isNotEmpty()) commissionCache[nodeId] = Pair(coefs, now)
+            coefs.ifEmpty { commissionCache[nodeId]?.first ?: emptyMap() }
+        } catch (e: Exception) {
+            commissionCache[nodeId]?.first ?: emptyMap()
+        }
     }
 
-    private suspend fun fetchRealLotPrice(repo: FunPayRepository, lotId: String): Double? {
+    /** Разбор ответа lots/calc (price=100000): минимальный коэффициент отдельно для каждой валюты. */
+    internal fun parseCalcCommissions(raw: String): Map<String, Double> {
+        val json = try { JSONObject(raw) } catch (_: Exception) { return emptyMap() }
+        val methods = json.optJSONArray("methods") ?: return emptyMap()
+        val out = HashMap<String, Double>()
+        for (i in 0 until methods.length()) {
+            val m = methods.optJSONObject(i) ?: continue
+            val p = m.optString("price").replace(Regex("[\\s ]"), "").replace(",", ".").toDoubleOrNull() ?: continue
+            if (p <= 0) continue
+            val unit = normalizeUnit(m.optString("unit"))
+            val coef = p / 100000.0
+            if (coef < (out[unit] ?: Double.MAX_VALUE)) out[unit] = coef
+        }
+        return out
+    }
+
+    internal fun normalizeUnit(raw: String?): String {
+        val u = raw?.trim().orEmpty()
+        return when {
+            u.contains("₽") || u.contains("руб", true) || u.equals("rub", true) -> "₽"
+            u.contains("$") || u.equals("usd", true) -> "$"
+            u.contains("€") || u.equals("eur", true) -> "€"
+            u.isEmpty() -> "₽"
+            else -> u
+        }
+    }
+
+    private fun cyCode(unit: String) = when (unit) { "$" -> "usd"; "€" -> "eur"; else -> "rub" }
+
+    private suspend fun fetchRealLotPrice(repo: FunPayRepository, lotId: String, unit: String = "₽"): Double? {
         val now = System.currentTimeMillis()
-        priceCache[lotId]?.let { if (now - it.second < CACHE_TTL) return it.first }
+        val cacheKey = "$lotId|$unit"
+        priceCache[cacheKey]?.let { if (now - it.second < CACHE_TTL) return it.first }
         try {
 
             val html = withContext(Dispatchers.IO) { fpGet(repo, "https://funpay.com/lots/offer?id=$lotId") } ?: return null
             val doc = Jsoup.parse(html)
             val prices = mutableListOf<Double>()
             doc.select("select[name=method] option").forEach { opt ->
-                if (opt.attr("data-cy") == "rub") {
+                if (opt.attr("data-cy") == cyCode(unit)) {
                     val factors = opt.attr("data-factors").split(",")
                     if (factors.size >= 2) {
                         val base = factors[0].toDoubleOrNull() ?: 0.0
@@ -655,7 +702,7 @@ object XDDumperEngine {
                 }
             }
             val price = prices.minOrNull() ?: return null
-            priceCache[lotId] = Pair(price, now)
+            priceCache[cacheKey] = Pair(price, now)
             return price
         } catch (e: Exception) { return null }
     }
@@ -938,7 +985,7 @@ fun XDDumperMainScreen(navController: NavController, repository: FunPayRepositor
                                 }
                                 Text(ev.message, color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                 if (ev.action == MarketAction.LOWER || ev.action == MarketAction.RAISE) {
-                                    Text("${ev.fromPrice} ₽ → ${ev.toPrice} ₽", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp)
+                                    Text("${String.format(Locale.US, "%.2f", ev.fromPrice)} ${ev.unit} → ${String.format(Locale.US, "%.2f", ev.toPrice)} ${ev.unit}", color = ThemeManager.parseColor(theme.textSecondaryColor), fontSize = 11.sp)
                                 }
                             }
                         }

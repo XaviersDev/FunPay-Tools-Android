@@ -224,7 +224,7 @@ fun SplashScreen(onTimeout: () -> Unit, theme: AppTheme) {
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "v1.4 • by AlliSighs",
+                        text = "v$APP_VERSION • by AlliSighs",
                         fontSize = 11.sp,
                         color = secondaryTextColor,
                         modifier = Modifier.alpha(0.55f)

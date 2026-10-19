@@ -79,6 +79,45 @@ import java.util.concurrent.TimeUnit
  *  В FunPay стикер уходит обычной картинкой PNG.
  * ==========================================================================*/
 
+/** Иконка «стикер»: квадратик с загнутым уголком и мордочкой, как в Telegram (в Material Icons такой нет). */
+val StickerIcon: androidx.compose.ui.graphics.vector.ImageVector by lazy {
+    val stroke = androidx.compose.ui.graphics.SolidColor(Color.Black)
+    androidx.compose.ui.graphics.vector.ImageVector.Builder(
+        name = "Sticker", defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f
+    ).apply {
+        // Контур со срезанным правым нижним углом
+        addPath(
+            pathData = androidx.compose.ui.graphics.vector.PathParser().parsePathString(
+                "M7,3.5H17A3.5,3.5 0 0 1 20.5,7V13.2L13.2,20.5H7A3.5,3.5 0 0 1 3.5,17V7A3.5,3.5 0 0 1 7,3.5Z"
+            ).toNodes(),
+            stroke = stroke, strokeLineWidth = 1.8f,
+            strokeLineJoin = androidx.compose.ui.graphics.StrokeJoin.Round
+        )
+        // Загнутый уголок
+        addPath(
+            pathData = androidx.compose.ui.graphics.vector.PathParser().parsePathString(
+                "M20.5,13.2H16.4A3.2,3.2 0 0 0 13.2,16.4V20.5"
+            ).toNodes(),
+            stroke = stroke, strokeLineWidth = 1.8f,
+            strokeLineJoin = androidx.compose.ui.graphics.StrokeJoin.Round,
+            strokeLineCap = androidx.compose.ui.graphics.StrokeCap.Round
+        )
+        // Глазки
+        addPath(
+            pathData = androidx.compose.ui.graphics.vector.PathParser().parsePathString(
+                "M9.2,9.6m-1.15,0a1.15,1.15 0 1 0 2.3,0a1.15,1.15 0 1 0 -2.3,0M14.8,9.6m-1.15,0a1.15,1.15 0 1 0 2.3,0a1.15,1.15 0 1 0 -2.3,0"
+            ).toNodes(),
+            fill = stroke
+        )
+        // Улыбка
+        addPath(
+            pathData = androidx.compose.ui.graphics.vector.PathParser().parsePathString("M8.4,13.2Q10.4,15.4 12.6,14.2").toNodes(),
+            stroke = stroke, strokeLineWidth = 1.8f,
+            strokeLineCap = androidx.compose.ui.graphics.StrokeCap.Round
+        )
+    }.build()
+}
+
 data class StickerItem(val file: String, val emoji: String = "")
 
 data class StickerPack(
@@ -90,7 +129,7 @@ data class StickerPack(
 )
 
 object StickerStore {
-    const val REPO = "XaviersDev/FunPay-Tools"
+    const val REPO = "XaviersDev/FunPay-Tools-Android"
     const val BRANCH = "main"
     const val DIR = "stickers"
 

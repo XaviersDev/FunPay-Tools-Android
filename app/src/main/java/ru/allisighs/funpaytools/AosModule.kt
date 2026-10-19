@@ -616,7 +616,10 @@ fun AosDisplayScreen(navController: NavController, repository: FunPayRepository,
                 val sales = repository.cachedSales
                 salesCount = sales.size
                 val currentMs = System.currentTimeMillis()
-                val frozen = sales.filter { it.status == "closed" }.mapNotNull { sale ->
+                // Заморозка по «Финансам»; если они не загрузились, по продажам, как раньше
+                val frozen = repository.loadFrozenFunds()?.let { fi ->
+                    fi.sum(if (profile?.totalBalance?.contains("$") == true) "$" else if (profile?.totalBalance?.contains("€") == true) "€" else "₽")
+                } ?: sales.filter { it.status == "closed" }.mapNotNull { sale ->
                     val saleTime = parseFunPayDateToMsLocal(sale.date)
                     if (saleTime > 0) {
                         val unlockTime = saleTime + 48L * 3600L * 1000L
@@ -637,7 +640,9 @@ fun AosDisplayScreen(navController: NavController, repository: FunPayRepository,
             try {
                 profile = repository.getSelfProfileUpdated(); unread = repository.getChats().count { it.isUnread }; val sales = repository.cachedSales; salesCount = sales.size
                 val currentMs = System.currentTimeMillis()
-                val frozen = sales.filter { it.status == "closed" }.mapNotNull { sale ->
+                val frozen = repository.loadFrozenFunds()?.let { fi ->
+                    fi.sum(if (profile?.totalBalance?.contains("$") == true) "$" else if (profile?.totalBalance?.contains("€") == true) "€" else "₽")
+                } ?: sales.filter { it.status == "closed" }.mapNotNull { sale ->
                     val saleTime = parseFunPayDateToMsLocal(sale.date); if (saleTime > 0) { val unlockTime = saleTime + 48L * 3600L * 1000L; if (currentMs < unlockTime) sale else null } else null
                 }.sumOf { it.priceValue }
                 frozenSum = frozen; val total = profile?.totalBalance?.replace(Regex("[^0-9.,]"), "")?.replace(",", ".")?.toDoubleOrNull() ?: 0.0; activeSum = max(0.0, total - frozen)

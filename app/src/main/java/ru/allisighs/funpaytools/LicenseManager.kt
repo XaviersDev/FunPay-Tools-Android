@@ -115,8 +115,8 @@ enum class PremiumFeature(
 
 
 private val PREMIUM_ROUTES: Map<String, PremiumFeature> = mapOf(
-    "lots"             to PremiumFeature.LOTS,
-    "lot_edit"         to PremiumFeature.LOTS,
+    //"lots"             to PremiumFeature.LOTS,
+    //"lot_edit"         to PremiumFeature.LOTS,
     "rmthub_search"    to PremiumFeature.RMTHUB,
     "widgets_settings" to PremiumFeature.WIDGET_PROFILE,
     "accounts"         to PremiumFeature.MULTI_ACCOUNT

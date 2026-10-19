@@ -21,6 +21,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Security
@@ -29,6 +31,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -429,7 +432,8 @@ fun TelegramMessageBubble(
     otherUsername: String,
     replyAuthor: String? = null,
     onReplyQuoteClick: (() -> Unit)? = null,
-    isFlashing: Boolean = false
+    isFlashing: Boolean = false,
+    onRetrySend: (() -> Unit)? = null
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
@@ -585,7 +589,8 @@ fun TelegramMessageBubble(
                     otherUserId = otherUserId,
                     otherUsername = otherUsername,
                     replyAuthor = replyAuthor,
-                    onReplyQuoteClick = if (isSelectionMode) null else onReplyQuoteClick
+                    onReplyQuoteClick = if (isSelectionMode) null else onReplyQuoteClick,
+                    onRetrySend = if (isSelectionMode) null else onRetrySend
                 )
             }
         }
@@ -610,7 +615,8 @@ private fun BubbleContent(
     otherUserId: String,
     otherUsername: String,
     replyAuthor: String? = null,
-    onReplyQuoteClick: (() -> Unit)? = null
+    onReplyQuoteClick: (() -> Unit)? = null,
+    onRetrySend: (() -> Unit)? = null
 ) {
     val isMe = message.isMe
     val big = 18.dp
@@ -726,17 +732,29 @@ private fun BubbleContent(
             }
 
             if (message.imageUrl != null) {
-                AsyncImage(
-                    model = message.imageUrl,
-                    contentDescription = null,
-                    modifier = Modifier
+                Box(
+                    Modifier
                         .padding(3.dp)
                         .widthIn(min = 180.dp, max = 294.dp)
                         .heightIn(max = 320.dp)
                         .clip(RoundedCornerShape(15.dp))
-                        .clickable { onImageClick(message.imageUrl) },
-                    contentScale = ContentScale.Crop
-                )
+                        .clickable { onImageClick(message.imageUrl) }
+                ) {
+                    // Пока картинка с FunPay грузится, под ней видна та, что отправляли (без мигания)
+                    if (message.localPreview != null && message.localPreview != message.imageUrl) {
+                        AsyncImage(
+                            model = message.localPreview,
+                            contentDescription = null,
+                            modifier = Modifier.matchParentSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    AsyncImage(
+                        model = message.imageUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
 
             if (message.text.isNotEmpty()) {
@@ -794,15 +812,123 @@ private fun BubbleContent(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }
-            } else if (message.imageUrl != null && hhmm.isNotEmpty()) {
-                Text(
-                    hhmm,
+            } else if (message.imageUrl != null && (hhmm.isNotEmpty() || message.sendState != 0)) {
+                Row(
                     modifier = Modifier.align(Alignment.End).padding(end = 9.dp, bottom = 4.dp),
-                    fontSize = 11.sp,
-                    color = palette.secondary.copy(alpha = 0.85f)
-                )
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (message.sendState == 2) {
+                        Row(
+                            Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = onRetrySend != null) { onRetrySend?.invoke() }
+                                .padding(horizontal = 4.dp, vertical = 1.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.ErrorOutline, null, tint = Color(0xFFE53935), modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text("Повторить", fontSize = 11.sp, color = Color(0xFFE53935), fontWeight = FontWeight.SemiBold)
+                        }
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    if (hhmm.isNotEmpty()) {
+                        Text(hhmm, fontSize = 11.sp, color = palette.secondary.copy(alpha = 0.85f))
+                    }
+                    // Часики, пока FunPay не принял картинку; потом плавно исчезают
+                    AnimatedVisibility(
+                        visible = message.sendState == 1,
+                        enter = fadeIn(tween(120)),
+                        exit = fadeOut(tween(220)) + shrinkHorizontally(tween(220))
+                    ) {
+                        SendingClock(
+                            color = palette.secondary.copy(alpha = 0.9f),
+                            modifier = Modifier.padding(start = 4.dp).size(12.dp)
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+/** Подсказка над полем ввода: в буфере обмена есть картинка, её можно вставить. */
+@Composable
+fun ClipboardPasteChip(palette: ChatPalette, onPaste: () -> Unit, onClose: () -> Unit) {
+    Row(
+        modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp).fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            Modifier
+                .shadow(1.5.dp, RoundedCornerShape(50), clip = true)
+                .background(if (palette.isLight) Color.White else palette.inBubble)
+                .clickable(onClick = onPaste)
+                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.ContentPaste, null, tint = palette.accent, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Вставить картинку из буфера", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = palette.text)
+            Spacer(Modifier.width(4.dp))
+            Box(
+                Modifier.size(26.dp).clip(CircleShape).clickable(onClick = onClose),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Close, "Скрыть", tint = palette.secondary, modifier = Modifier.size(14.dp))
+            }
+        }
+    }
+}
+
+/** Плашка над полем ввода: FunPay не принял сообщение (с причиной). */
+@Composable
+fun SendErrorBar(text: String, hint: String?, palette: ChatPalette, onClose: () -> Unit) {
+    val red = Color(0xFFE53935)
+    Row(
+        modifier = Modifier
+            .padding(start = 8.dp, end = 8.dp, bottom = 4.dp)
+            .fillMaxWidth()
+            .shadow(1.5.dp, RoundedCornerShape(14.dp), clip = true)
+            .background(if (palette.isLight) Color(0xFFFFF1F0) else lerp(palette.inBubble, red, 0.18f))
+            .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.ErrorOutline, null, tint = red, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = palette.text, lineHeight = 17.sp)
+            if (hint != null) Text(hint, fontSize = 11.sp, color = palette.secondary, lineHeight = 14.sp)
+        }
+        Box(
+            Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onClose),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Close, "Скрыть", tint = palette.secondary, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/** Крутящиеся часики, как в Telegram, пока сообщение отправляется. */
+@Composable
+fun SendingClock(color: Color, modifier: Modifier = Modifier) {
+    val t = rememberInfiniteTransition(label = "clock")
+    val minute by t.animateFloat(0f, 360f, infiniteRepeatable(tween(1200, easing = LinearEasing)), label = "min")
+    val hour by t.animateFloat(0f, 360f, infiniteRepeatable(tween(7200, easing = LinearEasing)), label = "hour")
+    androidx.compose.foundation.Canvas(modifier) {
+        val stroke = size.minDimension * 0.11f
+        val r = size.minDimension / 2f - stroke / 2f
+        val c = center
+        drawCircle(color, radius = r, center = c, style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke))
+        fun hand(angleDeg: Float, len: Float) {
+            val a = Math.toRadians((angleDeg - 90f).toDouble())
+            drawLine(
+                color, c,
+                Offset(c.x + (kotlin.math.cos(a) * len).toFloat(), c.y + (kotlin.math.sin(a) * len).toFloat()),
+                strokeWidth = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round
+            )
+        }
+        hand(minute, r * 0.72f)
+        hand(hour, r * 0.48f)
     }
 }
 

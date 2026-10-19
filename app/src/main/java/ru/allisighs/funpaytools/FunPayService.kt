@@ -220,6 +220,13 @@ class FunPayService : Service() {
                         }
                     }
 
+                    // Уведомления о входящих — ДО автоответов и команд. Раньше они шли после:
+                    // команда с режимом вызова успевала ответить (или отправить картинку → "__image__"),
+                    // и само сообщение покупателя уже не показывалось, оставался только «звонок».
+                    if (repository.getSetting("push_notifications")) {
+                        checkPushNotifications(chats)
+                    }
+
                     var busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
 
                     val activeSlot = try {
@@ -274,10 +281,6 @@ class FunPayService : Service() {
                             ConcurentManager.tick(this@FunPayService, repository)
                         }
                     } catch (e: Exception) { }
-
-                    if (repository.getSetting("push_notifications")) {
-                        checkPushNotifications(chats)
-                    }
 
                     if (repository.getSetting("always_online")) {
                         if (System.currentTimeMillis() - lastOnlinePing > 4 * 60 * 1000L) {

@@ -324,7 +324,7 @@ fun SettingsScreen(
 
                             InfoRow(
                                 label = "Версия приложения",
-                                value = "1.4",
+                                value = APP_VERSION,
                                 theme = currentTheme
                             )
 

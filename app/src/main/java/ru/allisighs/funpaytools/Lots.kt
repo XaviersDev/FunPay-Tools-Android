@@ -1629,6 +1629,10 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                     IconButton({ navController.popBackStack() }) { Icon(Icons.Default.ArrowBack, null) }
                 },
                 actions = {
+                    // Страница лота во встроенном браузере FunPay Tools
+                    IconButton({ navController.navigate("funpay_browser_url/${Uri.encode(lotPublicUrl(lotId))}") }) {
+                        Icon(Icons.Default.Public, contentDescription = "Открыть на FunPay")
+                    }
                     IconButton({ copyLotLink(context, lotId) }) {
                         Icon(Icons.Default.Link, contentDescription = "Скопировать ссылку")
                     }
@@ -1684,6 +1688,9 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                     CircularProgressIndicator(Modifier.align(Alignment.Center), color = ThemeManager.parseColor(theme.accentColor))
                 }
                 is LotEditUiState.Error -> {
+                    // Чужой лот (покупатель смотрит лот другого продавца) не редактируется: даём открыть его страницу
+                    Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f)) {
                     ErrorView(state.message, theme) {
                         scope.launch {
                             uiState = LotEditUiState.Loading
@@ -1696,6 +1703,16 @@ fun LotEditScreen(lotId: String, navController: NavController, repository: FunPa
                                 uiState = LotEditUiState.Error(e.message ?: "Ошибка")
                             }
                         }
+                    }
+                    }
+                    OutlinedButton(
+                        onClick = { navController.navigate("funpay_browser_url/${Uri.encode(lotPublicUrl(lotId))}") },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 24.dp)
+                    ) {
+                        Icon(Icons.Default.Public, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Открыть лот на FunPay")
+                    }
                     }
                 }
                 is LotEditUiState.Success -> {

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "854831158265",
+    "project_id": "funpay-tools",
+    "storage_bucket": "funpay-tools.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:854831158265:android:d6fdf96121339888e7a328",
+        "android_client_info": {
+          "package_name": "ru.allisighs.funpaytools"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBHR_2h9DYIDtNlelmJymEe2Bxyrj-SoqE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

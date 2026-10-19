@@ -127,6 +127,15 @@ private fun parseFunPayDateToMs(dateStr: String): Long {
     return 0L
 }
 
+private fun plural(n: Int, one: String, few: String, many: String): String {
+    val m10 = n % 10; val m100 = n % 100
+    return when {
+        m10 == 1 && m100 != 11 -> one
+        m10 in 2..4 && m100 !in 12..14 -> few
+        else -> many
+    }
+}
+
 private fun formatTimeLeft(ms: Long): String {
     val totalMins = max(0L, ms / 60000)
     val h = totalMins / 60; val m = totalMins % 60
@@ -586,6 +595,14 @@ fun ProfileScreen(
     val activeAccount = repository.getActiveAccount()
     val accountKey = activeAccount?.id ?: "none"
     var currentTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    // Заморозка по «Финансам» (продажи и покупки), обновляется раз в минуту
+    var frozenInfo by remember(accountKey) { mutableStateOf<FrozenFunds?>(null) }
+    LaunchedEffect(accountKey) {
+        while (true) {
+            repository.loadFrozenFunds()?.let { frozenInfo = it }
+            delay(60_000)
+        }
+    }
 
     LaunchedEffect(Unit) {
         DynamicAvatarManager.startOrUpdate(context, repository)
@@ -638,13 +655,28 @@ fun ProfileScreen(
         } else {
             val user = profile!!
             val totalBalanceVal = user.totalBalance.replace(Regex("[^0-9.,]"), "").replace(",", ".").toDoubleOrNull() ?: 0.0
-            val frozenSales = localSales.filter { it.status == "closed" }.mapNotNull { sale ->
-                val saleTime = parseFunPayDateToMs(sale.date)
-                if (saleTime > 0) { val unlockTime = saleTime + 48L * 3600L * 1000L; if (currentTime < unlockTime) Pair(sale, unlockTime) else null } else null
-            }.sortedBy { it.second }
-            val frozenSum = frozenSales.sumOf { it.first.priceValue }
+            val balanceCurrency = when {
+                user.totalBalance.contains("$") -> "$"
+                user.totalBalance.contains("€") -> "€"
+                else -> "₽"
+            }
+            val fi = frozenInfo
+            val frozenSum: Double
+            val nextUnlock: Pair<Double, Long>?
+            if (fi != null) {
+                // По «Финансам»: всё, что в ожидании, включая продажи, которых нет в первых страницах
+                frozenSum = fi.sum(balanceCurrency)
+                nextUnlock = fi.next(balanceCurrency)?.let { it.first.amount to it.second }
+            } else {
+                // Запасной вариант, пока «Финансы» не загрузились: по продажам, как раньше
+                val frozenSales = localSales.filter { it.status == "closed" }.mapNotNull { sale ->
+                    val saleTime = parseFunPayDateToMs(sale.date)
+                    if (saleTime > 0) { val unlockTime = saleTime + 48L * 3600L * 1000L; if (currentTime < unlockTime) Pair(sale, unlockTime) else null } else null
+                }.sortedBy { it.second }
+                frozenSum = frozenSales.sumOf { it.first.priceValue }
+                nextUnlock = frozenSales.firstOrNull()?.let { it.first.priceValue to it.second }
+            }
             val activeSum = max(0.0, totalBalanceVal - frozenSum)
-            val nextUnlock = frozenSales.firstOrNull()
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
 
@@ -677,7 +709,7 @@ fun ProfileScreen(
                     }
                 }
 
-                DetailedBalanceCard(totalBalance = user.totalBalance, totalVal = totalBalanceVal, activeSum = activeSum, frozenSum = frozenSum, nextUnlock = nextUnlock, currentTime = currentTime, theme = theme)
+                DetailedBalanceCard(totalBalance = user.totalBalance, totalVal = totalBalanceVal, activeSum = activeSum, frozenSum = frozenSum, nextUnlock = nextUnlock, currentTime = currentTime, theme = theme, currency = balanceCurrency, waitingCount = fi?.items?.count { it.first.currency == balanceCurrency } ?: 0)
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     ActionGridItem(modifier = Modifier.weight(1f), title = "Тарифы", subtitle = "Доступ к PRO", icon = Icons.Default.Diamond, iconTint = Color(0xFFFFD700), bgGradient = listOf(ThemeManager.parseColor(theme.surfaceColor), androidx.compose.ui.graphics.lerp(ThemeManager.dialogSurface(theme), Color(0xFFFFC107), if (ThemeManager.isLight(theme)) 0.10f else 0.08f)), theme = theme, onClick = onOpenTariffs)
@@ -1533,7 +1565,7 @@ fun AvatarCanvasEditor(
 
 
 @Composable
-fun DetailedBalanceCard(totalBalance: String, totalVal: Double, activeSum: Double, frozenSum: Double, nextUnlock: Pair<FunPayRepository.SaleItem, Long>?, currentTime: Long, theme: AppTheme) {
+fun DetailedBalanceCard(totalBalance: String, totalVal: Double, activeSum: Double, frozenSum: Double, nextUnlock: Pair<Double, Long>?, currentTime: Long, theme: AppTheme, currency: String = "₽", waitingCount: Int = 0) {
     val accentColor = ThemeManager.parseColor(theme.accentColor)
     val surfaceColor = ThemeManager.parseColor(theme.surfaceColor)
     val textPrimary = ThemeManager.parseColor(theme.textPrimaryColor)
@@ -1553,11 +1585,14 @@ fun DetailedBalanceCard(totalBalance: String, totalVal: Double, activeSum: Doubl
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) { Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF4CAF50))); Spacer(Modifier.width(6.dp)); Text("Доступно", fontSize = 12.sp, color = textSecondary) }
-                        Text(text = String.format(java.util.Locale.US, "%.2f ₽", activeSum), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = textPrimary, modifier = Modifier.padding(top = 4.dp))
+                        Text(text = String.format(java.util.Locale.US, "%.2f %s", activeSum, currency), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = textPrimary, modifier = Modifier.padding(top = 4.dp))
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) { Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFFA000))); Spacer(Modifier.width(6.dp)); Text("В заморозке", fontSize = 12.sp, color = textSecondary) }
-                        Text(text = String.format(java.util.Locale.US, "%.2f ₽", frozenSum), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = textPrimary, modifier = Modifier.padding(top = 4.dp))
+                        Text(text = String.format(java.util.Locale.US, "%.2f %s", frozenSum, currency), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = textPrimary, modifier = Modifier.padding(top = 4.dp))
+                        if (waitingCount > 0) {
+                            Text("$waitingCount ${plural(waitingCount, "операция", "операции", "операций")} в ожидании", fontSize = 11.sp, color = textSecondary)
+                        }
                     }
                 }
                 if (nextUnlock != null) {
@@ -1566,8 +1601,9 @@ fun DetailedBalanceCard(totalBalance: String, totalVal: Double, activeSum: Doubl
                         Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.HourglassEmpty, null, tint = Color(0xFFFFA000), modifier = Modifier.size(16.dp)); Spacer(Modifier.width(8.dp))
                             Column {
-                                Text("Ближайшая разморозка: ~${String.format(java.util.Locale.US, "%.2f ₽", nextUnlock.first.priceValue)}", fontSize = 12.sp, color = textPrimary, fontWeight = FontWeight.Medium)
-                                Text("Через ${formatTimeLeft(nextUnlock.second - currentTime)}", fontSize = 11.sp, color = Color(0xFFFFA000))
+                                Text("Ближайшая разморозка: ~${String.format(java.util.Locale.US, "%.2f %s", nextUnlock.first, currency)}", fontSize = 12.sp, color = textPrimary, fontWeight = FontWeight.Medium)
+                                val left = nextUnlock.second - currentTime
+                                Text(if (left > 60_000L) "Примерно через ${formatTimeLeft(left)}" else "Скоро: примерный срок уже прошёл", fontSize = 11.sp, color = Color(0xFFFFA000))
                             }
                         }
                     }

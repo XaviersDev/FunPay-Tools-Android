@@ -15,6 +15,8 @@ android {
             storePassword = "dididi"
             keyAlias = "key0"
             keyPassword = "dididi"
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
@@ -22,8 +24,8 @@ android {
         applicationId = "ru.allisighs.funpaytools"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.3"
+        versionCode = 2
+        versionName = "1.4.1"
         multiDexEnabled = true
 
         vectorDrawables {

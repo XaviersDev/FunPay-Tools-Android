@@ -82,7 +82,10 @@ import java.util.regex.Pattern
 import kotlin.apply
 import kotlin.compareTo
 
-const val APP_VERSION = "1.4"
+const val APP_VERSION = "1.4.1"
+
+/** Заказы, по которым только что ушёл бонус за отзыв (общая на все экземпляры репозитория). */
+private val recentBonusOrders = HashMap<String, Long>()
 
 data class AutoRefundSettings(
     val enabled: Boolean = false,
@@ -1692,6 +1695,27 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         return null
     }
 
+    /**
+     * Удаляет картинки autoimg_*, на которые не ссылается ни одна настройка (все SharedPreferences).
+     * Свежие файлы (моложе суток) не трогаем: их могли выбрать, но ещё не нажать «Сохранить».
+     */
+    fun cleanupUnusedAutoImages(keep: String? = null) {
+        try {
+            val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+            val referenced = HashSet<String>()
+            val re = Regex("autoimg_\\d+\\.[a-z]+")
+            prefsDir.listFiles()?.forEach { f ->
+                if (f.isFile && f.name.endsWith(".xml")) {
+                    re.findAll(f.readText()).forEach { referenced += it.value }
+                }
+            }
+            val dayAgo = System.currentTimeMillis() - 24 * 3600_000L
+            context.filesDir.listFiles()?.forEach { f ->
+                if (f.name.startsWith("autoimg_") && f.name != keep && f.name !in referenced && f.lastModified() < dayAgo) f.delete()
+            }
+        } catch (_: Exception) {}
+    }
+
     fun copyPickedImageToStorage(uri: Uri): String? {
         return try {
             val contentResolver = context.contentResolver
@@ -1706,9 +1730,10 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                 destFile.outputStream().use { output -> input.copyTo(output) }
             } ?: return null
 
-            context.filesDir.listFiles()?.forEach { f ->
-                if (f.name.startsWith("autoimg_") && f.absolutePath != destFile.absolutePath) f.delete()
-            }
+            // БАГ: раньше тут удалялись ВСЕ остальные autoimg_*. Выбрал картинку для приветствия, и
+            // пропадала картинка команды, бонуса, автовозврата. Теперь чистим только то, на что
+            // уже нигде нет ссылок в настройках (и не трогаем только что созданный файл).
+            cleanupUnusedAutoImages(keep = destFile.name)
             val resultUri = android.net.Uri.fromFile(destFile).toString()
             LogManager.addLogDebug("✅ Картинка скопирована: $resultUri")
             resultUri
@@ -2048,6 +2073,25 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         }
     }
 
+    /**
+     * Совпадает ли сообщение с командой автоответа.
+     * Команды вида «!позвать», «/help» и команды с режимом вызова срабатывают только
+     * в начале сообщения (иначе «скажи !позвать» тоже звонил продавцу). Обычные слова ищутся где угодно.
+     */
+    fun commandMatches(incoming: String, cmd: AutoResponseCommand): Boolean {
+        val text = incoming.replace("\n", " ").trim()
+        val trig = cmd.trigger.trim()
+        if (trig.isEmpty() || text.isEmpty()) return false
+        val t = if (cmd.caseSensitive) text else text.lowercase(Locale.getDefault())
+        val g = if (cmd.caseSensitive) trig else trig.lowercase(Locale.getDefault())
+        if (cmd.exactMatch) return t == g
+        if (t == g) return true
+        val startOnly = cmd.callMode || g.first() in "!/."
+        return if (startOnly) {
+            t.startsWith(g) && (t.length == g.length || !t[g.length].isLetterOrDigit())
+        } else t.contains(g)
+    }
+
     suspend fun sendWithOptionalImage(
         nodeId: String,
         text: String,
@@ -2088,8 +2132,30 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
         }
     }
 
+    /**
+     * Разбор ответа runner/ на chat_message. null — сообщение принято, иначе текст причины.
+     * FunPay кладёт причину отказа в response.error («Вы пока что не можете писать в этот чат»,
+     * «Слишком часто» и т.п.), а верхний error при этом false. Раньше это считалось успехом.
+     */
+    fun runnerSendError(body: String): String? {
+        val json = try { JSONObject(body) } catch (_: Exception) { return "FunPay ответил не JSON" }
+        val respAny = json.opt("response")
+        val respErr = (respAny as? JSONObject)?.optString("error")
+            ?.trim()?.takeIf { it.isNotEmpty() && it != "null" && it != "false" && it != "0" }
+            ?.let { if (it == "true" || it == "1") "FunPay не принял сообщение" else it }
+        val topErr = if (json.optBoolean("error", false)) json.optString("msg").ifBlank { "FunPay не принял сообщение" } else null
+        val noResponse = json.has("response") && (respAny == null || respAny == JSONObject.NULL || respAny == false)
+        return respErr ?: topErr ?: if (noResponse) "FunPay не принял сообщение" else null
+    }
+
+    /** Причина последней неудачной отправки (текст от FunPay), null если всё ушло. */
+    @Volatile var lastSendError: String? = null
+
     suspend fun sendMessage(nodeId: String, text: String, imageId: String? = null): Boolean {
-        val appData = getCsrfAndId() ?: return false
+        val appData = getCsrfAndId() ?: run {
+            lastSendError = "Нет связи с FunPay или слетел вход в аккаунт"
+            return false
+        }
         val (csrf, _) = appData
         return try {
             LogManager.addLog("📤 Отправка ($nodeId): '${if(imageId != null) "IMAGE $imageId" else text}'")
@@ -2113,9 +2179,10 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             )
             updateSession(resp)
             val body = readBodySilent(resp)
-            val json = JSONObject(body)
-
-            val success = !json.optBoolean("error", false)
+            val errText = runnerSendError(body)
+            val success = errText == null
+            lastSendError = errText
+            if (!success) LogManager.addLog("❌ Сообщение не отправлено ($nodeId): $errText")
             if (success && text.isNotEmpty()) {
                 lastOutgoingMessages[nodeId] = FptMark.strip(text).trim()
                 persistOutgoing(context)
@@ -2123,6 +2190,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
             success
         } catch (e: Exception) {
             LogManager.addLog("❌ Ошибка отправки: ${e.message}")
+            lastSendError = "Не удалось отправить: ${e.message ?: "ошибка сети"}"
             false
         }
     }
@@ -2940,6 +3008,86 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
     var cachedSales: List<SaleItem> = emptyList()
     var isSalesFullLoaded: Boolean = false
 
+    /* ---------- Финансы (users/transactions): заморозка считается по ним, тут и продажи, и покупки ---------- */
+
+    /** Операции по ID, последние сверху. Общие для экранов (профиль, AOD). */
+    val cachedTransactions = java.util.concurrent.ConcurrentHashMap<String, FpTransaction>()
+    @Volatile var transactionsUpdatedAt: Long = 0L
+    @Volatile private var transactionsUserId: String? = null
+
+    /** Одна страница «Финансов». null — сеть/вход не дали ответа. */
+    suspend fun fetchTransactionsPage(continueToken: String?): Pair<List<FpTransaction>, String?>? = withContext(Dispatchers.IO) {
+        try {
+            val userId = getCsrfAndId()?.second?.takeIf { it.isNotBlank() && it != "0" } ?: return@withContext null
+            if (userId != transactionsUserId) {
+                // Сменили аккаунт: чужие операции не смешиваем
+                cachedTransactions.clear()
+                transactionsUpdatedAt = 0L
+                transactionsUserId = userId
+            }
+            val body = FormBody.Builder()
+                .add("user_id", userId)
+                .add("filter", "")
+                .add("continue", continueToken.orEmpty())
+                .build()
+            val req = Request.Builder()
+                .url("https://funpay.com/users/transactions")
+                .header("Cookie", getCookieString())
+                .header("User-Agent", userAgent)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                .post(body)
+                .build()
+            val html = repoClient.newCall(req).execute().use { it.body?.string() } ?: return@withContext null
+            if (html.isBlank()) return@withContext null
+            FpFinance.parsePage(html)
+        } catch (e: Exception) {
+            LogManager.addLogDebug("Финансы: ошибка загрузки ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Свежие операции: листаем, пока не дошли до уже известных завершённых операций
+     * или до операций старше недели (в заморозке их уже быть не может).
+     */
+    suspend fun refreshRecentTransactions(maxPages: Int = 6): Boolean {
+        var token: String? = null
+        var page = 0
+        var anyOk = false
+        val weekAgo = System.currentTimeMillis() - 7L * 24 * 3600_000L
+        while (page < maxPages) {
+            val res = fetchTransactionsPage(token) ?: break
+            anyOk = true
+            val (items, next) = res
+            var knownComplete = 0
+            for (tx in items) {
+                val old = cachedTransactions[tx.id]
+                if (old != null && old.status == tx.status && tx.status != "waiting") knownComplete++
+                cachedTransactions[tx.id] = tx
+            }
+            page++
+            val oldest = items.mapNotNull { it.timestamp }.minOrNull()
+            val pageHasWaiting = items.any { it.status == "waiting" }
+            if (items.isEmpty() || next == null || next == token) break
+            if (!pageHasWaiting && ((oldest != null && oldest < weekAgo) || knownComplete == items.size)) break
+            token = next
+            kotlinx.coroutines.delay(300)
+        }
+        if (anyOk) transactionsUpdatedAt = System.currentTimeMillis()
+        return anyOk
+    }
+
+    /** Заморозка по «Финансам». null — если «Финансы» не загрузились (тогда экраны считают по продажам, как раньше). */
+    suspend fun loadFrozenFunds(maxAgeMs: Long = 60_000L): FrozenFunds? {
+        val activeUid = getActiveAccount()?.userId?.takeIf { it.isNotBlank() && it != "0" }
+        val sameAccount = activeUid == null || activeUid == transactionsUserId
+        val fresh = sameAccount && System.currentTimeMillis() - transactionsUpdatedAt < maxAgeMs
+        val ok = fresh || refreshRecentTransactions()
+        if (!ok && cachedTransactions.isEmpty()) return null
+        return FpFinance.frozen(cachedTransactions.values)
+    }
+
     data class OrderSummaryItem(
         val orderId: String,
         val title: String,
@@ -3448,19 +3596,8 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                     }
 
                     val incomingRaw = lastMessageText.replace("\n", "").trim()
-                    val incomingLower = incomingRaw.lowercase(Locale.getDefault())
 
-                    val cmd = commands.find { commandObj ->
-                        val triggerRaw = commandObj.trigger.trim()
-                        if (commandObj.caseSensitive) {
-                            if (commandObj.exactMatch) incomingRaw == triggerRaw
-                            else incomingRaw == triggerRaw || incomingRaw.contains(triggerRaw)
-                        } else {
-                            val trigger = triggerRaw.lowercase(Locale.getDefault())
-                            if (commandObj.exactMatch) incomingLower == trigger
-                            else incomingLower == trigger || incomingLower.contains(trigger)
-                        }
-                    }
+                    val cmd = commands.find { commandObj -> commandMatches(incomingRaw, commandObj) }
 
                     if (cmd != null) {
                         val now = System.currentTimeMillis()
@@ -3474,17 +3611,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                             val lastIncoming = history.lastOrNull { !it.isMe }
                             if (lastIncoming == null) continue
 
-                            val triggerRaw = cmd.trigger.trim()
-                            val incomingNormRaw = lastIncoming.text.trim()
-                            val triggerMatches = if (cmd.caseSensitive) {
-                                if (cmd.exactMatch) incomingNormRaw == triggerRaw
-                                else incomingNormRaw == triggerRaw || incomingNormRaw.contains(triggerRaw)
-                            } else {
-                                val trigger = triggerRaw.lowercase(Locale.getDefault())
-                                val incomingNorm = incomingNormRaw.lowercase(Locale.getDefault())
-                                if (cmd.exactMatch) incomingNorm == trigger
-                                else incomingNorm == trigger || incomingNorm.contains(trigger)
-                            }
+                            val triggerMatches = commandMatches(lastIncoming.text, cmd)
 
                             if (!triggerMatches) continue
                             messageId = lastIncoming.id
@@ -3665,6 +3792,17 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                 LogManager.addLogDebug("🎁 Бонус для #$orderId уже отправлялся — пропуск")
                 return
             }
+            // Бонус могут запросить два пути сразу (новый отзыв в чате и ответ на отзыв).
+            // Даже без «раз на заказ» не шлём один и тот же бонус дважды за 15 минут.
+            val nowMs = System.currentTimeMillis()
+            synchronized(recentBonusOrders) {
+                val last = recentBonusOrders[orderId]
+                if (last != null && nowMs - last < 15 * 60_000L) {
+                    LogManager.addLogDebug("🎁 Бонус для #$orderId только что отправлен — пропуск дубля")
+                    return
+                }
+                recentBonusOrders[orderId] = nowMs
+            }
             val bonusText = FpPlaceholders.applyCombined(
                 rule.text,
                 chat,
@@ -3684,6 +3822,7 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
                 if (getReadMarkSettings().markAfterBonusMessage) markChatAsRead(chat.id)
             } else {
                 LogManager.addLog("❌ Не удалось отправить бонус за отзыв (#$orderId)")
+                synchronized(recentBonusOrders) { recentBonusOrders.remove(orderId) }
             }
         } catch (e: Exception) {
             LogManager.addLog("⚠️ Ошибка отправки бонуса: ${e.message}")
@@ -4359,24 +4498,47 @@ ${if (reviewTextLine.isNotEmpty()) "$reviewTextLine\n" else ""}
     suspend fun getUnconfirmedOrders(ageHours: Int, alreadySent: Set<String>): List<String> = withContext(Dispatchers.IO) {
         try {
             val result = mutableListOf<String>()
-            val req = Request.Builder()
-                .url("https://funpay.com/orders/trade?state=paid")
-                .header("Cookie", getCookieString())
-                .header("User-Agent", userAgent)
-                .build()
-            val html = repoClient.newCall(req).execute().body?.string() ?: run {
-                LogManager.addLog("❌ AutoTicket: пустой ответ от страницы заказов")
-                return@withContext emptyList()
-            }
-            LogManager.addLogDebug("AutoTicket: страница заказов загружена (${html.length} байт)")
-            val doc = Jsoup.parse(html)
-            doc.select("a.tc-item, .orders-table a[href*='/orders/']").forEach { item ->
-                val href = item.attr("href")
-                val orderId = Regex("/orders/([A-Za-z0-9]+)").find(href)?.groupValues?.get(1)
-                    ?: item.select(".tc-id, .order-id").text().replace("#", "").trim()
-                if (orderId.isNotBlank() && orderId !in alreadySent) result.add(orderId)
-            }
-            if (result.isEmpty()) {
+            val url = "https://funpay.com/orders/trade?state=paid"
+            val minAgeMs = ageHours.coerceAtLeast(0) * 3_600_000L
+            val now = System.currentTimeMillis()
+            var html = ""
+            var cont: String? = null
+            var page = 0
+            // Страницы списка: FunPay отдаёт ~100 заказов, остальное по токену continue (как в Cardinal)
+            do {
+                val builder = Request.Builder().url(url)
+                    .header("Cookie", getCookieString())
+                    .header("User-Agent", userAgent)
+                if (cont != null) {
+                    builder.header("X-Requested-With", "XMLHttpRequest")
+                        .post(FormBody.Builder().add("continue", cont).build())
+                }
+                val pageHtml = repoClient.newCall(builder.build()).execute().body?.string()
+                if (pageHtml.isNullOrEmpty()) {
+                    if (page == 0) {
+                        LogManager.addLog("❌ AutoTicket: пустой ответ от страницы заказов")
+                        return@withContext emptyList()
+                    }
+                    break
+                }
+                if (page == 0) html = pageHtml
+                LogManager.addLogDebug("AutoTicket: страница заказов ${page + 1} загружена (${pageHtml.length} байт)")
+                val doc = Jsoup.parse(pageHtml)
+                doc.select("a.tc-item, .orders-table a[href*='/orders/']").forEach { item ->
+                    val href = item.attr("href")
+                    val orderId = Regex("/orders/([A-Za-z0-9]+)").find(href)?.groupValues?.get(1)
+                        ?: item.select(".tc-id, .order-id").text().replace("#", "").trim()
+                    // «Заказы старше N ч»: если дату не разобрали, заказ берём (как раньше)
+                    val ts = FpDates.parse(item.select(".tc-date-time").text())
+                    val oldEnough = ts == null || now - ts >= minAgeMs
+                    if (orderId.isNotBlank() && orderId !in alreadySent && orderId !in result && oldEnough) result.add(orderId)
+                }
+                val next = doc.selectFirst("input[name=continue]")?.attr("value")?.takeIf { it.isNotBlank() }
+                cont = if (next == cont) null else next
+                page++
+            } while (cont != null && page < 10)
+            val parsedAny = Jsoup.parse(html).select("a.tc-item, .orders-table a[href*='/orders/']").isNotEmpty()
+            if (result.isEmpty() && !parsedAny) {
                 LogManager.addLogDebug("AutoTicket: основной парсер не нашёл заказов, пробуем резервный")
                 
                 Regex("/orders/([A-Z0-9]{8})/").findAll(html).forEach { m ->

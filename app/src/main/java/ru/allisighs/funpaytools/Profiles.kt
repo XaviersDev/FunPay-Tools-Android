@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -340,8 +341,59 @@ fun UserProfileScreen(
         }
     }
 
+    var openingChat by remember { mutableStateOf(false) }
+    var myUserId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        myUserId = repository.getActiveAccount()?.userId?.takeIf { it.isNotBlank() && it != "0" }
+            ?: try { repository.getCsrfAndId()?.second?.takeIf { it != "0" } } catch (_: Exception) { null }
+    }
+
+    /** «Написать»: открываем чат с человеком. Если пришли сюда из этого же чата, просто возвращаемся. */
+    fun openChat() {
+        val uid = resolvedUserId.ifEmpty { return }
+        val prev = navController.previousBackStackEntry
+        if (prev?.destination?.route == "chat/{chatId}/{username}") {
+            val prevChat = prev.arguments?.getString("chatId").orEmpty()
+            val myId = myUserId
+            val sameChat = prevChat == nodeId ||
+                (myId != null && prevChat == NewChatApi.buildNode(uid, myId))
+            if (sameChat) { navController.popBackStack(); return }
+        }
+        if (openingChat) return
+        openingChat = true
+        scope.launch {
+            val myId = myUserId
+                ?: try { repository.getCsrfAndId()?.second?.takeIf { it != "0" } } catch (_: Exception) { null }
+            val node = myId?.let { NewChatApi.buildNode(uid, it) }
+            openingChat = false
+            if (node == null) {
+                android.widget.Toast.makeText(context, "Не удалось определить ваш ID, проверьте вход в аккаунт", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                val name = (uiState as? ProfileUiState.Success)?.profile?.username?.takeIf { it.isNotBlank() } ?: username
+                navController.navigate("chat/$node/${Uri.encode(name)}")
+            }
+        }
+    }
+
     Scaffold(
         containerColor = Color.Transparent,
+        floatingActionButton = {
+            val isMe = myUserId != null && myUserId == resolvedUserId
+            androidx.compose.animation.AnimatedVisibility(
+                visible = resolvedUserId.isNotEmpty() && !isMe,
+                enter = androidx.compose.animation.scaleIn() + androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut()
+            ) {
+                ExtendedFloatingActionButton(
+                    onClick = { openChat() },
+                    containerColor = ThemeManager.parseColor(theme.accentColor),
+                    contentColor = Color.White,
+                    icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+                    text = { Text("Написать", fontWeight = FontWeight.SemiBold) },
+                    modifier = Modifier.navigationBarsPadding()
+                )
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
