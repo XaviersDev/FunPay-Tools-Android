@@ -114,17 +114,35 @@ object FpFinance {
         }
     }
 
+    /**
+     * Статус операции: по классам строки и вложенных элементов, а если их нет, по тексту статуса
+     * (FunPay помечает строки transaction-status-waiting / -cancel / -complete, но не всегда).
+     */
+    private fun statusOf(el: org.jsoup.nodes.Element): String {
+        val classes = ArrayList<String>()
+        classes.addAll(el.classNames().map { it.lowercase() })
+        val texts = StringBuilder()
+        for (e in el.select(".tc-status, [class*=status]")) {
+            classes.addAll(e.classNames().map { it.lowercase() })
+            texts.append(e.text().lowercase()).append(' ')
+        }
+        fun has(n: String) = classes.any { it.contains("status") && it.contains(n) }
+        val t = texts.toString()
+        return when {
+            has("cancel") || has("refund") || t.contains("отмен") || t.contains("cancel") -> "cancel"
+            has("wait") || has("pending") || has("process") || has("hold") ||
+                t.contains("ожида") || t.contains("обработ") || t.contains("заморож") || t.contains("waiting") || t.contains("pending") -> "waiting"
+            else -> "complete"
+        }
+    }
+
     /** Разбор кусочка HTML из POST users/transactions. Возвращает операции и токен следующей страницы. */
     fun parsePage(html: String, now: Long = System.currentTimeMillis()): Pair<List<FpTransaction>, String?> {
         val doc = Jsoup.parse(html)
         val list = doc.select(".tc-item[data-transaction]").mapNotNull { el ->
             val id = el.attr("data-transaction").trim()
             if (id.isEmpty()) return@mapNotNull null
-            val status = when {
-                el.hasClass("transaction-status-cancel") -> "cancel"
-                el.hasClass("transaction-status-waiting") -> "waiting"
-                else -> "complete"
-            }
+            val status = statusOf(el)
             val title = el.selectFirst(".tc-title")?.text()?.trim().orEmpty()
             val (amount, currency) = parseAmount(el.selectFirst(".tc-price")?.text().orEmpty())
             val dateText = el.selectFirst(".tc-date-time")?.text()?.trim().orEmpty()
@@ -144,11 +162,32 @@ object FpFinance {
         return list to cont
     }
 
-    /** Заморозка = приходы со статусом «в ожидании» (продажи и всё остальное, что ещё не на балансе). */
+    /**
+     * Заморозка как в FunPay Tools Desktop: FunPay сразу показывает приход за заказ как выполненный,
+     * но держит деньги 48 часов. Поэтому считаем всё, что FunPay пометил как ожидающее,
+     * плюс приходы за заказы за последние 48 часов.
+     */
     fun frozen(transactions: Collection<FpTransaction>, now: Long = System.currentTimeMillis()): FrozenFunds {
-        val waiting = transactions.filter { it.status == "waiting" && it.amount > 0 }
-        val byCurrency = waiting.groupBy { it.currency }.mapValues { (_, l) -> l.sumOf { it.amount } }
-        val items = waiting.map { tx -> tx to ((tx.timestamp ?: now) + HOLD_MS) }.sortedBy { it.second }
+        val held = transactions.filter { tx ->
+            if (tx.amount <= 0 || tx.status == "cancel") return@filter false
+            val ts = tx.timestamp
+            val recent = ts != null && now - ts < HOLD_MS
+            val isOrder = tx.type == "order" || tx.title.contains("заказ", ignoreCase = true) || Regex("#[A-Z0-9]{6,10}").containsMatchIn(tx.title)
+            tx.status == "waiting" || (recent && isOrder)
+        }
+        val byCurrency = held.groupBy { it.currency }.mapValues { (_, l) -> l.sumOf { it.amount } }
+        val items = held.map { tx -> tx to maxOf((tx.timestamp ?: now) + HOLD_MS, now) }.sortedBy { it.second }
         return FrozenFunds(byCurrency, items)
+    }
+
+    /** Запасная оценка по закрытым продажам за 48 часов; из двух оценок берём большую (как в десктопе). */
+    fun mergeWithSales(fi: FrozenFunds?, salesHeld: List<Pair<Double, Long>>, currency: String): Pair<Double, Pair<Double, Long>?> {
+        val fromTx = fi?.sum(currency) ?: 0.0
+        val fromSales = salesHeld.sumOf { it.first }
+        return if (fi != null && fromTx >= fromSales) {
+            fromTx to fi.next(currency)?.let { it.first.amount to it.second }
+        } else {
+            fromSales to salesHeld.minByOrNull { it.second }
+        }
     }
 }

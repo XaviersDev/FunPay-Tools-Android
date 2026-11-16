@@ -27,6 +27,27 @@ object EpicNicksManager {
     val nicksMap = mutableStateMapOf<String, EpicNickConfig>()
     private var isLoaded = false
 
+    /** Разбор ключа FPT-STYLE-... (тот же формат, что в генераторе на funpay.tools/donate). */
+    fun decodeKey(key: String): EpicNickConfig? {
+        val k = key.trim()
+        if (!k.startsWith("FPT-STYLE-")) return null
+        return try {
+            val decoded = String(Base64.decode(k.removePrefix("FPT-STYLE-"), Base64.DEFAULT))
+            Gson().fromJson(decoded, EpicNickConfig::class.java)
+        } catch (e: Exception) { null }
+    }
+
+    /** Свой только что купленный или изменённый стиль виден сразу, не дожидаясь обновления списка. */
+    fun setLocal(nick: String, key: String) {
+        val cfg = decodeKey(key) ?: return
+        android.os.Handler(android.os.Looper.getMainLooper()).post { nicksMap[nick] = cfg }
+    }
+
+    fun reload() {
+        isLoaded = false
+        init()
+    }
+
     fun init() {
         if (isLoaded) return
         CoroutineScope(Dispatchers.IO).launch {

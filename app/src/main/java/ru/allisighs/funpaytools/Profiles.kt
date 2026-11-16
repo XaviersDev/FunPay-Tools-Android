@@ -598,8 +598,10 @@ private fun ProfileHeader(
 
     Surface(modifier = Modifier.fillMaxWidth(), color = ThemeManager.parseColor(theme.surfaceColor)) {
         Column(Modifier.padding(20.dp)) {
+            FptProfileBanner(uid = profile.userId, modifier = Modifier.padding(bottom = 16.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Box {
+                    FramedAvatar(uid = profile.userId, name = profile.username, size = 80.dp) {
                     AsyncImage(
                         model = profile.avatarUrl ?: "https://funpay.com/img/layout/avatar.png",
                         contentDescription = null,
@@ -607,6 +609,7 @@ private fun ProfileHeader(
                             .border(2.dp, ThemeManager.parseColor(theme.accentColor).copy(0.4f), CircleShape),
                         contentScale = ContentScale.Crop
                     )
+                    }
                     Box(
                         modifier = Modifier.size(16.dp).clip(CircleShape).background(onlineColor)
                             .border(2.dp, ThemeManager.parseColor(theme.surfaceColor), CircleShape)

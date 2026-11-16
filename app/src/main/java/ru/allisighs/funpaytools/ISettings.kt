@@ -7,6 +7,7 @@
 
 package ru.allisighs.funpaytools
 
+import android.widget.Toast
 import android.content.Intent
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -148,6 +149,10 @@ fun SettingsScreen(
                     )
                 }
 
+
+                item {
+                    SettingsCard(theme = currentTheme, content = { EmployeeModeToggleItem(theme = currentTheme) })
+                }
 
                 item {
                     SectionHeader(
@@ -668,6 +673,65 @@ private fun DeleteConfirmDialog(
         },
         containerColor = ThemeManager.dialogSurface(currentTheme)
     )
+}
+
+/** Режим сотрудника: только чаты, лоты и продажи, автоматизация на этом устройстве выключена. */
+@Composable
+private fun EmployeeModeToggleItem(theme: AppTheme) {
+    val context = LocalContext.current
+    var enabled by remember { mutableStateOf(EmployeeMode.isOn(context)) }
+    val accent = ThemeManager.parseColor(theme.accentColor)
+    val iconColor = ThemeManager.parseColor("#26A69A")
+    fun toggle(v: Boolean) {
+        enabled = v
+        EmployeeMode.set(context, v)
+        Toast.makeText(
+            context,
+            if (v) "Режим сотрудника включён: остались чаты, лоты и продажи" else "Режим сотрудника выключен",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { toggle(!enabled) }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(listOf(iconColor.copy(alpha = 0.25f), iconColor.copy(alpha = 0.1f)))
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Badge, contentDescription = null, tint = iconColor, modifier = Modifier.size(24.dp))
+        }
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "Режим сотрудника",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
+                color = ThemeManager.parseColor(theme.textPrimaryColor)
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "Остаются только чаты, лоты и продажи. Автоматизация на этом телефоне выключается, её ведёт телефон владельца",
+                fontSize = 13.sp,
+                color = ThemeManager.parseColor(theme.textSecondaryColor),
+                lineHeight = 18.sp
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Switch(
+            checked = enabled,
+            onCheckedChange = { toggle(it) },
+            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = accent)
+        )
+    }
 }
 
 /** Переключатель невидимой метки FunPay Tools в сообщениях (как в расширении). */

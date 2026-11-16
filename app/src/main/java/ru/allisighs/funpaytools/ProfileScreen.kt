@@ -661,21 +661,14 @@ fun ProfileScreen(
                 else -> "₽"
             }
             val fi = frozenInfo
-            val frozenSum: Double
-            val nextUnlock: Pair<Double, Long>?
-            if (fi != null) {
-                // По «Финансам»: всё, что в ожидании, включая продажи, которых нет в первых страницах
-                frozenSum = fi.sum(balanceCurrency)
-                nextUnlock = fi.next(balanceCurrency)?.let { it.first.amount to it.second }
-            } else {
-                // Запасной вариант, пока «Финансы» не загрузились: по продажам, как раньше
-                val frozenSales = localSales.filter { it.status == "closed" }.mapNotNull { sale ->
-                    val saleTime = parseFunPayDateToMs(sale.date)
-                    if (saleTime > 0) { val unlockTime = saleTime + 48L * 3600L * 1000L; if (currentTime < unlockTime) Pair(sale, unlockTime) else null } else null
-                }.sortedBy { it.second }
-                frozenSum = frozenSales.sumOf { it.first.priceValue }
-                nextUnlock = frozenSales.firstOrNull()?.let { it.first.priceValue to it.second }
+            // Закрытые продажи за последние 48 часов (вторая оценка, как в FunPay Tools Desktop)
+            val salesHeld = localSales.filter { it.status == "closed" }.mapNotNull { sale ->
+                val saleTime = FpDates.parse(sale.date, currentTime) ?: parseFunPayDateToMs(sale.date).takeIf { it > 0 }
+                if (saleTime != null) { val unlockTime = saleTime + FpFinance.HOLD_MS; if (currentTime < unlockTime) sale.priceValue to unlockTime else null } else null
             }
+            val merged = FpFinance.mergeWithSales(fi, salesHeld, balanceCurrency)
+            val frozenSum: Double = merged.first
+            val nextUnlock: Pair<Double, Long>? = merged.second
             val activeSum = max(0.0, totalBalanceVal - frozenSum)
 
             Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -685,9 +678,11 @@ fun ProfileScreen(
                     .clip(RoundedCornerShape(theme.borderRadius.dp))
                     .background(ThemeManager.parseColor(theme.surfaceColor))
                 ) {
+                    Column {
+                    FptProfileBanner(uid = user.id, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp))
                     Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box {
-                            AsyncImage(model = user.avatarUrl, contentDescription = null, modifier = Modifier.size(72.dp).clip(CircleShape).border(2.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f), CircleShape), contentScale = ContentScale.Crop)
+                            FramedAvatar(uid = user.id, name = user.username, size = 72.dp) { AsyncImage(model = user.avatarUrl, contentDescription = null, modifier = Modifier.size(72.dp).clip(CircleShape).border(2.dp, ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.4f), CircleShape), contentScale = ContentScale.Crop) }
                             Box(modifier = Modifier.size(16.dp).align(Alignment.BottomEnd).offset(x = (-6).dp, y = (-4).dp).clip(CircleShape).background(if (user.isOnline) Color(0xFF00C853) else Color.Gray).border(2.dp, ThemeManager.parseColor(theme.surfaceColor), CircleShape))
                         }
                         Spacer(modifier = Modifier.width(20.dp))
@@ -706,6 +701,7 @@ fun ProfileScreen(
                         Box(modifier = Modifier.size(42.dp).clip(CircleShape).background(ThemeManager.parseColor(theme.accentColor).copy(alpha = 0.1f)).clickable { showDynamicAvatarDialog = true }, contentAlignment = Alignment.Center) {
                             Icon(imageVector = Icons.Default.Palette, contentDescription = "Кастомизация аватарки", tint = ThemeManager.parseColor(theme.accentColor), modifier = Modifier.size(22.dp))
                         }
+                    }
                     }
                 }
 

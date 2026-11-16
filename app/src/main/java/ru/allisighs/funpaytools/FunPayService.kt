@@ -227,65 +227,68 @@ class FunPayService : Service() {
                         checkPushNotifications(chats)
                     }
 
-                    var busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
+                    // Режим сотрудника: только чаты и уведомления, автоматизацию ведёт владелец
+                    if (!EmployeeMode.isOn(this@FunPayService)) {
+                        var busySettings = ChatFolderManager.getBusyMode(this@FunPayService)
 
-                    val activeSlot = try {
-                        ChatFolderManager.getActiveScheduleSlot(this@FunPayService)
-                    } catch (_: Exception) { null }
+                        val activeSlot = try {
+                            ChatFolderManager.getActiveScheduleSlot(this@FunPayService)
+                        } catch (_: Exception) { null }
 
-                    if (activeSlot != null && !busySettings.enabled) {
-                        val cal = java.util.Calendar.getInstance()
-                        val dayStamp = cal.get(java.util.Calendar.YEAR) * 10000L +
-                                cal.get(java.util.Calendar.MONTH) * 100L +
-                                cal.get(java.util.Calendar.DAY_OF_MONTH)
-                        val slotStamp = (activeSlot.id.hashCode().toLong() and 0xFFFFFFFFL)
-                        val scheduledEnabledAt = dayStamp * 1_000_000_000L + slotStamp
+                        if (activeSlot != null && !busySettings.enabled) {
+                            val cal = java.util.Calendar.getInstance()
+                            val dayStamp = cal.get(java.util.Calendar.YEAR) * 10000L +
+                                    cal.get(java.util.Calendar.MONTH) * 100L +
+                                    cal.get(java.util.Calendar.DAY_OF_MONTH)
+                            val slotStamp = (activeSlot.id.hashCode().toLong() and 0xFFFFFFFFL)
+                            val scheduledEnabledAt = dayStamp * 1_000_000_000L + slotStamp
 
-                        busySettings = busySettings.copy(
-                            enabled = true,
-                            enabledAt = scheduledEnabledAt,
-                            message = if (activeSlot.overrideMessage && activeSlot.message.isNotBlank())
-                                activeSlot.message
-                            else busySettings.message,
-                            cooldownMinutes = if (activeSlot.overrideCooldown)
-                                activeSlot.cooldownMinutes
-                            else busySettings.cooldownMinutes
-                        )
-                    }
-
-                    if (busySettings.enabled) {
-                        repository.checkBusyModeReplies(chats, busySettings)
-                        if (busySettings.keepRaise) repository.raiseAllLots()
-                        if (busySettings.keepAutoResponse) repository.checkAutoResponse(chats)
-                        if (busySettings.keepGreeting) repository.checkGreetings(chats)
-                    } else {
-                        resolveNewUnreadChats(chats, repository)
-                        val unreadChatsForDelivery = chats.filter { it.isUnread }
-                        for (c in unreadChatsForDelivery) {
-                            AutoDeliveryManager.checkAutoDelivery(c, repository, this@FunPayService)
+                            busySettings = busySettings.copy(
+                                enabled = true,
+                                enabledAt = scheduledEnabledAt,
+                                message = if (activeSlot.overrideMessage && activeSlot.message.isNotBlank())
+                                    activeSlot.message
+                                else busySettings.message,
+                                cooldownMinutes = if (activeSlot.overrideCooldown)
+                                    activeSlot.cooldownMinutes
+                                else busySettings.cooldownMinutes
+                            )
                         }
-                        repository.checkAutoResponse(chats)
-                        repository.checkGreetings(chats)
-                        repository.raiseAllLots()
-                        repository.checkOrderConfirmations(chats)
-                        repository.checkAutoRefund(chats)
-                        repository.checkReviewReplies(chats)
-                        repository.runDumperCycle()
-                        repository.checkOrderReminders(chats)
-                        repository.checkAutoTicketCycle()
-                    }
 
-                    try {
+                        if (busySettings.enabled) {
+                            repository.checkBusyModeReplies(chats, busySettings)
+                            if (busySettings.keepRaise) repository.raiseAllLots()
+                            if (busySettings.keepAutoResponse) repository.checkAutoResponse(chats)
+                            if (busySettings.keepGreeting) repository.checkGreetings(chats)
+                        } else {
+                            resolveNewUnreadChats(chats, repository)
+                            val unreadChatsForDelivery = chats.filter { it.isUnread }
+                            for (c in unreadChatsForDelivery) {
+                                AutoDeliveryManager.checkAutoDelivery(c, repository, this@FunPayService)
+                            }
+                            repository.checkAutoResponse(chats)
+                            repository.checkGreetings(chats)
+                            repository.raiseAllLots()
+                            repository.checkOrderConfirmations(chats)
+                            repository.checkAutoRefund(chats)
+                            repository.checkReviewReplies(chats)
+                            repository.runDumperCycle()
+                            repository.checkOrderReminders(chats)
+                            repository.checkAutoTicketCycle()
+                        }
+
+                        try {
                         
-                        if (account.isActive) {
-                            ConcurentManager.tick(this@FunPayService, repository)
-                        }
-                    } catch (e: Exception) { }
+                            if (account.isActive) {
+                                ConcurentManager.tick(this@FunPayService, repository)
+                            }
+                        } catch (e: Exception) { }
 
-                    if (repository.getSetting("always_online")) {
-                        if (System.currentTimeMillis() - lastOnlinePing > 4 * 60 * 1000L) {
-                            repository.pingOnlineStatus()
-                            lastOnlinePing = System.currentTimeMillis()
+                        if (repository.getSetting("always_online")) {
+                            if (System.currentTimeMillis() - lastOnlinePing > 4 * 60 * 1000L) {
+                                repository.pingOnlineStatus()
+                                lastOnlinePing = System.currentTimeMillis()
+                            }
                         }
                     }
 

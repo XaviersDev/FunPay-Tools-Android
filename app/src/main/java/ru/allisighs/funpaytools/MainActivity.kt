@@ -280,6 +280,9 @@ class MainActivity : ComponentActivity() {
         Ads.init(this)
         LicenseManager.init(this)
         EpicNicksManager.init()
+        AppContext = applicationContext
+        try { FptDecor.init() } catch (e: Exception) { e.printStackTrace() }
+        EmployeeMode.isOn(this)
 
 
         val permissionsToRequest = mutableListOf<String>()
@@ -1944,16 +1947,21 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         val unreadCount = chats.count { it.isUnread }
-                        listOf(
+                        val employeeTabs = EmployeeMode.state.value
+                        (if (employeeTabs) listOf(
+                            0 to Icons.Default.Chat,
+                            8 to Icons.Default.Storefront,
+                            5 to Icons.Default.ShoppingBag
+                        ) else listOf(
                             0 to Icons.Default.Chat,
                             1 to Icons.Default.Tune,
-                            6 to Icons.Default.DynamicFeed,
+                            6 to Icons.Default.AccountCircle,
                             2 to Icons.Default.Person,
                             5 to Icons.Default.ShoppingBag,
                             3 to Icons.Default.Support,
                             7 to Icons.Default.Extension,
                             4 to Icons.Default.Terminal
-                        ).forEach { (index, icon) ->
+                        )).forEach { (index, icon) ->
                             val isSelected = selectedTab == index
                             Box(
                                 modifier = Modifier
@@ -1962,7 +1970,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                                     .clickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null
-                                    ) { selectedTab = index },
+                                    ) { if (index == 8) navController.navigate("lots") else selectedTab = index },
                                 contentAlignment = Alignment.Center
                             ) {
 
@@ -2010,6 +2018,9 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                     }
                 }
 
+                LaunchedEffect(EmployeeMode.state.value) {
+                    if (EmployeeMode.state.value && selectedTab !in setOf(0, 5)) selectedTab = 0
+                }
                 when (selectedTab) {
                     0 -> ChatListView(chats, isLoadingChats && !hasLoadedOnce, navController, currentTheme, repository) { selectedTab = 3 }
                     1 -> ControlView(navController, repository, currentTheme, onNavigateToSupport = { selectedTab = 3 })
@@ -2025,7 +2036,7 @@ fun DashboardScreen(navController: NavController, repository: FunPayRepository, 
                     3 -> SupportScreenView(repository, currentTheme) { selectedTab = 0 }
                     4 -> ConsoleView(logs, currentTheme, navController)
                     5 -> SalesScreen(repository = repository, theme = currentTheme, navController = navController)
-                    6 -> FeedScreen(navController, repository, currentTheme)
+                    6 -> FptAccountScreen(repository, currentTheme, navController)
                     7 -> PluginsMainScreen(navController, repository, currentTheme, isTab = true)
                 }
             }
@@ -2430,6 +2441,7 @@ fun ChatItemView(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.width(48.dp)
                 ) {
+                    FramedAvatar(uid = null, name = chat.username, size = 48.dp) {
                     AsyncImage(
                         model = chat.avatarUrl,
                         contentDescription = "Avatar",
@@ -2442,6 +2454,7 @@ fun ChatItemView(
                             },
                         contentScale = ContentScale.Crop
                     )
+                    }
                     if (assignedLabels.isNotEmpty()) {
                         Spacer(Modifier.height(3.dp))
                         Row(
@@ -6268,6 +6281,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, null, tint = ThemeManager.parseColor(theme.textPrimaryColor))
                         }
                         if (chatInfo?.avatarUrl != null) {
+                            FramedAvatar(uid = chatInfo?.peerUserId, name = username, size = 38.dp) {
                             AsyncImage(
                                 model = chatInfo!!.avatarUrl,
                                 contentDescription = null,
@@ -6279,6 +6293,7 @@ fun ChatDetailScreen(chatId: String, username: String, repository: FunPayReposit
                                     },
                                 contentScale = ContentScale.Crop
                             )
+                            }
                             Spacer(Modifier.width(10.dp))
                         }
                         Column(
